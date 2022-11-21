@@ -1,20 +1,24 @@
 pub mod db_adapter_file;
 
 use std::collections::HashMap;
+use std::pin::Pin;
 
 use crate::db_adapter_file::OpenApi;
 use crate::db_adapter_file::DbAdapterFile;
 use tide::Error;
 
-/*
+
 trait IMicroServiceServer {
+	fn micro_service_server(&self) -> &MicroServiceServer;
+	fn init(&mut self) -> async_std::io::Result<()>;
+	fn authenticate_user(&self, user_name :String, user_password :String, remote_addr :String) -> Result<LoginResponse, tide::Error>;	
 	//fn load_open_api(&self) -> Result<(), tide::Error>;
-	fn listen(&self) -> async_std::io::Result<()>;
+	//fn listen(&self) -> async_std::io::Result<()>;
 	//fn shutdown(&self) -> Result<(), tide::Error>;
 	//fn on_request(&self, req : tide::Request<()>) -> tide::Response<>;
 	//fn OnWsMessageFromClient(connection : websocketConn, tokenString : String);
 }
-*/
+
 #[derive(Debug)]
 struct User {
 //    name: String,
@@ -33,7 +37,7 @@ struct MicroServiceServer {
 	//openapi_file_name : String,
 	openapi                : Option<OpenApi>,
 	//wsServerConnections    : HashMap<String, websocketConn>,
-	http_server             : Option<Box<tide::Server<MicroServiceServer>>>,
+	//http_server             : Option<Box<tide::Server<MicroServiceServer>>>,
 	//imss                   : Option<&'a dyn IMicroServiceServer> 
 }
 
@@ -41,15 +45,24 @@ struct MicroServiceServer {
 #[derive(Clone, Default, Debug)]
 #[allow(dead_code)]
 struct LoginRequest {user: String, password : String}
-//impl IMicroServiceServer for MicroServiceServer<'_> {
-impl MicroServiceServer {
+
+impl IMicroServiceServer for MicroServiceServer {
 	/*
 	fn on_request(&self, req : tide::Request<()>) -> tide::Response<> {
 		//log.Printf("[MicroServiceServer.OnRequest] : %s", req.URL.Path);
 		return tide::Response::builder(200).content_type(tide::http::mime::JSON).body("OnRequest").build()
 	}
 */
-	async fn init(&mut self) -> async_std::io::Result<()> {
+	fn micro_service_server(&self) -> &MicroServiceServer {
+		self
+	}
+
+	fn authenticate_user(&self, user_name :String, user_password :String, remote_addr :String) -> Result<LoginResponse, tide::Error> {
+		println!("[authenticate_user({}, {}, {})]", user_name, user_password, remote_addr);
+		Err(tide::Error::from_str(500, "don't implemented"))
+	}
+
+	fn init(&mut self) -> async_std::io::Result<()> {
 		//self.wsServerConnections = make(map[string]*websocket.Conn);
 		if self.port == 0 {
 			self.port = 8080;
@@ -64,7 +77,7 @@ impl MicroServiceServer {
 		}
 
 		if self.http_server.is_none() {
-			self.http_server = Option::Some(tide::with_state(MicroServiceServer::default()));
+			self.http_server = Option::Some(tide::with_state(dyn IMicroServiceServer::default()));
 		}
 */
 
@@ -216,68 +229,79 @@ struct RufsMicroService  {
 	db_adapter_file :DbAdapterFile
 }
 
-fn authenticate_user(user_name :String, user_password :String, remote_addr :String) -> Result<LoginResponse, tide::Error> {
-	let mut db_file = db_adapter_file::DbAdapterFile::default();
-	db_file.openapi = OpenApi::default();
-/*
-	let entityManager = if rms.fileDbAdapter.fileTables["rufsUser"].exists {
-		entityManager = rms.fileDbAdapter
-	} else {
-		entityManager = rms.entityManager
+impl IMicroServiceServer for RufsMicroService {
+	fn micro_service_server(&self) -> &MicroServiceServer {
+		&self.micro_service_server
 	}
-	time.Sleep(100 * time.Millisecond)
-	user := &RufsUser{}
+	
+	fn init(&mut self) -> async_std::io::Result<()> {
+		Ok(())
+	}
 
-	if userMap, err := entityManager.FindOne("rufsUser", map[string]any{"name": userName}); err == nil {
-		data, _ := json.Marshal(userMap)
-
-		if err := json.Unmarshal(data, user); err != nil {
-			UtilsShowJsonUnmarshalError(string(data), err)
-			return nil, err
+	fn authenticate_user(&self, user_name :String, user_password :String, remote_addr :String) -> Result<LoginResponse, tide::Error> {
+		let mut db_file = db_adapter_file::DbAdapterFile::default();
+		db_file.openapi = OpenApi::default();
+	/*
+		let entityManager = if rms.fileDbAdapter.fileTables["rufsUser"].exists {
+			entityManager = rms.fileDbAdapter
+		} else {
+			entityManager = rms.entityManager
 		}
-	} else {
-		return nil, fmt.Errorf("[RufsMicroService.authenticateUser] internal error : %s", err)
-	}
-
-	if len(user.Password) > 0 && user.Password != userPassword {
-		return nil, errors.New("Don't match user and password.")
-	}
-
-	loginResponse := &LoginResponse{TokenPayload: TokenPayload{Ip: remoteAddr, RufsUserProteced: RufsUserProteced{Name: userName}}}
-	loginResponse.Title = user.Name
-	loginResponse.Id = user.Id
-	loginResponse.RufsGroupOwner = user.RufsGroupOwner
-	loginResponse.Roles = user.Roles
-	loginResponse.Routes = user.Routes
-	loginResponse.Path = user.Path
-	loginResponse.Menu = user.Menu
-
-	if loginResponse.RufsGroupOwner > 0 {
-		/*
-			const item = OpenApi.getPrimaryKeyForeign(this.openapi, "rufsUser", "rufsGroupOwner", user)
-			return entityManager.findOne("rufsGroupOwner", item.primaryKey).then(rufsGroupOwner => {
-				if (rufsGroupOwner != null) loginResponse.title = rufsGroupOwner.name + " - " + userName;
-				return loginResponse
-			})
-		*/
-	}
-
-	if list, err := entityManager.Find("rufsGroupUser", map[string]any{"rufsUser": loginResponse.Id}, []string{}); err == nil {
-		for _, item := range list {
-			loginResponse.Groups = append(loginResponse.Groups, int(item["rufsGroup"].(int64)))
+		time.Sleep(100 * time.Millisecond)
+		user := &RufsUser{}
+	
+		if userMap, err := entityManager.FindOne("rufsUser", map[string]any{"name": userName}); err == nil {
+			data, _ := json.Marshal(userMap)
+	
+			if err := json.Unmarshal(data, user); err != nil {
+				UtilsShowJsonUnmarshalError(string(data), err)
+				return nil, err
+			}
+		} else {
+			return nil, fmt.Errorf("[RufsMicroService.authenticateUser] internal error : %s", err)
 		}
-	} else {
-		return nil, fmt.Errorf("[RufsMicroService.authenticateUser] internal error : %s", err)
+	
+		if len(user.Password) > 0 && user.Password != userPassword {
+			return nil, errors.New("Don't match user and password.")
+		}
+	
+		loginResponse := &LoginResponse{TokenPayload: TokenPayload{Ip: remoteAddr, RufsUserProteced: RufsUserProteced{Name: userName}}}
+		loginResponse.Title = user.Name
+		loginResponse.Id = user.Id
+		loginResponse.RufsGroupOwner = user.RufsGroupOwner
+		loginResponse.Roles = user.Roles
+		loginResponse.Routes = user.Routes
+		loginResponse.Path = user.Path
+		loginResponse.Menu = user.Menu
+	
+		if loginResponse.RufsGroupOwner > 0 {
+			/*
+				const item = OpenApi.getPrimaryKeyForeign(this.openapi, "rufsUser", "rufsGroupOwner", user)
+				return entityManager.findOne("rufsGroupOwner", item.primaryKey).then(rufsGroupOwner => {
+					if (rufsGroupOwner != null) loginResponse.title = rufsGroupOwner.name + " - " + userName;
+					return loginResponse
+				})
+			*/
+		}
+	
+		if list, err := entityManager.Find("rufsGroupUser", map[string]any{"rufsUser": loginResponse.Id}, []string{}); err == nil {
+			for _, item := range list {
+				loginResponse.Groups = append(loginResponse.Groups, int(item["rufsGroup"].(int64)))
+			}
+		} else {
+			return nil, fmt.Errorf("[RufsMicroService.authenticateUser] internal error : %s", err)
+		}
+	*/
+		let login_response = LoginResponse::default();
+	
+		println!("authenticate_user({}, {}, {})", user_name, user_password, remote_addr);
+	
+		Ok(login_response)
 	}
-*/
-	let login_response = LoginResponse::default();
-
-	println!("authenticate_user({}, {}, {})", user_name, user_password, remote_addr);
-
-	Ok(login_response)
+	
 }
 
-fn request_filter<'a>(mut request: tide::Request<MicroServiceServer>) -> std::pin::Pin<Box<dyn std::future::Future<Output = tide::Result> + Send + 'a>> {
+fn request_filter<'a>(mut request: tide::Request<RufsMicroService>) -> std::pin::Pin<Box<dyn std::future::Future<Output = tide::Result> + Send + 'a>> {
 	Box::pin(async move {
 		let found = false;
 
@@ -296,7 +320,7 @@ fn request_filter<'a>(mut request: tide::Request<MicroServiceServer>) -> std::pi
 		};
 
 		let path = request.url().path();
-		let endpoint_login = format!("/{}/login", request.state().api_path);
+		let endpoint_login = format!("/{}/login", request.state().micro_service_server().api_path);
 
 		if path.starts_with(&endpoint_login) {
 			let login_request = request.body_json::<LoginRequest>().await?;
@@ -305,13 +329,13 @@ fn request_filter<'a>(mut request: tide::Request<MicroServiceServer>) -> std::pi
 				println!("Login request is empty");
 			}
 
-			let mut login_response = authenticate_user(login_request.user.clone(),login_request.password.clone(), request.remote().unwrap().to_string().clone()).expect("authenticate_user");
+			let mut login_response = request.state().authenticate_user(login_request.user.clone(),login_request.password.clone(), request.remote().unwrap().to_string().clone()).expect("authenticate_user");
 
 			if login_request.user == "admin".to_string() {
-				login_response.openapi = request.state().openapi.clone();
+				login_response.openapi = request.state().micro_service_server().openapi.clone();
 			} else {
 				//loginResponse.Openapi = rms.openapi.copy(loginResponse.Roles)
-				login_response.openapi = request.state().openapi.clone();
+				login_response.openapi = request.state().micro_service_server().openapi.clone();
 			}
 
 /*
@@ -362,7 +386,7 @@ fn request_filter<'a>(mut request: tide::Request<MicroServiceServer>) -> std::pi
 	})
 }
 
-fn serve_dir<'a>(request: tide::Request<MicroServiceServer>, next: tide::Next<'a, MicroServiceServer>) -> std::pin::Pin<Box<dyn std::future::Future<Output = tide::Result> + Send + 'a>> {
+fn serve_dir<'a>(request: tide::Request<RufsMicroService>, next: tide::Next<'a, RufsMicroService>) -> Pin<Box<dyn std::future::Future<Output = tide::Result> + Send + 'a>> {
 	Box::pin(async {
 		let path = request.url().path()[1..].to_string().clone();
 
@@ -374,7 +398,7 @@ fn serve_dir<'a>(request: tide::Request<MicroServiceServer>, next: tide::Next<'a
 
 		let current_dir = std::env::current_dir().unwrap();
 
-		for folder in &request.state().serve_static_paths {
+		for folder in &request.state().micro_service_server().serve_static_paths {
 			let file = current_dir.join(folder).join(&name);
 
 			if file.exists() {
@@ -394,7 +418,7 @@ fn serve_dir<'a>(request: tide::Request<MicroServiceServer>, next: tide::Next<'a
 
 #[async_std::main]
 async fn main() -> tide::Result<()> {
-	let mut rufs = RufsMicroService::default();
+	let mut rufs: RufsMicroService = RufsMicroService::default();
 	rufs.micro_service_server.port = 8080;
 	rufs.micro_service_server.api_path = "rest".to_string();
 	rufs.micro_service_server.serve_static_paths = vec![std::path::Path::new("../rufs-nfe-es6/webapp").to_path_buf(), std::path::Path::new("../rufs-crud-es6/webapp").to_path_buf(), std::path::Path::new("../rufs-base-es6/webapp").to_path_buf()];
@@ -411,13 +435,13 @@ async fn main() -> tide::Result<()> {
 //		http_server: Option::None
 		//imss: Option::None
 	};*/
-	rufs.micro_service_server.http_server = Option::Some(Box::new(tide::with_state(rufs.micro_service_server.clone())));
-	rufs.micro_service_server.init().await?;
+	rufs.micro_service_server.init()?;
+	rufs.load_file_tables()?;
 	let rest_path = format!("/{}/*", rufs.micro_service_server.api_path);
-	println!("api path : {}", rest_path);
-	rufs.micro_service_server.http_server.as_mut().unwrap().at(&rest_path).all(request_filter);
+	let mut http_server = tide::with_state(rufs);
+	http_server.at(&rest_path).all(request_filter);
 		
-	rufs.micro_service_server.http_server.as_mut().unwrap().at("/websocket").with(tide_websockets::WebSocket::new(|_request, mut stream| async move {
+	http_server.at("/websocket").with(tide_websockets::WebSocket::new(|_request, mut stream| async move {
 		while let Some(Ok(tide_websockets::Message::Text(input))) = async_std::stream::StreamExt::next(&mut stream).await {
 			let output: String = input.chars().rev().collect();
 			//self.imss.OnWsMessageFromClient(connection, string(message));
@@ -430,9 +454,8 @@ async fn main() -> tide::Result<()> {
 		Ok(())
 	}));
 
-	rufs.micro_service_server.http_server.as_mut().unwrap().with(serve_dir);
-	rufs.load_file_tables()?;
-	rufs.micro_service_server.http_server.unwrap().listen("127.0.0.1:8080").await?;
+	http_server.with(serve_dir);
+	http_server.listen("127.0.0.1:8080").await?;
     Ok(())
 }
 /*
