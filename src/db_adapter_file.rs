@@ -1,8 +1,9 @@
 use std::{collections::HashMap, fs};
 
+use serde::{Deserialize, Serialize};
 use tide::Error;
 
-#[derive(Clone, Default, Debug)]
+#[derive(Deserialize, Serialize, Clone, Default, Debug)]
 pub(crate) struct OpenApi{}
 
 #[derive(Clone, Default, Debug)]

@@ -1,17 +1,22 @@
 pub mod db_adapter_file;
 
 use std::collections::HashMap;
-use std::pin::Pin;
 
 use crate::db_adapter_file::OpenApi;
 use crate::db_adapter_file::DbAdapterFile;
+use serde::Deserialize;
+use serde::Serialize;
+use tide::Body;
 use tide::Error;
+use tide::Middleware;
+use tide::Response;
+use tide::http::mime;
 
 
 trait IMicroServiceServer {
 	fn micro_service_server(&self) -> &MicroServiceServer;
 	fn init(&mut self) -> async_std::io::Result<()>;
-	fn authenticate_user(&self, user_name :String, user_password :String, remote_addr :String) -> Result<LoginResponse, tide::Error>;	
+	fn authenticate_user(&self, user_name :String, user_password :String, remote_addr :String) -> tide::Result<LoginResponse>;	
 	//fn load_open_api(&self) -> Result<(), tide::Error>;
 	//fn listen(&self) -> async_std::io::Result<()>;
 	//fn shutdown(&self) -> Result<(), tide::Error>;
@@ -39,6 +44,107 @@ struct MicroServiceServer {
 	//wsServerConnections    : HashMap<String, websocketConn>,
 	//http_server             : Option<Box<tide::Server<MicroServiceServer>>>,
 	//imss                   : Option<&'a dyn IMicroServiceServer> 
+}
+
+#[tide::utils::async_trait]
+impl<State: Clone + Send + Sync + 'static> Middleware<State> for MicroServiceServer {
+    async fn handle(&self, mut request: tide::Request<State>, next: tide::Next<'_, State>) -> tide::Result {
+		if request.method() == tide::http::Method::Options {
+			let acess_control_request_headers = match request.header("Access-Control-Request-Headers") {
+				Some(value) => value.to_string(),
+				None => "".to_string()
+			};
+	
+			let mut response = next.run(request).await;
+			response.insert_header("Access-Control-Allow-Origin", "*");
+			response.insert_header("Access-Control-Allow-Methods", "GET, PUT, OPTIONS, POST, DELETE");
+			response.insert_header("Access-Control-Allow-Headers", acess_control_request_headers);
+			return Ok(response);
+		}
+
+		let path = request.url().path()[1..].to_string();
+
+		if path.starts_with(&self.api_path) == false {
+			let name = if path.ends_with("/") || path.is_empty() {
+				path.clone() + &"index.html".to_string()
+			} else {
+				path.clone()
+			};
+	
+			let current_dir = std::env::current_dir().unwrap();
+	
+			for folder in &self.serve_static_paths {
+				let file = current_dir.join(folder).join(&name);
+	
+				if file.exists() {
+					match tide::Body::from_file(&file).await {
+						Ok(body) => return Ok(tide::Response::builder(tide::StatusCode::Ok).body(body).build()),
+						Err(e)=> return Err(e.into())
+					}
+				} else {
+					println!("[MicroServiceServer.listen().serve_dir()] current_dir = {}, folder = {}, name = {} don't found.", current_dir.to_str().unwrap(), folder.to_str().unwrap(), path);
+				}
+			}
+		
+			return Ok(next.run(request).await)
+		}
+
+		let path = path[self.api_path.len()..].to_string();
+
+		if path == "/login" {
+			let login_request = request.body_json::<LoginRequest>().await?;
+
+			if login_request.user.is_empty() || login_request.password.is_empty() {
+				println!("Login request is empty");
+			}
+
+			let mut login_response = self.authenticate_user(login_request.user.clone(),login_request.password.clone(), request.remote().unwrap().to_string().clone()).unwrap();
+
+			if login_request.user == "admin".to_string() {
+				login_response.openapi = self.openapi.clone();
+			} else {
+				//loginResponse.Openapi = rms.openapi.copy(loginResponse.Roles)
+				login_response.openapi = self.openapi.clone();
+			}
+
+/*
+			token := jwt.New(jwt.SigningMethodHS256)
+			token.Claims = &RufsClaims{&jwt.StandardClaims{ExpiresAt: time.Now().Add(time.Minute * 60 * 8).Unix()}, loginResponse.TokenPayload}
+			jwtSecret := os.Getenv("RUFS_JWT_SECRET")
+
+			if jwtSecret == "" {
+				jwtSecret = "123456"
+			}
+
+			loginResponse.JwtHeader, err = token.SignedString([]byte(jwtSecret))
+		*/
+			let body = Body::from_json(&login_response).unwrap();
+			return Ok(Response::builder(200).content_type(mime::JSON).body(body).build())
+		}
+
+			/*
+			rf, err := RequestFilterInitialize(req, rms)
+	
+			if err != nil {
+				return ResponseBadRequest(fmt.Sprintf("[RufsMicroService.OnRequest] : %s", err))
+			}
+	
+			if access, err := rf.CheckAuthorization(req); err != nil {
+				return ResponseBadRequest(fmt.Sprintf("[RufsMicroService.OnRequest.CheckAuthorization] : %s", err))
+			} else if !access {
+				return ResponseUnauthorized("Explicit Unauthorized")
+			}
+	
+			return rf.ProcessRequest()
+			*/
+
+
+		//ret = self.imss.OnRequest(req);
+		//response.insert_header("Content-Type", ret.ContentType);
+
+        //req.set_ext(RequestCount(count));
+        Ok(next.run(request).await)
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -183,7 +289,7 @@ struct TokenPayload  {
 	Ip string `json:"ip"`
 }
 */
-#[derive(Clone, Default, Debug)]
+#[derive(Deserialize, Serialize, Clone, Default, Debug)]
 struct LoginResponse {
 //	TokenPayload
 //	RufsUserPublic
@@ -301,121 +407,6 @@ impl IMicroServiceServer for RufsMicroService {
 	
 }
 
-fn request_filter<'a>(mut request: tide::Request<RufsMicroService>) -> std::pin::Pin<Box<dyn std::future::Future<Output = tide::Result> + Send + 'a>> {
-	Box::pin(async move {
-		let found = false;
-
-		let acess_control_request_headers = match request.header("Access-Control-Request-Headers") {
-			Some(value) => value.to_string(),
-			None => "".to_string()
-		};
-
-		let method = request.method().clone();
-
-		let mut response = if !found {
-			tide::Response::new(tide::StatusCode::NotFound)
-		} else {
-			tide::Response::new(tide::StatusCode::NotFound)
-//				next.run(request).await
-		};
-
-		let path = request.url().path();
-		let endpoint_login = format!("/{}/login", request.state().micro_service_server().api_path);
-
-		if path.starts_with(&endpoint_login) {
-			let login_request = request.body_json::<LoginRequest>().await?;
-
-			if login_request.user.is_empty() || login_request.password.is_empty() {
-				println!("Login request is empty");
-			}
-
-			let mut login_response = request.state().authenticate_user(login_request.user.clone(),login_request.password.clone(), request.remote().unwrap().to_string().clone()).expect("authenticate_user");
-
-			if login_request.user == "admin".to_string() {
-				login_response.openapi = request.state().micro_service_server().openapi.clone();
-			} else {
-				//loginResponse.Openapi = rms.openapi.copy(loginResponse.Roles)
-				login_response.openapi = request.state().micro_service_server().openapi.clone();
-			}
-
-/*
-			token := jwt.New(jwt.SigningMethodHS256)
-			token.Claims = &RufsClaims{&jwt.StandardClaims{ExpiresAt: time.Now().Add(time.Minute * 60 * 8).Unix()}, loginResponse.TokenPayload}
-			jwtSecret := os.Getenv("RUFS_JWT_SECRET")
-
-			if jwtSecret == "" {
-				jwtSecret = "123456"
-			}
-
-			loginResponse.JwtHeader, err = token.SignedString([]byte(jwtSecret))
-			return ResponseOk(loginResponse)
-		*/
-	//} else {
-			/*
-			rf, err := RequestFilterInitialize(req, rms)
-	
-			if err != nil {
-				return ResponseBadRequest(fmt.Sprintf("[RufsMicroService.OnRequest] : %s", err))
-			}
-	
-			if access, err := rf.CheckAuthorization(req); err != nil {
-				return ResponseBadRequest(fmt.Sprintf("[RufsMicroService.OnRequest.CheckAuthorization] : %s", err))
-			} else if !access {
-				return ResponseUnauthorized("Explicit Unauthorized")
-			}
-	
-			return rf.ProcessRequest()
-			*/
-		}
-
-		response.insert_header("Access-Control-Allow-Origin", "*");
-		response.insert_header("Access-Control-Allow-Methods", "GET, PUT, OPTIONS, POST, DELETE");
-
-		if acess_control_request_headers.is_empty() == false {
-			response.insert_header("Access-Control-Allow-Headers", acess_control_request_headers);
-		}
-
-		if method == tide::http::Method::Options {
-			return Ok(response);
-		}
-
-		//ret = self.imss.OnRequest(req);
-		//response.insert_header("Content-Type", ret.ContentType);
-
-		Ok(response)
-	})
-}
-
-fn serve_dir<'a>(request: tide::Request<RufsMicroService>, next: tide::Next<'a, RufsMicroService>) -> Pin<Box<dyn std::future::Future<Output = tide::Result> + Send + 'a>> {
-	Box::pin(async {
-		let path = request.url().path()[1..].to_string().clone();
-
-		let name = if path.ends_with("/") || path.is_empty() {
-			path.clone() + &"index.html".to_string()
-		} else {
-			path.clone()
-		};
-
-		let current_dir = std::env::current_dir().unwrap();
-
-		for folder in &request.state().micro_service_server().serve_static_paths {
-			let file = current_dir.join(folder).join(&name);
-
-			if file.exists() {
-				match tide::Body::from_file(&file).await {
-					Ok(body) => return Ok(tide::Response::builder(tide::StatusCode::Ok).body(body).build()),
-					Err(e)=> return Err(e.into())
-				}
-			} else {
-				println!("[MicroServiceServer.listen().serve_dir()] current_dir = {}, folder = {}, name = {} don't found.", current_dir.to_str().unwrap(), folder.to_str().unwrap(), path);
-			}
-		}
-	
-		//Ok(tide::Response::new(tide::StatusCode::NotFound))
-		Ok(next.run(request).await)
-	})
-}
-
 #[async_std::main]
 async fn main() -> tide::Result<()> {
 	let mut rufs: RufsMicroService = RufsMicroService::default();
@@ -436,10 +427,8 @@ async fn main() -> tide::Result<()> {
 		//imss: Option::None
 	};*/
 	rufs.micro_service_server.init()?;
-	rufs.load_file_tables()?;
-	let rest_path = format!("/{}/*", rufs.micro_service_server.api_path);
-	let mut http_server = tide::with_state(rufs);
-	http_server.at(&rest_path).all(request_filter);
+	//rufs.load_file_tables()?;
+	let mut http_server = tide::new();
 		
 	http_server.at("/websocket").with(tide_websockets::WebSocket::new(|_request, mut stream| async move {
 		while let Some(Ok(tide_websockets::Message::Text(input))) = async_std::stream::StreamExt::next(&mut stream).await {
@@ -454,7 +443,7 @@ async fn main() -> tide::Result<()> {
 		Ok(())
 	}));
 
-	http_server.with(serve_dir);
+	http_server.with(rufs.micro_service_server);
 	http_server.listen("127.0.0.1:8080").await?;
     Ok(())
 }
@@ -504,7 +493,8 @@ fn load_file_tables(&mut self) -> Result<(), Error> {
 		}
  */	}
 
-	self.db_adapter_file = DbAdapterFile{openapi: self.micro_service_server.openapi.as_ref().unwrap().clone(), tables: HashMap::default()};
+ 	let openapi = self.micro_service_server.openapi.as_ref().unwrap().clone();
+	self.db_adapter_file = DbAdapterFile{openapi, tables: HashMap::default()};
 	//RequestFilterUpdateRufsServices(rms.fileDbAdapter, rms.openapi)
 	let empty_list = serde_json::Value::default();
 	load_table(self, "rufsGroup".to_string(), &empty_list)?;
