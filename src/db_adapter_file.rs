@@ -1,20 +1,21 @@
 use std::{collections::HashMap, fs};
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tide::Error;
 
 #[derive(Deserialize, Serialize, Clone, Default, Debug)]
 pub(crate) struct OpenApi{}
 
 #[derive(Clone, Default, Debug)]
-pub(crate) struct DbAdapterFile  {
-	pub openapi    :OpenApi,
-	pub tables :HashMap<String, serde_json::Value>
+pub(crate) struct DbAdapterFile {
+	//pub openapi    :&'a OpenApi,
+	pub tables :HashMap<String, Value>
 }
 
 impl DbAdapterFile {
 
-    pub fn load(&mut self, name :String, default_rows :&serde_json::Value) -> Result<(), Error> {
+    pub fn load(&mut self, name :String, default_rows :&Value) -> Result<(), Error> {
         /*
         var data []byte
         var list []map[string]any
@@ -34,8 +35,8 @@ impl DbAdapterFile {
 
         fda.fileTables[name] = list
 */
-        let file = fs::File::open("text.json")?;
-        let json: serde_json::Value = serde_json::from_reader(file).unwrap_or(default_rows.clone());
+        let file = fs::File::open(format!("../{}.json", name))?;
+        let json: Value = serde_json::from_reader(file).unwrap_or(default_rows.clone());
         self.tables.insert(name.clone(), json.clone());
         Ok(())
     }

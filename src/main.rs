@@ -12,9 +12,7 @@ use tide::Middleware;
 use tide::Response;
 use tide::http::mime;
 
-
 trait IMicroServiceServer {
-	fn micro_service_server(&self) -> &MicroServiceServer;
 	fn init(&mut self) -> async_std::io::Result<()>;
 	fn authenticate_user(&self, user_name :String, user_password :String, remote_addr :String) -> tide::Result<LoginResponse>;	
 	//fn load_open_api(&self) -> Result<(), tide::Error>;
@@ -29,7 +27,7 @@ struct User {
 //    name: String,
 }
 
-#[derive(Clone, Default, Debug)]
+#[derive(Default)]
 struct MicroServiceServer {
 	//app_name : String,
 	//protocol : String,
@@ -40,10 +38,11 @@ struct MicroServiceServer {
 	//request_body_content_type : String,
 	serve_static_paths : Vec<std::path::PathBuf>,
 	//openapi_file_name : String,
-	openapi                : Option<OpenApi>,
+	openapi                : Option<Box<OpenApi>>,
 	//wsServerConnections    : HashMap<String, websocketConn>,
 	//http_server             : Option<Box<tide::Server<MicroServiceServer>>>,
 	//imss                   : Option<&'a dyn IMicroServiceServer> 
+	imss : Option<Box<dyn IMicroServiceServer + Send + Sync>>
 }
 
 #[tide::utils::async_trait]
@@ -98,7 +97,7 @@ impl<State: Clone + Send + Sync + 'static> Middleware<State> for MicroServiceSer
 				println!("Login request is empty");
 			}
 
-			let mut login_response = self.authenticate_user(login_request.user.clone(),login_request.password.clone(), request.remote().unwrap().to_string().clone()).unwrap();
+			let mut login_response = self.imss.as_ref().unwrap().authenticate_user(login_request.user.clone(),login_request.password.clone(), request.remote().unwrap().to_string().clone()).unwrap();
 
 			if login_request.user == "admin".to_string() {
 				login_response.openapi = self.openapi.clone();
@@ -148,7 +147,7 @@ impl<State: Clone + Send + Sync + 'static> Middleware<State> for MicroServiceSer
 }
 
 #[derive(serde::Deserialize)]
-#[derive(Clone, Default, Debug)]
+#[derive(Default)]
 #[allow(dead_code)]
 struct LoginRequest {user: String, password : String}
 
@@ -159,9 +158,6 @@ impl IMicroServiceServer for MicroServiceServer {
 		return tide::Response::builder(200).content_type(tide::http::mime::JSON).body("OnRequest").build()
 	}
 */
-	fn micro_service_server(&self) -> &MicroServiceServer {
-		self
-	}
 
 	fn authenticate_user(&self, user_name :String, user_password :String, remote_addr :String) -> Result<LoginResponse, tide::Error> {
 		println!("[authenticate_user({}, {}, {})]", user_name, user_password, remote_addr);
@@ -289,13 +285,13 @@ struct TokenPayload  {
 	Ip string `json:"ip"`
 }
 */
-#[derive(Deserialize, Serialize, Clone, Default, Debug)]
+#[derive(Deserialize, Serialize, Default)]
 struct LoginResponse {
 //	TokenPayload
 //	RufsUserPublic
 	//jwt_header :String,
 	//title     :String,
-	openapi                : Option<OpenApi>,
+	openapi                : Option<Box<OpenApi>>,
 }
 /*
 struct RufsClaims  {
@@ -321,8 +317,8 @@ type IRufsMicroService interface {
 }
 */
 	
-#[derive(Clone, Default, Debug)]
-struct RufsMicroService  {
+#[derive(Default)]
+struct RufsMicroService {
 	micro_service_server : MicroServiceServer,
 	/*
 	dbConfig                  *DbConfig
@@ -332,21 +328,15 @@ struct RufsMicroService  {
 	wsServerConnectionsTokens map[string]*RufsClaims
 	entityManager EntityManager
 	*/
-	db_adapter_file :DbAdapterFile
+	db_adapter_file : Option<Box<DbAdapterFile>>
 }
 
 impl IMicroServiceServer for RufsMicroService {
-	fn micro_service_server(&self) -> &MicroServiceServer {
-		&self.micro_service_server
-	}
-	
 	fn init(&mut self) -> async_std::io::Result<()> {
 		Ok(())
 	}
 
 	fn authenticate_user(&self, user_name :String, user_password :String, remote_addr :String) -> Result<LoginResponse, tide::Error> {
-		let mut db_file = db_adapter_file::DbAdapterFile::default();
-		db_file.openapi = OpenApi::default();
 	/*
 		let entityManager = if rms.fileDbAdapter.fileTables["rufsUser"].exists {
 			entityManager = rms.fileDbAdapter
@@ -409,25 +399,15 @@ impl IMicroServiceServer for RufsMicroService {
 
 #[async_std::main]
 async fn main() -> tide::Result<()> {
-	let mut rufs: RufsMicroService = RufsMicroService::default();
-	rufs.micro_service_server.port = 8080;
-	rufs.micro_service_server.api_path = "rest".to_string();
+	let openapi = Box::new(OpenApi::default());
+	let db_adapter_file = Box::new(DbAdapterFile{tables: HashMap::new()});
+	let mut rufs = Box::new(RufsMicroService::default());
+	rufs.db_adapter_file = Some(db_adapter_file.clone());
+	rufs.micro_service_server.openapi = Some(openapi.clone());
 	rufs.micro_service_server.serve_static_paths = vec![std::path::Path::new("../rufs-nfe-es6/webapp").to_path_buf(), std::path::Path::new("../rufs-crud-es6/webapp").to_path_buf(), std::path::Path::new("../rufs-base-es6/webapp").to_path_buf()];
-/*    let mut server = MicroServiceServer{
-		//app_name: "".to_string(),
-		//protocol: "".into(),
-		port: 8080,
-		//addr: "127.0.0.1".to_string(),
-		api_path: "api".to_string(),
-		//security: "".into(),
-		//request_body_content_type: "".into(),
-		serve_static_paths: paths,
-		//openapi_file_name: "".into(),
-//		http_server: Option::None
-		//imss: Option::None
-	};*/
 	rufs.micro_service_server.init()?;
-	//rufs.load_file_tables()?;
+	rufs.load_file_tables()?;
+	//rufs.micro_service_server.imss = Some(rufs);
 	let mut http_server = tide::new();
 		
 	http_server.at("/websocket").with(tide_websockets::WebSocket::new(|_request, mut stream| async move {
@@ -480,21 +460,13 @@ impl RufsMicroService {
 
 fn load_file_tables(&mut self) -> Result<(), Error> {
 	fn load_table(rms :&mut RufsMicroService, name :String, default_rows :&serde_json::Value) -> Result<(), Error> {
-		if rms.db_adapter_file.tables.contains_key(&name) {
+		if rms.db_adapter_file.as_ref().unwrap().tables.contains_key(&name) {
 			return Ok(());
 		}
 
-		rms.db_adapter_file.load(name, default_rows)
+		rms.db_adapter_file.as_mut().unwrap().load(name, default_rows)
 	}
 
-	if self.micro_service_server.openapi.is_none() {
-/* 		if err := rms.Imss.LoadOpenApi(); err != nil {
-			return err
-		}
- */	}
-
- 	let openapi = self.micro_service_server.openapi.as_ref().unwrap().clone();
-	self.db_adapter_file = DbAdapterFile{openapi, tables: HashMap::default()};
 	//RequestFilterUpdateRufsServices(rms.fileDbAdapter, rms.openapi)
 	let empty_list = serde_json::Value::default();
 	load_table(self, "rufsGroup".to_string(), &empty_list)?;
