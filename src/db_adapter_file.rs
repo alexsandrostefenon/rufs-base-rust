@@ -1,21 +1,16 @@
-use std::{collections::HashMap, fs, io::Error, sync::{RwLock, LockResult, RwLockReadGuard, RwLockWriteGuard}};
-use once_cell::sync::Lazy;
+use std::{collections::HashMap, fs, io::Error, sync::{RwLock, LockResult, RwLockReadGuard, RwLockWriteGuard, Arc}};
 use serde_json::Value;
 use crate::entity_manager::EntityManager;
 
-static TABLES : Lazy<RwLock<HashMap<String, Value>>> = Lazy::new(|| {
-    RwLock::new(HashMap::new())
-});
-
-#[derive(Default, Debug)]
+#[derive(Debug, Clone, Default)]
 pub struct DbAdapterFile {
     //pub openapi    :&'a OpenApi,
-    tables: RwLock<HashMap<String, Value>>
+    tables: Arc<RwLock<HashMap<String, Value>>>
 }
 
 impl DbAdapterFile {
     pub fn have_table(&self, name: &str) -> bool {
-        TABLES.read().unwrap().get(name).is_some()
+        self.tables.read().unwrap().get(name).is_some()
     }
 
     pub fn load(&mut self, name: &str, default_rows: &Value) -> Result<(), Error> {
@@ -50,12 +45,12 @@ impl DbAdapterFile {
                 value
             }
         };
-        TABLES.write().unwrap().insert(name.to_string(), json);
+        self.tables.write().unwrap().insert(name.to_string(), json);
         Ok(())
     }
 
     fn store(&self, name :&str) -> Result<(), Error> {
-        let tables: LockResult<RwLockReadGuard<HashMap<String, Value>>> = TABLES.read();
+        let tables: LockResult<RwLockReadGuard<HashMap<String, Value>>> = self.tables.read();
         let tables: RwLockReadGuard<HashMap<String, Value>> = tables.unwrap();
         let list = tables.get(name).unwrap();
         let path = format!("{}.json", name);
@@ -107,7 +102,7 @@ impl EntityManager for DbAdapterFile {
 
     fn find(self: &Self, table: &str, key: &Value, order_by: &Vec<String>) -> Value {
         println!("[DbAdapterFile.find({}, {})] : {:?}", table, key, order_by);
-        TABLES.read().unwrap().get(table).unwrap().clone()
+        self.tables.read().unwrap().get(table).unwrap().clone()
     }
     /*
     func (fileDbAdapter *FileDbAdapter) FindOne(tableName string, key map[string]any) (map[string]any, error) {
@@ -139,13 +134,13 @@ impl EntityManager for DbAdapterFile {
     }
 
     fn update<'a>(&self, table_name :&str, key :&Value, obj :&'a Value) -> Result<&'a Value, Error> {
-        let tables: LockResult<RwLockReadGuard<HashMap<String, Value>>> = TABLES.read();
+        let tables: LockResult<RwLockReadGuard<HashMap<String, Value>>> = self.tables.read();
         let tables: RwLockReadGuard<HashMap<String, Value>> = tables.unwrap();
         let list = tables.get(table_name).unwrap().as_array().unwrap();
         //let list = TABLES.write().unwrap().get_mut(table_name).unwrap().as_array_mut().unwrap();
 
         if let Some(pos) = crate::data_store::Filter::find_index(list, key) {
-            let tables: LockResult<RwLockWriteGuard<HashMap<String, Value>>> = TABLES.write();
+            let tables: LockResult<RwLockWriteGuard<HashMap<String, Value>>> = self.tables.write();
             let mut tables: RwLockWriteGuard<HashMap<String, Value>> = tables.unwrap();
             let list = tables.get_mut(table_name).unwrap().as_array_mut().unwrap();
             list.insert(pos, obj.clone());

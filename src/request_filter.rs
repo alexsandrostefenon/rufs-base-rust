@@ -31,13 +31,13 @@ pub struct RequestFilter<'a> {
 }
 
 impl RequestFilter<'_> {
-    pub async fn new<'a, State>(req: &mut Request<State>, rms: &'a RufsMicroService) -> Result<RequestFilter<'a>, tide::Error> {
+    pub async fn new<'a, State>(req: &Request<State>, rms: &'a RufsMicroService, obj_in: Value) -> Result<RequestFilter<'a>, tide::Error> {
         let mut rf = RequestFilter { ..Default::default() };
         rf.micro_service = Some(rms);
         rf.method = req.method().to_string().to_lowercase();
 
         if rf.method == "post" || rf.method == "put" || rf.method == "patch" {
-            rf.obj_in = req.body_json::<Value>().await?;
+            rf.obj_in = obj_in;
         }
 
         if req.url().query().is_some() {
@@ -399,10 +399,13 @@ impl RequestFilter<'_> {
         let obj_rufs_group_owner = openapi.get_primary_key_foreign(&self.schema_name, "rufsGroupOwner", obj).unwrap();
         let rufs_group = openapi.get_primary_key_foreign(&self.schema_name, "rufsGroup", obj).unwrap();
         println!("[RequestFilter.notify] broadcasting {:?} ...", msg);
+        let map = micro_service.ws_server_connections.read().unwrap();
 
-        for (token_string, ws_server_connection) in &micro_service.ws_server_connections {
+        for (token_string, ws_server_connection) in map.iter() {
             // enviar somente para os clients de "rufsGroupOwner"
-            let token_data = micro_service.ws_server_connections_tokens.get(token_string).unwrap();
+            let key = &token_string.clone();
+            let map = micro_service.ws_server_connections_tokens.read().unwrap();
+            let token_data = map.get(key).unwrap();
             let mut check_rufs_group_owner = obj_rufs_group_owner.is_none();
 
             if check_rufs_group_owner == false {

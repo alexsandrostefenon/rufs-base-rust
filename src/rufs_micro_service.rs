@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fs, path::Path};
+use std::{collections::HashMap, fs, path::Path, sync::{RwLock, Arc}};
 
 use async_std::path::PathBuf;
 use jsonwebtoken::{encode, EncodingKey, Header};
@@ -6,16 +6,15 @@ use openapiv3::{OpenAPI, SecurityRequirement};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tide::{http::mime, Body, Error, Middleware, Response, StatusCode};
+use tide::{Error, StatusCode};
 use tide_websockets::WebSocketConnection;
 
 use crate::{
     db_adapter_file::DbAdapterFile,
     db_adapter_postgres::DbAdapterPostgres,
     entity_manager::EntityManager,
-    micro_service_server::{IMicroServiceServer, LoginRequest, MicroServiceServer},
+    micro_service_server::{IMicroServiceServer, MicroServiceServer},
     openapi::{FillOpenAPIOptions, RufsOpenAPI},
-    request_filter::RequestFilter,
 };
 
 #[derive(Deserialize, Serialize, Default)]
@@ -111,7 +110,7 @@ type IRufsMicroService interface {
     LoadFileTables() error
 }
 */
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct RufsMicroService {
     pub micro_service_server: MicroServiceServer,
     /*
@@ -124,92 +123,8 @@ pub struct RufsMicroService {
     */
     pub entity_manager: DbAdapterPostgres,
     pub db_adapter_file: DbAdapterFile,
-    pub ws_server_connections : HashMap<String, WebSocketConnection>,
-    pub ws_server_connections_tokens : HashMap<String, Claims>,
-}
-
-//type MicroServiceServerType = Option<Arc<Mutex<Box<dyn IMicroServiceServer + Send + Sync + 'static>>>>;
-
-#[tide::utils::async_trait]
-impl<State: Clone + Send + Sync + 'static> Middleware<State> for RufsMicroService {
-    async fn handle(&self, mut request: tide::Request<State>, next: tide::Next<'_, State>) -> tide::Result {
-        if request.method() == tide::http::Method::Options {
-            let acess_control_request_headers = match request.header("Access-Control-Request-Headers") {
-                Some(value) => value.to_string(),
-                None => "".to_string(),
-            };
-
-            let mut response = next.run(request).await;
-            response.insert_header("Access-Control-Allow-Origin", "*");
-            response.insert_header("Access-Control-Allow-Methods", "GET, PUT, OPTIONS, POST, DELETE");
-            response.insert_header("Access-Control-Allow-Headers", acess_control_request_headers);
-            return Ok(response);
-        }
-
-        let path = request.url().path()[1..].to_string();
-
-        if path.starts_with(&self.micro_service_server.api_path) == false {
-            let name = if path.ends_with("/") || path.is_empty() {
-                path.clone() + &"index.html".to_string()
-            } else {
-                path.clone()
-            };
-
-            let current_dir = std::env::current_dir().unwrap();
-
-            for folder in &self.micro_service_server.serve_static_paths {
-                let file = current_dir.join(folder).join(&name);
-
-                if file.exists() {
-                    match tide::Body::from_file(&file).await {
-                        Ok(body) => return Ok(tide::Response::builder(tide::StatusCode::Ok).body(body).build()),
-                        Err(e) => return Err(e.into()),
-                    }
-                } else {
-                    //println!("[MicroServiceServer.listen().serve_dir()] current_dir = {}, folder = {}, name = {} don't found.", current_dir.to_str().unwrap(), folder.to_str().unwrap(), path);
-                }
-            }
-
-            return Ok(next.run(request).await);
-        }
-
-        let path = path[self.micro_service_server.api_path.len()..].to_string();
-
-        if path == "/login" {
-            let login_request = request.body_json::<LoginRequest>().await?;
-
-            if login_request.user.is_empty() || login_request.password.is_empty() {
-                println!("Login request is empty");
-            }
-
-            let login_response = match self.authenticate_user(login_request.user.clone(), login_request.password.clone(), request.remote().unwrap().to_string().clone()) {
-                Ok(login_response) => login_response,
-                Err(error) => {
-                    println!("[RufsMicroService.handle.login.authenticate_user] : {}", error);
-                    return Err(error.into());
-                }
-            };
-
-            let body = Body::from_json(&login_response).unwrap();
-            return Ok(Response::builder(200).content_type(mime::JSON).body(body).build());
-        }
-
-        let mut rf = RequestFilter::new(&mut request, self).await.unwrap();
-
-        let mut response = match rf.check_authorization(&request) {
-            Ok(true) => rf.process_request(),
-            Ok(false) => Response::builder(StatusCode::Unauthorized).build(),
-            Err(err) => tide::Response::builder(StatusCode::BadRequest)
-                .body(format!("[RufsMicroService.OnRequest.CheckAuthorization] : {}", err))
-                .build(),
-        };
-
-        if response.status() == StatusCode::NotFound {
-            response = next.run(request).await;
-        }
-
-        Ok(response)
-    }
+    pub ws_server_connections : Arc<RwLock<HashMap<String, WebSocketConnection>>>,
+    pub ws_server_connections_tokens : Arc<RwLock<HashMap<String, Claims>>>,
 }
 
 /*

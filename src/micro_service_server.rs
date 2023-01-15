@@ -21,6 +21,7 @@ pub trait IMicroServiceServer {
     //fn OnWsMessageFromClient(connection : websocketConn, tokenString : String);
 }
 
+#[derive(Clone)]
 pub struct MicroServiceServer {
     pub app_name: String,
     //protocol : String,
