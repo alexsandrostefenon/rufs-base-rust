@@ -31,18 +31,16 @@ pub struct RequestFilter<'a> {
 }
 
 impl RequestFilter<'_> {
-    pub async fn new<'a, State>(req: &Request<State>, rms: &'a RufsMicroService, obj_in: Value) -> Result<RequestFilter<'a>, tide::Error> {
+    pub async fn new<'a, State>(req: &Request<State>, rms: &'a RufsMicroService, method: &str, obj_in: Value) -> Result<RequestFilter<'a>, tide::Error> {
         let mut rf = RequestFilter { ..Default::default() };
         rf.micro_service = Some(rms);
-        rf.method = req.method().to_string().to_lowercase();
-
-        if rf.method == "post" || rf.method == "put" || rf.method == "patch" {
-            rf.obj_in = obj_in;
-        }
+        rf.method = method.to_string();
+        rf.obj_in = obj_in;
 
         if req.url().query().is_some() {
             let query = req.url().query().unwrap();
             rf.parameters = queryst::parse(query).unwrap();
+            println!("[RequestFilter.new()] rf.parameters = {}", rf.parameters.to_string());
         }
 
         let mut uri_path = req.url().path();
@@ -206,6 +204,7 @@ impl RequestFilter<'_> {
     fn parse_query_parameters(&self) -> Result<Value, Error> {
         let schema = self.micro_service.unwrap().micro_service_server.openapi.get_schema_from_parameters(&self.path, &self.method).unwrap();
         let obj = self.micro_service.as_ref().unwrap().micro_service_server.openapi.copy_fields(schema, &self.parameters, false, false, false).unwrap();
+        print!("[openapi.parse_query_parameters()] : {}", obj.to_string());
         Ok(obj)
     }
 

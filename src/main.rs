@@ -46,29 +46,28 @@ fn handle<'a>(
         let path = request.url().path()[1..].to_string();
         let rufs = request.state();
 
-        if path.starts_with(&rufs.micro_service_server.api_path) == false {
-            let name = if path.ends_with("/") || path.is_empty() {
-                path.clone() + &"index.html".to_string()
-            } else {
-                path.clone()
-            };
+        let name = if path.ends_with("/") || path.is_empty() {
+            path.clone() + &"index.html".to_string()
+        } else {
+            path.clone()
+        };
 
-            let current_dir = std::env::current_dir().unwrap();
+        let current_dir = std::env::current_dir().unwrap();
 
-            for folder in &rufs.micro_service_server.serve_static_paths {
-                let file = current_dir.join(folder).join(&name);
+        for folder in &rufs.micro_service_server.serve_static_paths {
+            let file = current_dir.join(folder).join(&name);
 
-                if file.exists() {
-                    match tide::Body::from_file(&file).await {
-                        Ok(body) => return Ok(Response::builder(StatusCode::Ok).body(body).build()),
-                        Err(e) => return Err(e.into()),
-                    }
-                } else {
-                    //println!("[MicroServiceServer.listen().serve_dir()] current_dir = {}, folder = {}, name = {} don't found.", current_dir.to_str().unwrap(), folder.to_str().unwrap(), path);
+            if file.exists() {
+                match tide::Body::from_file(&file).await {
+                    Ok(body) => return Ok(Response::builder(StatusCode::Ok).body(body).build()),
+                    Err(e) => return Err(e.into()),
                 }
+            } else {
+                //println!("[MicroServiceServer.listen().serve_dir()] current_dir = {}, folder = {}, name = {} don't found.", current_dir.to_str().unwrap(), folder.to_str().unwrap(), path);
             }
         }
 
+        println!("[handle({}, {})]...", request.url().to_string(), request.method());
         return Ok(next.run(request).await);
     })
 }
@@ -93,9 +92,16 @@ async fn handle_login(mut request: Request<RufsMicroService>) -> tide::Result {
 }
 
 async fn handle_api(mut request: Request<RufsMicroService>) -> tide::Result {
-    let obj_in = request.body_json::<Value>().await?;
+    let method = request.method().to_string().to_lowercase();
+
+    let obj_in = if method == "post" || method == "put" || method == "patch" {
+        request.body_json::<Value>().await?
+    } else {
+        Value::Null
+    };
+
     let rufs = request.state();
-    let mut rf = RequestFilter::new(&request, rufs, obj_in).await.unwrap();
+    let mut rf = RequestFilter::new(&request, rufs, &method, obj_in).await.unwrap();
 
     let response = match rf.check_authorization(&request) {
         Ok(true) => rf.process_request(),
@@ -121,22 +127,20 @@ async fn main() -> tide::Result<()> {
     let listen = format!("127.0.0.1:{}", rufs.micro_service_server.port);
     let mut app = tide::with_state(rufs);
 
-    app.at(&format!("/{}/login", &api_path)).post(handle_login);
-    app.at(&api_path).all(handle_api);
-
     app.at("/websocket").with(tide_websockets::WebSocket::new(|request, mut stream| async move {
         while let Some(Ok(tide_websockets::Message::Text(input))) = async_std::stream::StreamExt::next(&mut stream).await {
             let token: String = input.chars().rev().collect();
-            let x = stream.clone();
+            let wsc = stream.clone();
             let rufs :&RufsMicroService= request.state();
-            rufs.ws_server_connections.write().unwrap().insert(token, x);
+            rufs.ws_server_connections.write().unwrap().insert(token, wsc);
         }
 
         Ok(())
     }));
 
+    app.at(&format!("/{}/login", &api_path)).post(handle_login);
+    app.at(&format!("/{}/*", &api_path)).all(handle_api);
     app.with(handle);
-
     app.listen(listen).await?;
     Ok(())
 }

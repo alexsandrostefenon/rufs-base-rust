@@ -280,6 +280,7 @@ fn copy_value(&self, schema: &Schema, field_name:&String, field: &Schema, value 
             Type::Object(object_type) => object_type.required.contains(field_name),
             _ => todo!(),
         },
+        SchemaKind::Any(any) => any.required.contains(field_name),
         _ => todo!(),
     };
 
@@ -331,39 +332,46 @@ fn copy_value(&self, schema: &Schema, field_name:&String, field: &Schema, value 
 }
 
 fn get_value_from_schema<'a>(&'a self, schema :&Schema, property_name :&str, obj: &'a Value) -> Option<&Value> {
-    if let SchemaKind::Type(kind) = &schema.schema_kind {
-        if let Type::Object(object_type) = kind {
-            if let Some(property) = object_type.properties.get(property_name) {
-                if let ReferenceOr::Item(property) = property {
-                    if let Some(value) = obj.get(property_name) {
-                        return Some(value);
-                    }
-                    
-                    if let Some(internal_name) = property.schema_data.extensions.get("x-internalName") {
-                        if let Value::String(internal_name) = internal_name {
-                            if let Some(value) = obj.get(internal_name) {
-                                return Some(value);
-                            }
-                        }
-                    }
+    fn process<'a>(properties: &IndexMap<String, ReferenceOr<Box<Schema>>>, property_name :&str, obj: &'a Value) -> Option<&'a Value> {
+        if let Some(property) = properties.get(property_name) {
+            if let ReferenceOr::Item(property) = property {
+                if let Some(value) = obj.get(property_name) {
+                    return Some(value);
                 }
-            }
-
-            for (field_name, property) in &object_type.properties {
-                if let ReferenceOr::Item(property) = property {
-                    if let Some(internal_name) = property.schema_data.extensions.get("x-internalName") {
-                        if let Value::String(internal_name) = internal_name {
-                            if internal_name == property_name {
-                                return obj.get(field_name);
-                            }
+                
+                if let Some(internal_name) = property.schema_data.extensions.get("x-internalName") {
+                    if let Value::String(internal_name) = internal_name {
+                        if let Some(value) = obj.get(internal_name) {
+                            return Some(value);
                         }
                     }
                 }
             }
         }
+
+        for (field_name, property) in properties {
+            if let ReferenceOr::Item(property) = property {
+                if let Some(internal_name) = property.schema_data.extensions.get("x-internalName") {
+                    if let Value::String(internal_name) = internal_name {
+                        if internal_name == property_name {
+                            return obj.get(field_name);
+                        }
+                    }
+                }
+            }
+        }
+
+        None
     }
 
-    None
+    match &schema.schema_kind {
+        SchemaKind::Type(tip) => match tip {
+            Type::Object(object_type) => process(&object_type.properties, property_name, obj),
+            _ => todo!(),
+        },
+        SchemaKind::Any(any) => process(&any.properties, property_name, obj),
+        _ => todo!(),
+    }
 }
 
 fn copy_fields(&self, schema: &Schema, data_in: &Value, ignorenil: bool, ignore_hiden: bool, only_primary_keys: bool) -> Result<Value, Error> {
