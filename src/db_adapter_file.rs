@@ -49,10 +49,7 @@ impl DbAdapterFile {
         Ok(())
     }
 
-    fn store(&self, name :&str) -> Result<(), Error> {
-        let tables: LockResult<RwLockReadGuard<HashMap<String, Value>>> = self.tables.read();
-        let tables: RwLockReadGuard<HashMap<String, Value>> = tables.unwrap();
-        let list = tables.get(name).unwrap();
+    fn store(&self, name :&str, list: &Value) -> Result<(), Error> {
         let path = format!("{}.json", name);
         let contents = serde_json::to_string_pretty(list)?;
         std::fs::write(path, contents)?;
@@ -134,17 +131,16 @@ impl EntityManager for DbAdapterFile {
     }
 
     fn update<'a>(&self, table_name :&str, key :&Value, obj :&'a Value) -> Result<&'a Value, Error> {
-        let tables: LockResult<RwLockReadGuard<HashMap<String, Value>>> = self.tables.read();
-        let tables: RwLockReadGuard<HashMap<String, Value>> = tables.unwrap();
+        let tables: LockResult<RwLockWriteGuard<HashMap<String, Value>>> = self.tables.write();
+        let mut tables: RwLockWriteGuard<HashMap<String, Value>> = tables.unwrap();
         let list = tables.get(table_name).unwrap().as_array().unwrap();
         //let list = TABLES.write().unwrap().get_mut(table_name).unwrap().as_array_mut().unwrap();
 
         if let Some(pos) = crate::data_store::Filter::find_index(list, key) {
-            let tables: LockResult<RwLockWriteGuard<HashMap<String, Value>>> = self.tables.write();
-            let mut tables: RwLockWriteGuard<HashMap<String, Value>> = tables.unwrap();
-            let list = tables.get_mut(table_name).unwrap().as_array_mut().unwrap();
+            let json_array = tables.get_mut(table_name).unwrap();
+            let list = json_array.as_array_mut().unwrap();
             list.insert(pos, obj.clone());
-            self.store(table_name)?;
+            self.store(table_name, json_array)?;
             return Ok(obj);
         }
 

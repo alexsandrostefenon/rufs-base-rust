@@ -204,7 +204,7 @@ impl RequestFilter<'_> {
     fn parse_query_parameters(&self) -> Result<Value, Error> {
         let schema = self.micro_service.unwrap().micro_service_server.openapi.get_schema_from_parameters(&self.path, &self.method).unwrap();
         let obj = self.micro_service.as_ref().unwrap().micro_service_server.openapi.copy_fields(schema, &self.parameters, false, false, false).unwrap();
-        print!("[openapi.parse_query_parameters()] : {}", obj.to_string());
+        println!("[openapi.parse_query_parameters()] : {}", obj.to_string());
         Ok(obj)
     }
 

@@ -795,7 +795,10 @@ fn copy_fields(&self, schema: &Schema, data_in: &Value, ignorenil: bool, ignore_
                         return Some(schema)
 //                    }
                 },
-                _ => todo!(),
+                ReferenceOr::Reference { reference } => match self.get_schema_from_ref(reference) {
+                    Ok(schema) => return Some(schema),
+                    Err(_) => return None,
+                },
             }
         }
 
@@ -1071,9 +1074,15 @@ fn copy_fields(&self, schema: &Schema, data_in: &Value, ignorenil: bool, ignore_
     }
 
     fn get_property_from_schema<'a>(&'a self, schema :&'a Schema, property_name :&'a str) -> Option<&'a Schema> {
-        fn process<'b>(properties: &'b IndexMap<String, ReferenceOr<Box<Schema>>>, property_name :&'b str) -> Option<&'b Schema> {
+        fn process<'b>(openapi: &'b OpenAPI, properties: &'b IndexMap<String, ReferenceOr<Box<Schema>>>, property_name :&'b str) -> Option<&'b Schema> {
             if let Some(value) = properties.get(property_name) {
-                return Some(value.as_item().unwrap().as_ref());
+                match value {
+                    ReferenceOr::Item(item) => return Some(item),
+                    ReferenceOr::Reference { reference } => match openapi.get_schema_from_ref(reference) {
+                        Ok(schema) => return Some(schema),
+                        Err(_) => todo!(),
+                    },
+                }
             }
     
             for (_, field) in properties {
@@ -1094,10 +1103,10 @@ fn copy_fields(&self, schema: &Schema, data_in: &Value, ignorenil: bool, ignore_
 
         match &schema.schema_kind {
             SchemaKind::Type(typ) => match typ {
-                Type::Object(object) => return process(&object.properties, property_name),
+                Type::Object(object) => return process(self, &object.properties, property_name),
                 _ => None,
             },
-            SchemaKind::Any(any) => return process(&any.properties, property_name),
+            SchemaKind::Any(any) => return process(self, &any.properties, property_name),
             _ => None,
         }
     }
@@ -1182,12 +1191,14 @@ fn copy_fields(&self, schema: &Schema, data_in: &Value, ignorenil: bool, ignore_
         let field = self.get_property(schema, field_name);
 
         if field.is_none() {
-            return Err(Error::new(std::io::ErrorKind::NotFound, format!("Don't found field {}", field_name).as_str()));
+            println!("[openapi.get_foreign_key_description({}, {})] trace : missing property in schema", schema, field_name);
+            return Ok(None);
         }
 
         let xref = field.unwrap().schema_data.extensions.get("$ref");
 
         if xref.is_none() {
+            println!("[openapi.get_foreign_key_description({}, {})] : trace : missing $ref \n{:?}", schema, field_name, field);
             return Ok(None);
         }
 
