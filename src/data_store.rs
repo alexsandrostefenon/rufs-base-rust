@@ -90,20 +90,7 @@ impl Filter {
     }
 
     pub fn find<'a>(list: &'a Vec<Value>, filter: &'a Value) -> Vec<&'a Value> {
-        let list_out: Vec<&Value> = list.into_iter().filter(|item| Self::check_match_exact(*item, filter)).collect();
-        /*
-                if filter.as_object().unwrap().is_empty() {
-                    return list.clone();
-                }
-
-                let list_out = Vec::<Value>::new();
-
-                for item in list.iter() {
-                    if Self::check_match_exact(item, filter) {
-                        list_out.push(item.clone());
-                    }
-                }
-        */
+        let list_out = list.into_iter().filter(|item| Self::check_match_exact(*item, filter)).collect();
         list_out
     }
 
