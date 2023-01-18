@@ -1,11 +1,12 @@
 use std::{pin::Pin, future::Future};
 
+use jsonwebtoken::{decode, DecodingKey, Validation};
 use micro_service_server::LoginRequest;
 use request_filter::RequestFilter;
 use serde_json::Value;
 use tide::{Request, Response, Result, Next, StatusCode, Body};
 
-use crate::{micro_service_server::IMicroServiceServer, rufs_micro_service::{RufsMicroService}};
+use crate::{micro_service_server::IMicroServiceServer, rufs_micro_service::{RufsMicroService, Claims}};
 
 pub mod data_store;
 pub mod db_adapter_file;
@@ -127,12 +128,14 @@ async fn main() -> tide::Result<()> {
     let listen = format!("127.0.0.1:{}", rufs.micro_service_server.port);
     let mut app = tide::with_state(rufs);
 
-    app.at("/websocket").with(tide_websockets::WebSocket::new(|request, mut stream| async move {
-        while let Some(Ok(tide_websockets::Message::Text(input))) = async_std::stream::StreamExt::next(&mut stream).await {
-            let token: String = input.chars().rev().collect();
+    app.at("/websocket").get(tide_websockets::WebSocket::new(|request, mut stream| async move {
+        while let Some(Ok(tide_websockets::Message::Text(token))) = async_std::stream::StreamExt::next(&mut stream).await {
             let wsc = stream.clone();
             let rufs :&RufsMicroService= request.state();
-            rufs.ws_server_connections.write().unwrap().insert(token, wsc);
+            rufs.ws_server_connections.write().unwrap().insert(token.clone(), wsc);
+            let secret = std::env::var("RUFS_JWT_SECRET").unwrap_or("123456".to_string());
+            let token_data = decode::<Claims>(&token, &DecodingKey::from_secret(secret.as_ref()), &Validation::default())?;
+            rufs.ws_server_connections_tokens.write().unwrap().insert(token, token_data.claims);
         }
 
         Ok(())

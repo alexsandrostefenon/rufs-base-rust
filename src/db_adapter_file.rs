@@ -1,10 +1,12 @@
+use openapiv3::OpenAPI;
 use std::{collections::HashMap, fs, io::Error, sync::{RwLock, LockResult, RwLockReadGuard, RwLockWriteGuard, Arc}};
-use serde_json::Value;
+use serde_json::{Value, Number};
 use crate::entity_manager::EntityManager;
+use crate::openapi::RufsOpenAPI;
 
 #[derive(Debug, Clone, Default)]
 pub struct DbAdapterFile {
-    //pub openapi    :&'a OpenApi,
+    //pub openapi    : Option<&'a OpenAPI>,
     tables: Arc<RwLock<HashMap<String, Value>>>
 }
 
@@ -57,70 +59,50 @@ impl DbAdapterFile {
     }
 }
 
-/*
-func (fileDbAdapter *FileDbAdapter) Insert(tableName string, obj map[string]any) (map[string]any, error) {
-    list, ok := fileDbAdapter.fileTables[tableName]
-
-    if !ok {
-        return nil, fmt.Errorf("[FileDbAdapter.Update(name = %s)] : don't find table", tableName)
-    }
-
-    if fileDbAdapter.openapi.Components.Schemas[tableName].Properties["id"] != nil {
-        id := 0
-
-        for _, item := range list {
-            buffer, err := json.Marshal(item)
-            itemMap := map[string]any{}
-            json.Unmarshal(buffer, &itemMap)
-
-            if value, ok := itemMap["id"]; ok && int(value.(float64)) > id {
-                id = int(value.(float64))
-            }
-        }
-
-        obj["id"] = id + 1
-    }
-
-    list = append(list, obj)
-    fileDbAdapter.store(tableName, list)
-    return obj, nil
-}
-*/
 impl EntityManager for DbAdapterFile {
-    /*
-        fn find(&self, table_name :String, fields map[string]any, orderBy []string) ([]map[string]any, error) {
-            if list, ok := fileDbAdapter.fileTables[tableName]; ok {
-                return FilterFind(list, fields)
+    fn insert(&self, table_name :&str, mut obj: &Value) -> Result<Value, Error> {
+        let tables: LockResult<RwLockWriteGuard<HashMap<String, Value>>> = self.tables.write();
+        let mut tables: RwLockWriteGuard<HashMap<String, Value>> = tables.unwrap();
+        let list = tables.get(table_name).unwrap().as_array().unwrap();
+/*
+        if let Some(openapi) = self.openapi {
+            if let Some(_field) = openapi.get_property(table_name, "id") {
+                let mut id = 0;
+        
+                for item in list {
+                    if let Some(value) = item["id"].as_u64() {
+                        if value > id {
+                            id = value;
+                        }
+                    }
+                }
+    
+                obj["id"] = Value::Number(Number::from(id + 1));
             }
-
-            return nil, fmt.Errorf("Don't find")
         }
-    */
+*/
+        let json_array = tables.get_mut(table_name).unwrap();
+        let list = json_array.as_array_mut().unwrap();
+        list.push(obj.clone());
+        self.store(table_name, json_array)?;
+        return Ok(obj.clone());
+    }
 
-    fn find(self: &Self, table: &str, key: &Value, order_by: &Vec<String>) -> Value {
+    fn find(self: &Self, table: &str, key: &Value, order_by: &Vec<String>) -> Vec<Value> {
         println!("[DbAdapterFile.find({}, {})] : {:?}", table, key, order_by);
-        self.tables.read().unwrap().get(table).unwrap().clone()
-    }
-    /*
-    func (fileDbAdapter *FileDbAdapter) FindOne(tableName string, key map[string]any) (map[string]any, error) {
-        list, ok := fileDbAdapter.fileTables[tableName]
+        let tables: LockResult<RwLockReadGuard<HashMap<String, Value>>> = self.tables.read();
+        let tables: RwLockReadGuard<HashMap<String, Value>> = tables.unwrap();
+        let list = tables.get(table).unwrap().as_array().unwrap();
+        let list = crate::data_store::Filter::find(list, key);
+        let mut list_out = vec![];
 
-        if !ok {
-            return nil, fmt.Errorf("[FileDbAdapter.FindOne] missing table %s", tableName)
+        for item in list {
+            list_out.push(item.clone());
         }
 
-        obj, err := FilterFindOne(list, key)
-
-        if err != nil {
-            return nil, fmt.Errorf("[FileDbAdapter.FindOne] don't found register in %s with key %s", tableName, key)
-        }
-
-        objMap := map[string]any{}
-        buffer, _ := json.Marshal(obj)
-        err = json.Unmarshal(buffer, &objMap)
-        return objMap, err
+        list_out
     }
-     */
+
     fn find_one(self: &Self, table: &str, key: &Value) -> Option<Box<Value>> {
         let tables: LockResult<RwLockReadGuard<HashMap<String, Value>>> = self.tables.read();
         let tables: RwLockReadGuard<HashMap<String, Value>> = tables.unwrap();
@@ -134,7 +116,6 @@ impl EntityManager for DbAdapterFile {
         let tables: LockResult<RwLockWriteGuard<HashMap<String, Value>>> = self.tables.write();
         let mut tables: RwLockWriteGuard<HashMap<String, Value>> = tables.unwrap();
         let list = tables.get(table_name).unwrap().as_array().unwrap();
-        //let list = TABLES.write().unwrap().get_mut(table_name).unwrap().as_array_mut().unwrap();
 
         if let Some(pos) = crate::data_store::Filter::find_index(list, key) {
             let json_array = tables.get_mut(table_name).unwrap();
@@ -146,24 +127,20 @@ impl EntityManager for DbAdapterFile {
 
         Err(Error::new(std::io::ErrorKind::NotFound, format!("[FileDbAdapter.Update(name = {}, key = {})] : don't find table", table_name, key)))
     }
-}
 
-/*
+    fn delete_one(self: &Self, table_name: &str, key: &Value) -> Result<(), Error> {
+        let tables: LockResult<RwLockWriteGuard<HashMap<String, Value>>> = self.tables.write();
+        let mut tables: RwLockWriteGuard<HashMap<String, Value>> = tables.unwrap();
+        let list = tables.get(table_name).unwrap().as_array().unwrap();
 
-func (fileDbAdapter *FileDbAdapter) DeleteOne(tableName string, key map[string]any) error {
-    list, ok := fileDbAdapter.fileTables[tableName]
+        if let Some(pos) = crate::data_store::Filter::find_index(list, key) {
+            let json_array = tables.get_mut(table_name).unwrap();
+            let list = json_array.as_array_mut().unwrap();
+            list.remove(pos);
+            self.store(table_name, json_array)?;
+            return Ok(());
+        }
 
-    if !ok {
-        return fmt.Errorf("[FileDbAdapter.DeleteOne(name = %s)] : don't find table", tableName)
+        Err(Error::new(std::io::ErrorKind::NotFound, format!("[FileDbAdapter.Update(name = {}, key = {})] : don't find table", table_name, key)))
     }
-
-    pos, err := FilterFindIndex(list, key)
-
-    if pos < 0 || err != nil {
-        return fmt.Errorf("[FileDbAdapter.DeleteOne(name = %s, key = %s)] fail : %s", tableName, key, err)
-    }
-
-    list = append(list[:pos], list[pos+1:]...)
-    return fileDbAdapter.store(tableName, list)
 }
-*/

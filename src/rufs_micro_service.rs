@@ -237,19 +237,7 @@ impl RufsMicroService {
         Ok(())
     }
 }
-/*
-func (rms *RufsMicroService) expressEndPoint(req, res, next) {
-    let promise;
 
-    if (rms.fileDbAdapter == undefined) {
-        promise = rms.load_rufs_tables();
-    } else {
-        promise = Promise.resolve();
-    }
-
-    return promise.then(() => super.expressEndPoint(req, res, next));
-}
-*/
 impl IMicroServiceServer for RufsMicroService {
     fn authenticate_user(&self, user_name: String, user_password: String, remote_addr: String) -> Result<LoginResponse, Error> {
         let entity_manager = if self.db_adapter_file.have_table("rufsUser") {
@@ -275,7 +263,7 @@ impl IMicroServiceServer for RufsMicroService {
         let list_in = entity_manager.find("rufsGroupUser", &json!({"rufsUser": user.id}), &vec![]);
         let mut list_out: Vec<u64> = vec![];
 
-        for item in list_in.as_array().unwrap() {
+        for item in list_in {
             list_out.push(item.get("rufsGroup").unwrap().as_u64().unwrap());
         }
 
@@ -433,6 +421,7 @@ impl IMicroServiceServer for RufsMicroService {
         options.schemas = openapi_rufs.components.unwrap().schemas.clone();
         options.request_body_content_type = self.micro_service_server.request_body_content_type.clone();
         self.micro_service_server.openapi.fill(&mut options)?;
+        //self.db_adapter_file.openapi = Some(&self.micro_service_server.openapi);
         exec_migrations(self).unwrap();
         self.load_file_tables()?;
         //RequestFilterUpdateRufsServices(rms.entity_manager, rms.openapi)?;

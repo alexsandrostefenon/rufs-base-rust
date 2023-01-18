@@ -12,6 +12,7 @@ use crate::{
 };
 
 #[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
 struct NotifyMessage {
     service    :String,
     action     :String,
@@ -110,24 +111,23 @@ impl RequestFilter<'_> {
         Err(Error::from_str(500, "unknow"))
     }
 
-    /*
-    func (rf *RequestFilter) processCreate() Response {
-        response := self.checkObjectAccess(self.obj_in)
-
-        if response.StatusCode != 0 {
-            return response
+    fn process_create(&mut self) -> tide::Response {
+        if let Err(error) = self.check_object_access() {
+            return tide::Response::builder(error.status()).body(error.to_string()).build();
         }
 
-        newObj, err := self.entity_manager.Insert(self.schema_name, self.obj_in)
+        let entity_manager = self.entity_manager.as_ref().unwrap();
+        let new_obj = entity_manager.insert(&self.schema_name, &self.obj_in.clone());
 
-        if err != nil {
-            return ResponseInternalServerError(fmt.Sprintf("[RequestFilter.processCreate] : %s", err))
+        match &new_obj {
+            Ok(new_obj) => {
+                self.notify(new_obj, false);
+                tide::Response::builder(200).body(new_obj.clone()).build()
+            },
+            Err(error) => tide::Response::builder(500).body(error.to_string()).build(),
         }
-
-        self.notify(newObj, false)
-        return ResponseOk(newObj)
     }
-*/
+
     fn get_object(&self, use_document :bool) -> Result<Box<Value>, Error> {
         let key = self.parse_query_parameters()?;
         let obj = self.entity_manager.as_ref().unwrap().find_one(&self.schema_name, &key).unwrap();
@@ -138,19 +138,15 @@ impl RequestFilter<'_> {
 
         Err(Error::from_str(StatusCode::NotImplemented, "[ResquestFilter.GetObject] don't implemented com rf useDocument == true"))
     }
-/*
-    func (rf *RequestFilter) processRead() Response {
+
+    fn process_read(&self) -> tide::Response {
         // TODO : check RequestBody schema
-        useDocument := false
-        obj, err := self.getObject(useDocument)
-
-        if err != nil {
-            return ResponseInternalServerError(fmt.Sprintf("[RequestFilter.processRead] : %s", err))
+        match self.get_object(false) {
+            Ok(obj) => tide::Response::builder(200).body(obj.as_ref().clone()).build(),
+            Err(error) => tide::Response::builder(error.status()).body(error.to_string()).build(),
         }
-
-        return ResponseOk(obj)
     }
-*/
+
     fn process_update(&mut self) -> tide::Response {
         if let Err(error) = self.get_object(false) {
             return tide::Response::builder(error.status()).body(error.to_string()).build();
@@ -161,7 +157,6 @@ impl RequestFilter<'_> {
         }
 
         let primary_key = &self.parse_query_parameters().unwrap();
-
         let entity_manager = self.entity_manager.as_ref().unwrap();
         let new_obj = entity_manager.update(&self.schema_name, primary_key, &self.obj_in);
 
@@ -173,30 +168,25 @@ impl RequestFilter<'_> {
             Err(error) => tide::Response::builder(500).body(error.to_string()).build(),
         }
     }
-/*
-    func (rf *RequestFilter) processDelete() Response {
-        objDeleted, err := self.getObject(false)
 
-        if err != nil {
-            return ResponseBadRequest(fmt.Sprintf("[RequestFilter.processDelete] don't find register with informed parameters : %s", err))
+    fn process_delete(&mut self) -> tide::Response {
+        let obj_deleted = match self.get_object(false) {
+            Ok(obj) => obj,
+            Err(error) => return tide::Response::builder(error.status()).body(error.to_string()).build(),
+        };
+
+        let primary_key = &self.parse_query_parameters().unwrap();
+        let entity_manager = self.entity_manager.as_ref().unwrap();
+        let res = entity_manager.delete_one(&self.schema_name, primary_key);
+
+        if let Err(error) = res {
+            return tide::Response::builder(500).body(error.to_string()).build();
         }
 
-        primaryKey, err := self.parseQueryParameters()
-
-        if err != nil {
-            return ResponseInternalServerError(fmt.Sprintf("[RequestFilter.processDelete] : %s", err))
-        }
-
-        err = self.entity_manager.DeleteOne(self.schema_name, primaryKey)
-
-        if err != nil {
-            return ResponseInternalServerError(fmt.Sprintf("[RequestFilter.processDelete] : %s", err))
-        }
-
-        self.notify(objDeleted, true)
-        return ResponseOk(map[string]any{})
+        self.notify(&obj_deleted, true);
+        tide::Response::builder(200).body(obj_deleted.as_ref().clone()).build()
     }
-
+/*
     func (rf *RequestFilter) processPatch() Response {
         return ResponseInternalServerError("TODO")
     }
@@ -251,7 +241,7 @@ impl RequestFilter<'_> {
         };
 
         let list = self.entity_manager.as_ref().unwrap().find(&self.schema_name, &fields, &order_by);
-        tide::Response::builder(200).body(list).build()
+        tide::Response::builder(200).body(Value::Array(list)).build()
     }
 
     pub fn check_authorization<State>(&mut self, req: &Request<State>) -> Result<bool, Error> {
@@ -355,7 +345,7 @@ impl RequestFilter<'_> {
         if self.method == "get" {
             match &schema_response.schema_kind {
                 openapiv3::SchemaKind::Type(typ) => match typ {
-                    openapiv3::Type::Object(_) => todo!(),
+                    openapiv3::Type::Object(_) => return self.process_read(),
                     openapiv3::Type::Array(_) => return self.process_query(),
                     _ => todo!(),
                 },
@@ -363,21 +353,19 @@ impl RequestFilter<'_> {
                     if any.items.is_some() {
                         return self.process_query();
                     } else {
-                        todo!();
+                        return self.process_read();
                     }
                 },
                 _ => todo!(),
             }            
-/*      } else if self.method == "post" {
-            resp = self.processCreate()
-      */} else if self.method == "put" {
+      } else if self.method == "post" {
+            return self.process_create();
+      } else if self.method == "put" {
             return self.process_update();
       /*} else if self.method == "patch" {
-            resp = self.processPatch()
+            resp = self.processPatch()*/
         } else if self.method == "delete" {
-            resp = self.processDelete()
-        } else if self.method == "get" {
-            resp = self.processRead()*/
+            return self.process_delete();
         } else {
             return tide::Response::builder(tide::StatusCode::BadRequest).body(format!("[RequsetFilter.ProcessRequest] : unknow route for {}", self.path)).build();
         }
