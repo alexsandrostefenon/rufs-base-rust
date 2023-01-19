@@ -30,7 +30,6 @@ pub struct MicroServiceServer {
     pub api_path: String,
     //security : String,
     pub request_body_content_type: String,
-    pub serve_static_paths: Vec<std::path::PathBuf>,
     //openapi_file_name : String,
     pub openapi: OpenAPI,
     //wsServerConnections    : HashMap<String, websocketConn>,
@@ -43,7 +42,6 @@ impl Default for MicroServiceServer {
         Self {
             port: 8080,
             api_path: "rest".to_string(),
-            serve_static_paths: Default::default(),
             openapi: Default::default(),
             app_name: "base".to_string(),
             request_body_content_type: "application/json".to_string(),

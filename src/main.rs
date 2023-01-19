@@ -109,12 +109,6 @@ async fn handle_api(mut request: Request<RufsMicroService<'_>>) -> tide::Result 
 #[async_std::main]
 async fn main() -> tide::Result<()> {
     let mut rufs = RufsMicroService::default();
-    let serve_static_paths = vec![
-        std::path::Path::new("rufs-nfe-es6/webapp").to_path_buf(),
-        std::path::Path::new("rufs-crud-es6/webapp").to_path_buf(),
-        std::path::Path::new("rufs-base-es6/webapp").to_path_buf(),
-    ];
-    rufs.micro_service_server.serve_static_paths = serve_static_paths.clone();
     rufs.init()?;
     let api_path = rufs.micro_service_server.api_path.clone();
     let listen = format!("127.0.0.1:{}", rufs.micro_service_server.port);
@@ -135,6 +129,11 @@ async fn main() -> tide::Result<()> {
 
     app.at(&format!("/{}/login", &api_path)).post(handle_login);
     app.at(&format!("/{}/*", &api_path)).all(handle_api);
+    let serve_static_paths = vec![
+        std::path::Path::new("rufs-nfe-es6/webapp").to_path_buf(),
+        std::path::Path::new("rufs-crud-es6/webapp").to_path_buf(),
+        std::path::Path::new("rufs-base-es6/webapp").to_path_buf(),
+    ];
     app.with(TideRufsMicroService{serve_static_paths});    
     app.listen(listen).await?;
     Ok(())
