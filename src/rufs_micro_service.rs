@@ -111,7 +111,7 @@ type IRufsMicroService interface {
 }
 */
 #[derive(Default, Clone)]
-pub struct RufsMicroService {
+pub struct RufsMicroService<'a> {
     pub micro_service_server: MicroServiceServer,
     /*
     dbConfig                  *DbConfig
@@ -122,7 +122,7 @@ pub struct RufsMicroService {
     Irms                      IRufsMicroService
     */
     pub entity_manager: DbAdapterPostgres,
-    pub db_adapter_file: DbAdapterFile,
+    pub db_adapter_file: DbAdapterFile<'a>,
     pub ws_server_connections : Arc<RwLock<HashMap<String, WebSocketConnection>>>,
     pub ws_server_connections_tokens : Arc<RwLock<HashMap<String, Claims>>>,
 }
@@ -214,7 +214,7 @@ func (rms *RufsMicroService) OnWsMessageFromClient(connection *websocket.Conn, t
     }
 }
 */
-impl RufsMicroService {
+impl RufsMicroService<'_> {
     fn load_file_tables(&mut self) -> Result<(), Error> {
         fn load_table(rms: &mut RufsMicroService, name: &str, default_rows: &serde_json::Value) -> Result<(), Error> {
             if rms.db_adapter_file.have_table(&name) {
@@ -238,7 +238,7 @@ impl RufsMicroService {
     }
 }
 
-impl IMicroServiceServer for RufsMicroService {
+impl IMicroServiceServer for RufsMicroService<'_> {
     fn authenticate_user(&self, user_name: String, user_password: String, remote_addr: String) -> Result<LoginResponse, Error> {
         let entity_manager = if self.db_adapter_file.have_table("rufsUser") {
             &self.db_adapter_file as &dyn EntityManager

@@ -21,7 +21,7 @@ struct NotifyMessage {
 
 #[derive(Default)]
 pub struct RequestFilter<'a> {
-    micro_service: Option<&'a RufsMicroService>,
+    micro_service: Option<&'a RufsMicroService<'a>>,
     entity_manager: Option<Box<&'a (dyn EntityManager + Send + Sync)>>,
     token_payload: Option<Claims>,
     path: String,
@@ -32,7 +32,7 @@ pub struct RequestFilter<'a> {
 }
 
 impl RequestFilter<'_> {
-    pub async fn new<'a, State>(req: &Request<State>, rms: &'a RufsMicroService, method: &str, obj_in: Value) -> Result<RequestFilter<'a>, tide::Error> {
+    pub fn new<'a, State>(req: &Request<State>, rms: &'a RufsMicroService, method: &str, obj_in: Value) -> Result<RequestFilter<'a>, tide::Error> {
         let mut rf = RequestFilter { ..Default::default() };
         rf.micro_service = Some(rms);
         rf.method = method.to_string();

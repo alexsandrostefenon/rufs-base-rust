@@ -1,16 +1,16 @@
 use openapiv3::OpenAPI;
 use std::{collections::HashMap, fs, io::Error, sync::{RwLock, LockResult, RwLockReadGuard, RwLockWriteGuard, Arc}};
-use serde_json::{Value, Number};
+use serde_json::{Value};
 use crate::entity_manager::EntityManager;
-use crate::openapi::RufsOpenAPI;
+//use crate::openapi::RufsOpenAPI;
 
 #[derive(Debug, Clone, Default)]
-pub struct DbAdapterFile {
-    //pub openapi    : Option<&'a OpenAPI>,
+pub struct DbAdapterFile<'a> {
+    pub openapi    : Option<&'a OpenAPI>,
     tables: Arc<RwLock<HashMap<String, Value>>>
 }
 
-impl DbAdapterFile {
+impl DbAdapterFile<'_> {
     pub fn have_table(&self, name: &str) -> bool {
         self.tables.read().unwrap().get(name).is_some()
     }
@@ -59,12 +59,13 @@ impl DbAdapterFile {
     }
 }
 
-impl EntityManager for DbAdapterFile {
-    fn insert(&self, table_name :&str, mut obj: &Value) -> Result<Value, Error> {
+impl EntityManager for DbAdapterFile<'_> {
+    fn insert(&self, table_name :&str, obj: &Value) -> Result<Value, Error> {
         let tables: LockResult<RwLockWriteGuard<HashMap<String, Value>>> = self.tables.write();
         let mut tables: RwLockWriteGuard<HashMap<String, Value>> = tables.unwrap();
-        let list = tables.get(table_name).unwrap().as_array().unwrap();
 /*
+        let list = tables.get(table_name).unwrap().as_array().unwrap();
+
         if let Some(openapi) = self.openapi {
             if let Some(_field) = openapi.get_property(table_name, "id") {
                 let mut id = 0;
