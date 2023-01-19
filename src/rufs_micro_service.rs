@@ -118,9 +118,6 @@ pub struct RufsMicroService<'a> {
     */
     check_rufs_tables: bool,
     migration_path: String,
-    /*
-    Irms                      IRufsMicroService
-    */
     pub entity_manager: DbAdapterPostgres,
     pub db_adapter_file: DbAdapterFile<'a>,
     pub ws_server_connections : Arc<RwLock<HashMap<String, WebSocketConnection>>>,
@@ -396,17 +393,11 @@ impl IMicroServiceServer for RufsMicroService<'_> {
         }
 
         self.micro_service_server.init()?;
-        //self.wsServerConnectionsTokens = make(map[string]*RufsClaims);
 
         if self.micro_service_server.app_name == "" {
             self.micro_service_server.app_name = "base".to_string();
         }
 
-        /* 	if self.Imss == nil {
-               self.Imss = rms;
-           }
-        */
-        //rms.Imss.LoadOpenAPI(); err != nil {
         /* 	self.entity_manager = &DbClientSql{dbConfig: rms.dbConfig};
             self.entity_manager.Connect();
             self.entity_manager.UpdateOpenAPI(rms.openapi, FillOpenAPIOptions{requestBodyContentType: rms.requestBodyContentType};
@@ -421,11 +412,9 @@ impl IMicroServiceServer for RufsMicroService<'_> {
         options.schemas = openapi_rufs.components.unwrap().schemas.clone();
         options.request_body_content_type = self.micro_service_server.request_body_content_type.clone();
         self.micro_service_server.openapi.fill(&mut options)?;
-        //self.db_adapter_file.openapi = Some(&self.micro_service_server.openapi);
         exec_migrations(self).unwrap();
         self.load_file_tables()?;
         //RequestFilterUpdateRufsServices(rms.entity_manager, rms.openapi)?;
-        //self.micro_service_server.listen()?;
         Ok(())
     }
 }

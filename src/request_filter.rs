@@ -16,7 +16,7 @@ use crate::{
 struct NotifyMessage {
     service    :String,
     action     :String,
-    primary_key :Value// `json:"primaryKey"`
+    primary_key :Value
 }
 
 #[derive(Default)]
@@ -65,10 +65,6 @@ impl RequestFilter<'_> {
     // private to create,update,delete,read
     fn check_object_access(&mut self) -> Result<(), Error> {
         let openapi = &self.micro_service.unwrap().micro_service_server.openapi;
-/*         if _, ok := openapi.getSchemaFromSchemas(self.schema_name); !ok {
-            return ResponseBadRequest(fmt.Sprintf("[RequestFilter.processQuery] Fail to find schema %s", self.schema_name))
-        }
- */
         let user_rufs_group_owner = self.token_payload.as_ref().unwrap().group_owner;
         //let rufs_group_owner_entries = openapi.get_properties_with_ref(&self.schema_name, "#/components/schemas/rufsGroupOwner");
 
@@ -269,7 +265,6 @@ impl RequestFilter<'_> {
                     .get(security_name);
 
                 if security_scheme.is_none()
-                /*|| self.token_payload == nil*/
                 {
                     continue;
                 }

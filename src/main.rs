@@ -54,12 +54,9 @@ impl<State: Clone + Send + Sync + 'static> Middleware<State> for TideRufsMicroSe
                     Ok(body) => return Ok(Response::builder(StatusCode::Ok).body(body).build()),
                     Err(e) => return Err(e.into()),
                 }
-            } else {
-                //println!("[MicroServiceServer.listen().serve_dir()] current_dir = {}, folder = {}, name = {} don't found.", current_dir.to_str().unwrap(), folder.to_str().unwrap(), path);
             }
         }
 
-        println!("[handle({}, {})]...", request.url().to_string(), request.method());
         return Ok(next.run(request).await);
     }
 }

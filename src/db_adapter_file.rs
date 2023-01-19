@@ -1,8 +1,8 @@
 use openapiv3::OpenAPI;
 use std::{collections::HashMap, fs, io::Error, sync::{RwLock, LockResult, RwLockReadGuard, RwLockWriteGuard, Arc}};
-use serde_json::{Value};
+use serde_json::{Value, Number};
 use crate::entity_manager::EntityManager;
-//use crate::openapi::RufsOpenAPI;
+use crate::openapi::RufsOpenAPI;
 
 #[derive(Debug, Clone, Default)]
 pub struct DbAdapterFile<'a> {
@@ -16,34 +16,12 @@ impl DbAdapterFile<'_> {
     }
 
     pub fn load(&mut self, name: &str, default_rows: &Value) -> Result<(), Error> {
-        /*
-                var data []byte
-                var list []map[string]any
-
-                if data, err = ioutil.ReadFile(fmt.Sprintf("%s.json", name)); err == nil {
-                    err = json.Unmarshal(data, &list)
-                }
-
-                if fda.fileTables == nil {
-                    fda.fileTables = make(map[string][]map[string]any)
-                }
-
-                if len(list) == 0 && len(defaultRows) > 0 {
-                    err = fda.store(name, defaultRows)
-                    list = defaultRows
-                }
-
-                fda.fileTables[name] = list
-        */
-        //println!("{:?}", env::current_dir());
         let file = fs::File::open(format!("{}.json", name))?;
         let json = match serde_json::from_reader(file) {
-            Err(error) => {
-                println!("[DbAdapterFile.load({})] : {}", name, error);
+            Err(_error) => {
                 default_rows.clone()
             }
             Ok(value) => {
-                //println!("[DbAdapterFile.load({})] : {}", name, value);
                 value
             }
         };
@@ -61,9 +39,9 @@ impl DbAdapterFile<'_> {
 
 impl EntityManager for DbAdapterFile<'_> {
     fn insert(&self, table_name :&str, obj: &Value) -> Result<Value, Error> {
+        let mut obj = obj.clone();
         let tables: LockResult<RwLockWriteGuard<HashMap<String, Value>>> = self.tables.write();
         let mut tables: RwLockWriteGuard<HashMap<String, Value>> = tables.unwrap();
-/*
         let list = tables.get(table_name).unwrap().as_array().unwrap();
 
         if let Some(openapi) = self.openapi {
@@ -81,7 +59,7 @@ impl EntityManager for DbAdapterFile<'_> {
                 obj["id"] = Value::Number(Number::from(id + 1));
             }
         }
-*/
+
         let json_array = tables.get_mut(table_name).unwrap();
         let list = json_array.as_array_mut().unwrap();
         list.push(obj.clone());
@@ -89,8 +67,7 @@ impl EntityManager for DbAdapterFile<'_> {
         return Ok(obj.clone());
     }
 
-    fn find(self: &Self, table: &str, key: &Value, order_by: &Vec<String>) -> Vec<Value> {
-        println!("[DbAdapterFile.find({}, {})] : {:?}", table, key, order_by);
+    fn find(self: &Self, table: &str, key: &Value, _order_by: &Vec<String>) -> Vec<Value> {
         let tables: LockResult<RwLockReadGuard<HashMap<String, Value>>> = self.tables.read();
         let tables: RwLockReadGuard<HashMap<String, Value>> = tables.unwrap();
         let list = tables.get(table).unwrap().as_array().unwrap();
@@ -109,7 +86,6 @@ impl EntityManager for DbAdapterFile<'_> {
         let tables: RwLockReadGuard<HashMap<String, Value>> = tables.unwrap();
         let list = tables.get(table).unwrap().as_array().unwrap();
         let obj = crate::data_store::Filter::find_one(list, key)?;
-        println!("[DbAdapterFile.find_one({}, {})] : {:?}", table, key, obj);
         Some(Box::new(obj.clone()))
     }
 
