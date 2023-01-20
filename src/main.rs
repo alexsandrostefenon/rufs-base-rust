@@ -106,7 +106,7 @@ async fn handle_api(mut request: Request<RufsMicroService<'_>>) -> tide::Result 
 #[async_std::main]
 async fn main() -> tide::Result<()> {
     let mut rufs = RufsMicroService::default();
-    rufs.init()?;
+    rufs.init("postgres://development:123456@localhost:5432/rufs_nfe")?;
     let api_path = rufs.micro_service_server.api_path.clone();
     let listen = format!("127.0.0.1:{}", rufs.micro_service_server.port);
     let mut app = tide::with_state(rufs);

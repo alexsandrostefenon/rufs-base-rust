@@ -297,7 +297,7 @@ impl IMicroServiceServer for RufsMicroService<'_> {
         Ok(login_response)
     }
 
-    fn init(&mut self) -> Result<(), Error> {
+    fn init(&mut self, db_uri: &str) -> Result<(), Error> {
         fn create_rufs_tables(rms: &RufsMicroService, openapi_rufs: &OpenAPI) -> Result<(), Error> {
             if !rms.check_rufs_tables {
                 return Ok(());
@@ -392,14 +392,14 @@ impl IMicroServiceServer for RufsMicroService<'_> {
             Ok(())
         }
 
-        self.micro_service_server.init()?;
+        self.micro_service_server.init(db_uri)?;
 
         if self.micro_service_server.app_name == "" {
             self.micro_service_server.app_name = "base".to_string();
         }
 
         //self.entity_manager = &DbClientSql{dbConfig: rms.dbConfig};
-        self.entity_manager.connect("")?;
+        self.entity_manager.connect(db_uri)?;
         //self.entity_manager.UpdateOpenAPI(rms.openapi, FillOpenAPIOptions{requestBodyContentType: rms.requestBodyContentType};
 
         let openapi_rufs = match serde_json::from_str::<OpenAPI>(RUFS_MICRO_SERVICE_OPENAPI_STR) {

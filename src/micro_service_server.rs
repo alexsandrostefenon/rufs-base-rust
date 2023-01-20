@@ -11,7 +11,7 @@ pub struct LoginRequest {
 }
 
 pub trait IMicroServiceServer {
-    fn init(&mut self) -> Result<(), Error>;
+    fn init(&mut self, db_uri: &str) -> Result<(), Error>;
     fn authenticate_user(&self, user_name: String, user_password: String, remote_addr: String) -> Result<LoginResponse, Error>;
 }
 
@@ -42,7 +42,7 @@ impl Default for MicroServiceServer {
 }
 
 impl IMicroServiceServer for MicroServiceServer {
-    fn init(&mut self) -> Result<(), Error> {
+    fn init(&mut self, _db_uri: &str) -> Result<(), Error> {
         Ok(())
     }
 
