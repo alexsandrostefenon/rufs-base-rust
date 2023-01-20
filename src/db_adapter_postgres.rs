@@ -1,8 +1,8 @@
 use std::{io::Error};
 
 use openapiv3::OpenAPI;
-use serde_json::{Value};
-use postgres::{Client, NoTls};
+use serde_json::{Value, Number, json};
+use postgres::{Client, NoTls, types::Type, Row};
 
 use crate::entity_manager::EntityManager;
 
@@ -41,9 +41,47 @@ impl EntityManager for DbAdapterPostgres {
 }
 
 impl DbAdapterPostgres {
-    pub fn connect(&self, _uri :&str) -> Result<(), Error> {
-        let mut client = Client::connect("host=localhost user=postgres", NoTls).unwrap();
-        let _x = client.query("SELECT id, name, data FROM person", &[]);
+    fn get_json(&self, row: &Row) -> Value {
+        let mut obj = json!({});
+
+        for idx in 0..row.len() {
+            let column = &row.columns()[idx];
+            let name = column.name();
+            let typ = column.type_();
+
+            let value : Value = match *typ {
+                Type::VARCHAR => Value::String(row.get(idx)),
+                Type::INT4 => Value::Number(Number::from(row.get::<usize, i32>(idx))),
+                Type::INT8 => Value::Number(Number::from(row.get::<usize, i64>(idx))),
+                Type::JSONB => row.get(idx),
+                Type::JSONB_ARRAY => {
+                    let list = row.get::<_, Vec<Value>>(idx);
+                    Value::Array(list)
+                },
+                _ => row.get(idx)
+            };
+
+            obj[name] = value;
+        }
+
+        obj
+    }
+
+    fn get_json_list(&self, rows: &Vec<Row>) -> Vec<Value> {
+        let mut list = vec![];
+
+        for row in rows {
+            list.push(self.get_json(row));
+        }
+
+        list
+    }
+
+    pub fn connect(&self, uri :&str) -> Result<(), Error> {
+        let mut client = Client::connect(uri, NoTls).unwrap();
+        let list = client.query("SELECT * FROM rufs_user", &[]).unwrap();
+        let list_out = self.get_json_list(&list);
+        println!("{:?}", list_out);
         Ok(())
     }
 }
