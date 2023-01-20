@@ -38,13 +38,13 @@ impl DbAdapterFile<'_> {
 }
 
 impl EntityManager for DbAdapterFile<'_> {
-    fn insert(&self, table_name :&str, obj: &Value) -> Result<Value, Error> {
+    fn insert(&self, openapi: &OpenAPI, table_name :&str, obj: &Value) -> Result<Value, Error> {
         let mut obj = obj.clone();
         let tables: LockResult<RwLockWriteGuard<HashMap<String, Value>>> = self.tables.write();
         let mut tables: RwLockWriteGuard<HashMap<String, Value>> = tables.unwrap();
         let list = tables.get(table_name).unwrap().as_array().unwrap();
 
-        if let Some(openapi) = self.openapi {
+        //if let Some(openapi) = self.openapi {
             if let Some(_field) = openapi.get_property(table_name, "id") {
                 let mut id = 0;
         
@@ -58,7 +58,7 @@ impl EntityManager for DbAdapterFile<'_> {
     
                 obj["id"] = Value::Number(Number::from(id + 1));
             }
-        }
+        //}
 
         let json_array = tables.get_mut(table_name).unwrap();
         let list = json_array.as_array_mut().unwrap();

@@ -113,7 +113,8 @@ impl RequestFilter<'_> {
         }
 
         let entity_manager = self.entity_manager.as_ref().unwrap();
-        let new_obj = entity_manager.insert(&self.schema_name, &self.obj_in.clone());
+        let openapi = &self.micro_service.as_ref().unwrap().micro_service_server.openapi;
+        let new_obj = entity_manager.insert(openapi, &self.schema_name, &self.obj_in.clone());
 
         match &new_obj {
             Ok(new_obj) => {

@@ -398,10 +398,10 @@ impl IMicroServiceServer for RufsMicroService<'_> {
             self.micro_service_server.app_name = "base".to_string();
         }
 
-        /* 	self.entity_manager = &DbClientSql{dbConfig: rms.dbConfig};
-            self.entity_manager.Connect();
-            self.entity_manager.UpdateOpenAPI(rms.openapi, FillOpenAPIOptions{requestBodyContentType: rms.requestBodyContentType};
-        */
+        //self.entity_manager = &DbClientSql{dbConfig: rms.dbConfig};
+        self.entity_manager.connect("")?;
+        //self.entity_manager.UpdateOpenAPI(rms.openapi, FillOpenAPIOptions{requestBodyContentType: rms.requestBodyContentType};
+
         let openapi_rufs = match serde_json::from_str::<OpenAPI>(RUFS_MICRO_SERVICE_OPENAPI_STR) {
             Ok(openapi) => openapi,
             Err(err) => return Err(tide::Error::from_str(500, format!("{}", err))),
@@ -413,6 +413,7 @@ impl IMicroServiceServer for RufsMicroService<'_> {
         options.request_body_content_type = self.micro_service_server.request_body_content_type.clone();
         self.micro_service_server.openapi.fill(&mut options)?;
         exec_migrations(self).unwrap();
+        //self.db_adapter_file.openapi = Some(&self.micro_service_server.openapi);
         self.load_file_tables()?;
         //RequestFilterUpdateRufsServices(rms.entity_manager, rms.openapi)?;
         Ok(())

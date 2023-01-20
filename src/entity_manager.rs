@@ -1,5 +1,6 @@
 use std::{io::Error};
 
+use openapiv3::OpenAPI;
 use serde_json::Value;
 
 /*
@@ -12,7 +13,7 @@ type EntityManager interface {
  */
 
 pub trait EntityManager {
-    fn insert(&self, table_name :&str, obj: &Value) -> Result<Value, Error>;
+    fn insert(&self, openapi: &OpenAPI, table_name :&str, obj: &Value) -> Result<Value, Error>;
     fn find(self: &Self, table: &str, key: &Value, order_by: &Vec<String>) -> Vec<Value>;
     fn find_one(self: &Self, table: &str, key: &Value) -> Option<Box<Value>>;
     fn update<'a>(&'a self, table_name :&str, key :&Value, obj :&'a Value) -> Result<&'a Value, Error>;
