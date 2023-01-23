@@ -37,6 +37,7 @@ impl DbAdapterFile<'_> {
     }
 }
 
+#[tide::utils::async_trait]
 impl EntityManager for DbAdapterFile<'_> {
     fn insert(&self, openapi: &OpenAPI, table_name :&str, obj: &Value) -> Result<Value, Error> {
         let mut obj = obj.clone();
@@ -67,7 +68,7 @@ impl EntityManager for DbAdapterFile<'_> {
         return Ok(obj.clone());
     }
 
-    fn find(self: &Self, table: &str, key: &Value, _order_by: &Vec<String>) -> Vec<Value> {
+    async fn find(self: &Self, table: &str, key: &Value, _order_by: &Vec<String>) -> Vec<Value> {
         let tables: LockResult<RwLockReadGuard<HashMap<String, Value>>> = self.tables.read();
         let tables: RwLockReadGuard<HashMap<String, Value>> = tables.unwrap();
         let list = tables.get(table).unwrap().as_array().unwrap();

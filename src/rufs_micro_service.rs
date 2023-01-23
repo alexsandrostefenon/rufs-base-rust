@@ -116,8 +116,8 @@ pub struct RufsMicroService<'a> {
     /*
     dbConfig                  *DbConfig
     */
-    check_rufs_tables: bool,
-    migration_path: String,
+    pub check_rufs_tables: bool,
+    pub migration_path: String,
     pub entity_manager: DbAdapterPostgres,
     pub db_adapter_file: DbAdapterFile<'a>,
     pub ws_server_connections : Arc<RwLock<HashMap<String, WebSocketConnection>>>,
@@ -212,92 +212,29 @@ func (rms *RufsMicroService) OnWsMessageFromClient(connection *websocket.Conn, t
 }
 */
 impl RufsMicroService<'_> {
-    fn load_file_tables(&mut self) -> Result<(), Error> {
-        fn load_table(rms: &mut RufsMicroService, name: &str, default_rows: &serde_json::Value) -> Result<(), Error> {
-            if rms.db_adapter_file.have_table(&name) {
-                return Ok(());
-            }
-
-            rms.db_adapter_file.load(name, default_rows).or(Err(Error::from_str(500, "")))
-        }
-
-        //RequestFilterUpdateRufsServices(rms.fileDbAdapter, rms.openapi)
-        let empty_list = serde_json::Value::default();
-        load_table(self, "rufsGroup", &empty_list)?;
-        load_table(self, "rufsGroupUser", &empty_list)?;
-        let item: serde_json::Value = serde_json::from_str(DEFAULT_GROUP_OWNER_ADMIN_STR).unwrap();
-        let list = serde_json::json!([item]);
-        load_table(self, "rufsGroupOwner", &list)?;
-        let item: serde_json::Value = serde_json::from_str(DEFAULT_USER_ADMIN_STR).unwrap();
-        let list = serde_json::json!([item]);
-        load_table(self, "rufsUser", &list)?;
-        Ok(())
-    }
-}
-
-impl IMicroServiceServer for RufsMicroService<'_> {
-    fn authenticate_user(&self, user_name: String, user_password: String, remote_addr: String) -> Result<LoginResponse, Error> {
-        let entity_manager = if self.db_adapter_file.have_table("rufsUser") {
-            &self.db_adapter_file as &dyn EntityManager
-        } else {
-            &self.entity_manager as &dyn EntityManager
-        };
-
-        let user = match entity_manager.find_one("rufsUser", &json!({ "name": user_name })) {
-            Some(value) => {
-                match RufsUser::deserialize(*value) {
-                    Ok(user) => user,
-                    Err(error) => return Err(Error::from_str(StatusCode::InternalServerError, format!("fail to parse struct from json : {}", error))),
+    pub async fn connect(&mut self, db_uri: &str) -> Result<(), Error> {
+        fn load_file_tables(rms :&mut RufsMicroService) -> Result<(), Error> {
+            fn load_table(rms: &mut RufsMicroService, name: &str, default_rows: &serde_json::Value) -> Result<(), Error> {
+                if rms.db_adapter_file.have_table(&name) {
+                    return Ok(());
                 }
-            },
-            None => return Err(Error::from_str(StatusCode::InternalServerError, "fail to find user")),
-        };
-
-        if user.password.len() > 0 && user.password != user_password {
-            return Err(Error::from_str(StatusCode::InternalServerError, "Don't match user and password."));
+    
+                rms.db_adapter_file.load(name, default_rows).or(Err(Error::from_str(500, "")))
+            }
+    
+            //RequestFilterUpdateRufsServices(rms.fileDbAdapter, rms.openapi)
+            let empty_list = serde_json::Value::default();
+            load_table(rms, "rufsGroup", &empty_list)?;
+            load_table(rms, "rufsGroupUser", &empty_list)?;
+            let item: serde_json::Value = serde_json::from_str(DEFAULT_GROUP_OWNER_ADMIN_STR).unwrap();
+            let list = serde_json::json!([item]);
+            load_table(rms, "rufsGroupOwner", &list)?;
+            let item: serde_json::Value = serde_json::from_str(DEFAULT_USER_ADMIN_STR).unwrap();
+            let list = serde_json::json!([item]);
+            load_table(rms, "rufsUser", &list)?;
+            Ok(())
         }
-
-        let list_in = entity_manager.find("rufsGroupUser", &json!({"rufsUser": user.id}), &vec![]);
-        let mut list_out: Vec<u64> = vec![];
-
-        for item in list_in {
-            list_out.push(item.get("rufsGroup").unwrap().as_u64().unwrap());
-        }
-
-        let groups = list_out.into_boxed_slice();
-        //let user_proteced = RufsUserProteced { id: user.id, name: user.name.clone(), group_owner: user.group_owner, groups: user.groups, roles: user.roles};
-        //let token_payload = TokenPayload{user_proteced, ip: remote_addr.clone()};
-        //let user_public = RufsUserPublic{ routes: user.routes, menu: user.menu, path: user.path };
-        let claims = Claims {
-            sub: "".to_string(),
-            exp: 10000000000,
-            id: user.id,
-            name: user.name,
-            group_owner: user.group_owner,
-            groups,
-            roles: user.roles,
-            ip: remote_addr,
-        };
-        let secret = std::env::var("RUFS_JWT_SECRET").unwrap_or("123456".to_string());
-        let jwt_header = encode(&Header::default(), &claims, &EncodingKey::from_secret(secret.as_ref()))?;
-        let login_response = LoginResponse {
-            id: user.id,
-            name: claims.name.clone(),
-            group_owner: user.group_owner,
-            groups: claims.groups,
-            roles: claims.roles,
-            ip: claims.ip.clone(),
-            routes: user.routes,
-            menu: user.menu,
-            path: user.path.clone(),
-            jwt_header,
-            title: claims.name,
-            openapi: &self.micro_service_server.openapi,
-        };
-        Ok(login_response)
-    }
-
-    fn init(&mut self, db_uri: &str) -> Result<(), Error> {
+    
         fn create_rufs_tables(rms: &RufsMicroService, openapi_rufs: &OpenAPI) -> Result<(), Error> {
             if !rms.check_rufs_tables {
                 return Ok(());
@@ -333,14 +270,15 @@ impl IMicroServiceServer for RufsMicroService<'_> {
                     return Err(Error::from_str(500, format!("Missing valid version in name {}", name)));
                 }
 
-                Ok(format!(
-                    "%03{}%03{}%03{}",
-                    reg_exp_result.get(1).unwrap().as_str(),
-                    reg_exp_result.get(2).unwrap().as_str(),
-                    reg_exp_result.get(3).unwrap().as_str()
-                )
-                .parse()
-                .unwrap())
+                let str_version = format!(
+                    "{:03}{:03}{:03}",
+                    reg_exp_result.get(1).unwrap().as_str().parse::<usize>().unwrap(),
+                    reg_exp_result.get(2).unwrap().as_str().parse::<usize>().unwrap(),
+                    reg_exp_result.get(3).unwrap().as_str().parse::<usize>().unwrap()
+                );
+
+                println!("str_version {}", str_version);
+                Ok(str_version.parse().unwrap())
             }
 
             fn migrate(rms: &mut RufsMicroService, file_name: &str) -> Result<(), Error> {
@@ -389,18 +327,12 @@ impl IMicroServiceServer for RufsMicroService<'_> {
 
             //rms.entity_manager.UpdateOpenAPI(rms.openapi, FillOpenAPIOptions{requestBodyContentType: rms.requestBodyContentType});
             //rms.StoreOpenAPI("")?
-            Ok(())
+            rms.micro_service_server.store_open_api("")
         }
 
-        self.micro_service_server.init(db_uri)?;
-
-        if self.micro_service_server.app_name == "" {
-            self.micro_service_server.app_name = "base".to_string();
-        }
-
-        //self.entity_manager = &DbClientSql{dbConfig: rms.dbConfig};
-        self.entity_manager.connect(db_uri)?;
-        //self.entity_manager.UpdateOpenAPI(rms.openapi, FillOpenAPIOptions{requestBodyContentType: rms.requestBodyContentType};
+        self.micro_service_server.connect()?;
+        self.entity_manager.connect(db_uri).await.unwrap();
+        //self.entity_manager.UpdateOpenAPI(self.openapi, FillOpenAPIOptions{requestBodyContentType: self.requestBodyContentType};
 
         let openapi_rufs = match serde_json::from_str::<OpenAPI>(RUFS_MICRO_SERVICE_OPENAPI_STR) {
             Ok(openapi) => openapi,
@@ -412,11 +344,79 @@ impl IMicroServiceServer for RufsMicroService<'_> {
         options.schemas = openapi_rufs.components.unwrap().schemas.clone();
         options.request_body_content_type = self.micro_service_server.request_body_content_type.clone();
         self.micro_service_server.openapi.fill(&mut options)?;
-        exec_migrations(self).unwrap();
-        //self.db_adapter_file.openapi = Some(&self.micro_service_server.openapi);
-        self.load_file_tables()?;
+        exec_migrations(self)?;
+        //rms.db_adapter_file.openapi = Some(&rms.micro_service_server.openapi);
+
+        if self.check_rufs_tables == false {
+            load_file_tables(self)?;
+        }
+
         //RequestFilterUpdateRufsServices(rms.entity_manager, rms.openapi)?;
         Ok(())
+    }
+}
+
+#[tide::utils::async_trait]
+impl IMicroServiceServer for RufsMicroService<'_> {
+    async fn authenticate_user(&self, user_name: String, user_password: String, remote_addr: String) -> Result<LoginResponse, Error> {
+        let entity_manager = if self.db_adapter_file.have_table("rufsUser") {
+            &self.db_adapter_file as &(dyn EntityManager + Sync + Send)
+        } else {
+            &self.entity_manager as &(dyn EntityManager + Sync + Send)
+        };
+
+        let user = match entity_manager.find_one("rufsUser", &json!({ "name": user_name })) {
+            Some(value) => {
+                match RufsUser::deserialize(*value) {
+                    Ok(user) => user,
+                    Err(error) => return Err(Error::from_str(StatusCode::InternalServerError, format!("fail to parse struct from json : {}", error))),
+                }
+            },
+            None => return Err(Error::from_str(StatusCode::InternalServerError, "fail to find user")),
+        };
+
+        if user.password.len() > 0 && user.password != user_password {
+            return Err(Error::from_str(StatusCode::InternalServerError, "Don't match user and password."));
+        }
+
+        let list_in = entity_manager.find("rufsGroupUser", &json!({"rufsUser": user.id}), &vec![]).await;
+        let mut list_out: Vec<u64> = vec![];
+
+        for item in list_in {
+            list_out.push(item.get("rufsGroup").unwrap().as_u64().unwrap());
+        }
+
+        let groups = list_out.into_boxed_slice();
+        //let user_proteced = RufsUserProteced { id: user.id, name: user.name.clone(), group_owner: user.group_owner, groups: user.groups, roles: user.roles};
+        //let token_payload = TokenPayload{user_proteced, ip: remote_addr.clone()};
+        //let user_public = RufsUserPublic{ routes: user.routes, menu: user.menu, path: user.path };
+        let claims = Claims {
+            sub: "".to_string(),
+            exp: 10000000000,
+            id: user.id,
+            name: user.name,
+            group_owner: user.group_owner,
+            groups,
+            roles: user.roles,
+            ip: remote_addr,
+        };
+        let secret = std::env::var("RUFS_JWT_SECRET").unwrap_or("123456".to_string());
+        let jwt_header = encode(&Header::default(), &claims, &EncodingKey::from_secret(secret.as_ref()))?;
+        let login_response = LoginResponse {
+            id: user.id,
+            name: claims.name.clone(),
+            group_owner: user.group_owner,
+            groups: claims.groups,
+            roles: claims.roles,
+            ip: claims.ip.clone(),
+            routes: user.routes,
+            menu: user.menu,
+            path: user.path.clone(),
+            jwt_header,
+            title: claims.name,
+            openapi: &self.micro_service_server.openapi,
+        };
+        Ok(login_response)
     }
 }
 

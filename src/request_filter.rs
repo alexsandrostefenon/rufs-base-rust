@@ -195,7 +195,7 @@ impl RequestFilter<'_> {
         Ok(obj)
     }
 
-    fn process_query(&self) -> tide::Response {
+    async fn process_query(&self) -> tide::Response {
         fn get_order_by(properties: &IndexMap<String, ReferenceOr<Box<Schema>>>) -> Vec<String> {
             let mut order_by = Vec::<String>::new();
 
@@ -237,7 +237,7 @@ impl RequestFilter<'_> {
             _ => todo!(),
         };
 
-        let list = self.entity_manager.as_ref().unwrap().find(&self.schema_name, &fields, &order_by);
+        let list = self.entity_manager.as_ref().unwrap().find(&self.schema_name, &fields, &order_by).await;
         tide::Response::builder(200).body(Value::Array(list)).build()
     }
 
@@ -334,7 +334,7 @@ impl RequestFilter<'_> {
         }
     }
 
-    pub fn process_request(&mut self) -> tide::Response {
+    pub async fn process_request(&mut self) -> tide::Response {
         let schema_response = self.micro_service.unwrap().micro_service_server.openapi.get_schema(&self.path, &self.method, "responseObject").unwrap();
         println!("[process_request] : {} {}", self.path, self.method);
 
@@ -342,12 +342,12 @@ impl RequestFilter<'_> {
             match &schema_response.schema_kind {
                 openapiv3::SchemaKind::Type(typ) => match typ {
                     openapiv3::Type::Object(_) => return self.process_read(),
-                    openapiv3::Type::Array(_) => return self.process_query(),
+                    openapiv3::Type::Array(_) => return self.process_query().await,
                     _ => todo!(),
                 },
                 openapiv3::SchemaKind::Any(any) => {
                     if any.items.is_some() {
-                        return self.process_query();
+                        return self.process_query().await;
                     } else {
                         return self.process_read();
                     }

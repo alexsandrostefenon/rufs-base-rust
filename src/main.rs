@@ -1,8 +1,8 @@
 use jsonwebtoken::{decode, DecodingKey, Validation};
-use micro_service_server::LoginRequest;
+use micro_service_server::{LoginRequest, MicroServiceServer};
 use request_filter::RequestFilter;
 use serde_json::Value;
-use tide::{Request, Response, Next, StatusCode, Body, Middleware};
+use tide::{Request, Response, Next, StatusCode, Body, Middleware, Error};
 
 use crate::{micro_service_server::IMicroServiceServer, rufs_micro_service::{RufsMicroService, Claims}};
 
@@ -69,7 +69,7 @@ async fn handle_login(mut request: Request<RufsMicroService<'_>>) -> tide::Resul
         println!("Login request is empty");
     }
 
-    let login_response = match rufs.authenticate_user(login_request.user.clone(), login_request.password.clone(), request.remote().unwrap().to_string().clone()) {
+    let login_response = match rufs.authenticate_user(login_request.user.clone(), login_request.password.clone(), request.remote().unwrap().to_string().clone()).await {
         Ok(login_response) => login_response,
         Err(error) => {
             println!("[RufsMicroService.handle.login.authenticate_user] : {}", error);
@@ -93,7 +93,7 @@ async fn handle_api(mut request: Request<RufsMicroService<'_>>) -> tide::Result 
     let mut rf = RequestFilter::new(&request, rufs, &method, obj_in).unwrap();
 
     let response = match rf.check_authorization(&request) {
-        Ok(true) => rf.process_request(),
+        Ok(true) => rf.process_request().await,
         Ok(false) => Response::builder(StatusCode::Unauthorized).build(),
         Err(err) => tide::Response::builder(StatusCode::BadRequest)
             .body(format!("[RufsMicroService.OnRequest.CheckAuthorization] : {}", err))
@@ -103,10 +103,15 @@ async fn handle_api(mut request: Request<RufsMicroService<'_>>) -> tide::Result 
     Ok(response)
 }
 
-#[async_std::main]
-async fn main() -> tide::Result<()> {
-    let mut rufs = RufsMicroService::default();
-    rufs.init("postgres://development:123456@localhost:5432/rufs_nfe")?;
+#[tokio::main]
+async fn main() -> Result<(), Error> {
+    let mut rufs = RufsMicroService{
+        check_rufs_tables: true, 
+        micro_service_server: MicroServiceServer{app_name: "nfe".to_string(), ..Default::default()}, 
+        ..Default::default()
+    };
+
+    rufs.connect("postgres://development:123456@localhost:5432/rufs_nfe").await.unwrap();
     let api_path = rufs.micro_service_server.api_path.clone();
     let listen = format!("127.0.0.1:{}", rufs.micro_service_server.port);
     let mut app = tide::with_state(rufs);

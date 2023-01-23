@@ -1,3 +1,5 @@
+use std::fs;
+
 use tide::Error;
 
 use crate::rufs_micro_service::LoginResponse;
@@ -10,9 +12,9 @@ pub struct LoginRequest {
     pub password: String,
 }
 
+#[tide::utils::async_trait]
 pub trait IMicroServiceServer {
-    fn init(&mut self, db_uri: &str) -> Result<(), Error>;
-    fn authenticate_user(&self, user_name: String, user_password: String, remote_addr: String) -> Result<LoginResponse, Error>;
+    async fn authenticate_user(&self, user_name: String, user_password: String, remote_addr: String) -> Result<LoginResponse, Error>;
 }
 
 #[derive(Clone)]
@@ -24,7 +26,7 @@ pub struct MicroServiceServer {
     pub api_path: String,
     //security : String,
     pub request_body_content_type: String,
-    //openapi_file_name : String,
+    pub openapi_file_name : String,
     pub openapi: OpenAPI,
     //wsServerConnections    : HashMap<String, websocketConn>,
 }
@@ -37,16 +39,43 @@ impl Default for MicroServiceServer {
             openapi: Default::default(),
             app_name: "base".to_string(),
             request_body_content_type: "application/json".to_string(),
+            openapi_file_name: "".to_string()
         }
     }
 }
 
-impl IMicroServiceServer for MicroServiceServer {
-    fn init(&mut self, _db_uri: &str) -> Result<(), Error> {
+impl MicroServiceServer {
+    fn load_open_api(&mut self) -> Result<(), Error> {
+        if self.openapi_file_name.is_empty() {
+            self.openapi_file_name = format!("openapi-{}.json", self.app_name);
+        }
+
+        let file = fs::File::open(&self.openapi_file_name)?;
+        self.openapi = serde_json::from_reader(file)?;
         Ok(())
     }
+    
+    pub fn store_open_api(&self, file_name :&str) -> Result<(), Error> {
+        let file_name = if file_name.is_empty() {
+            format!("openapi-{}-tmp.json", self.app_name)
+        } else {
+            file_name.to_string()
+        };
 
-    fn authenticate_user(&self, user_name: String, user_password: String, remote_addr: String) -> Result<LoginResponse, Error> {
+        let contents = serde_json::to_string_pretty(&self.openapi)?;
+        std::fs::write(file_name, contents)?;
+        Ok(())
+    }
+    
+    pub fn connect(&mut self) -> Result<(), Error> {
+        self.load_open_api()?;
+        Ok(())
+    }
+}
+
+#[tide::utils::async_trait]
+impl IMicroServiceServer for MicroServiceServer {
+    async fn authenticate_user(&self, user_name: String, user_password: String, remote_addr: String) -> Result<LoginResponse, Error> {
         println!("[MicroServiceServer.authenticate_user({}, {}, {})]", user_name, user_password, remote_addr);
         todo!()
     }
