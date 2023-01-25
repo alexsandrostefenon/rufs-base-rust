@@ -269,23 +269,31 @@ fn Insert(schemaName:&str, obj map[string]any) (map[string]any, error) {
 	return item, nil
 }
 */
-async fn find(&self, _openapi: &OpenAPI, schema_name: &str, query_params: &Value, order_by: &Vec<String>) -> Vec<Value> {
+async fn find(&self, openapi: &OpenAPI, schema_name: &str, query_params: &Value, order_by: &Vec<String>) -> Vec<Value> {
 	let table_name = schema_name.to_case(convert_case::Case::Snake);
 
 	let mut params = vec![];
 	let sql_query = self.build_query(query_params, &mut params, order_by);
 
-	let properties = self.openapi.unwrap().get_properties_from_schema_name(schema_name).unwrap();
+	let properties = openapi.get_properties_from_schema_name(schema_name).unwrap();
 	let mut count = 0;
 	let mut names = vec![];
 
 	for (field_name, property) in properties {
-		if let Some(internal_name) = property.as_item().unwrap().schema_data.extensions.get("x-internalName") {
-			count += 1;
-			names.push(format!("{} as {}", internal_name.as_str().unwrap().to_case(convert_case::Case::Snake), field_name.to_case(convert_case::Case::Snake)));
-		} else {
-			names.push(field_name.to_case(convert_case::Case::Snake));
+		match property {
+			openapiv3::ReferenceOr::Reference { reference } => {
+				println!("{} -> {}", field_name, reference);
+			},
+			openapiv3::ReferenceOr::Item(property) => {
+				if let Some(internal_name) = property.schema_data.extensions.get("x-internalName") {
+					count += 1;
+					names.push(format!("{} as {}", internal_name.as_str().unwrap().to_case(convert_case::Case::Snake), field_name.to_case(convert_case::Case::Snake)));
+					continue;
+				}
+			},
 		}
+
+		names.push(field_name.to_case(convert_case::Case::Snake));
 	}
 
 	let fields_out = if count > 0 {
