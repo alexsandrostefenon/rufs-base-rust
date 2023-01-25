@@ -92,7 +92,7 @@ async fn handle_api(mut request: Request<RufsMicroService<'_>>) -> tide::Result 
     let rufs = request.state();
     let mut rf = RequestFilter::new(&request, rufs, &method, obj_in).unwrap();
 
-    let response = match rf.check_authorization(&request) {
+    let response = match rf.check_authorization(&request).await {
         Ok(true) => rf.process_request().await,
         Ok(false) => Response::builder(StatusCode::Unauthorized).build(),
         Err(err) => tide::Response::builder(StatusCode::BadRequest)

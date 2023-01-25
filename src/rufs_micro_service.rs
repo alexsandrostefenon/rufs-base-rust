@@ -118,7 +118,7 @@ pub struct RufsMicroService<'a> {
     */
     pub check_rufs_tables: bool,
     pub migration_path: String,
-    pub entity_manager: DbAdapterPostgres,
+    pub entity_manager: DbAdapterPostgres<'a>,
     pub db_adapter_file: DbAdapterFile<'a>,
     pub ws_server_connections : Arc<RwLock<HashMap<String, WebSocketConnection>>>,
     pub ws_server_connections_tokens : Arc<RwLock<HashMap<String, Claims>>>,
@@ -235,7 +235,7 @@ impl RufsMicroService<'_> {
             Ok(())
         }
     
-        fn create_rufs_tables(rms: &RufsMicroService, openapi_rufs: &OpenAPI) -> Result<(), Error> {
+        async fn create_rufs_tables(rms: &RufsMicroService<'_>, openapi_rufs: &OpenAPI) -> Result<(), Error> {
             if !rms.check_rufs_tables {
                 return Ok(());
             }
@@ -250,11 +250,11 @@ impl RufsMicroService<'_> {
             let _default_group_owner_admin: serde_json::Value = serde_json::from_str(DEFAULT_GROUP_OWNER_ADMIN_STR).unwrap();
             let _default_user_admin: serde_json::Value = serde_json::from_str(DEFAULT_USER_ADMIN_STR).unwrap();
 
-            if rms.entity_manager.find_one("rufsGroupOwner", &json!({"name": "ADMIN"})).is_none() {
+            if rms.entity_manager.find_one(openapi_rufs, "rufsGroupOwner", &json!({"name": "ADMIN"})).await.is_none() {
                 //rms.entity_manager.insert("rufsGroupOwner", default_group_owner_admin)?;
             }
 
-            if rms.entity_manager.find_one("rufsUser", &json!({"name": "admin"})).is_none() {
+            if rms.entity_manager.find_one(openapi_rufs, "rufsUser", &json!({"name": "admin"})).await.is_none() {
                 //rms.entity_manager.insert("rufsUser", default_user_admin)?;
             }
 
@@ -338,7 +338,7 @@ impl RufsMicroService<'_> {
             Ok(openapi) => openapi,
             Err(err) => return Err(tide::Error::from_str(500, format!("{}", err))),
         };
-        create_rufs_tables(self, &openapi_rufs).unwrap();
+        create_rufs_tables(self, &openapi_rufs).await.unwrap();
         let mut options = FillOpenAPIOptions::default();
         options.security = SecurityRequirement::from([("jwt".to_string(), vec![])]);
         options.schemas = openapi_rufs.components.unwrap().schemas.clone();
@@ -365,7 +365,7 @@ impl IMicroServiceServer for RufsMicroService<'_> {
             &self.entity_manager as &(dyn EntityManager + Sync + Send)
         };
 
-        let user = match entity_manager.find_one("rufsUser", &json!({ "name": user_name })) {
+        let user = match entity_manager.find_one(&self.micro_service_server.openapi, "rufsUser", &json!({ "name": user_name })).await {
             Some(value) => {
                 match RufsUser::deserialize(*value) {
                     Ok(user) => user,
@@ -379,7 +379,7 @@ impl IMicroServiceServer for RufsMicroService<'_> {
             return Err(Error::from_str(StatusCode::InternalServerError, "Don't match user and password."));
         }
 
-        let list_in = entity_manager.find("rufsGroupUser", &json!({"rufsUser": user.id}), &vec![]).await;
+        let list_in = entity_manager.find(&self.micro_service_server.openapi, "rufsGroupUser", &json!({"rufsUser": user.id}), &vec![]).await;
         let mut list_out: Vec<u64> = vec![];
 
         for item in list_in {

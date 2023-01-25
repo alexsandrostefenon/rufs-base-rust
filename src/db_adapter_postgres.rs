@@ -1,20 +1,28 @@
 use std::{io::Error, sync::{Arc}};
 
+use convert_case::Casing;
 use openapiv3::OpenAPI;
 use serde_json::{Value, Number, json};
-use tokio_postgres::{NoTls, Client, Row, types::Type};
+use tokio_postgres::{NoTls, Client, Row, types::{Type, ToSql}};
 
-use crate::entity_manager::EntityManager;
+use crate::{entity_manager::EntityManager, openapi::RufsOpenAPI};
 
 #[derive(Clone,Default)]
-pub struct DbAdapterPostgres {
-    //pub openapi    : Option<&OpenAPI>,
+struct DbConfig {
+	driver_name: String,
+	limit_query: usize,
+	limit_query_exceptions: Vec<String>,
+}
+#[derive(Clone,Default)]
+pub struct DbAdapterPostgres<'a> {
+    pub openapi    : Option<&'a OpenAPI>,
+	db_config: DbConfig,
     client: Option<Arc<Client>>,
     //client: Option<Arc<RwLock<Client>>>,
     tmp: Value,
 }
 
-impl DbAdapterPostgres {
+impl DbAdapterPostgres<'_> {
     fn get_json(&self, row: &Row) -> Value {
         let mut obj = json!({});
 
@@ -92,14 +100,14 @@ type DbClientSql struct {
 	rufsTypes                  []string
 }
 
-func (dbSql *DbClientSql) Connect() (err error) {
-	if dbSql.dbConfig.limitQuery == 0 {
-		dbSql.dbConfig.limitQuery = 1000
+fn Connect() (err error) {
+	if self.dbConfig.limitQuery == 0 {
+		self.dbConfig.limitQuery = 1000
 	}
 
-	dataSourceName := fmt.Sprintf("postgres://%s:%s@localhost:5432/%s", dbSql.dbConfig.user, dbSql.dbConfig.password, dbSql.dbConfig.database)
-	dbSql.dbConfig.driverName = "pgx"
-	dbSql.client, err = sql.Open(dbSql.dbConfig.driverName, dataSourceName)
+	dataSourceName := fmt.Sprintf("postgres://%s:%s@localhost:5432/%s", self.dbConfig.user, self.dbConfig.password, self.dbConfig.database)
+	self.dbConfig.driverName = "pgx"
+	self.client, err = sql.Open(self.dbConfig.driverName, dataSourceName)
 
 	if err != nil {
 		return err
@@ -108,87 +116,93 @@ func (dbSql *DbClientSql) Connect() (err error) {
 	return nil
 }
 
-func (dbSql *DbClientSql) Disconnect() error {
-	return dbSql.client.Close()
+fn Disconnect() error {
+	return self.client.Close()
 }
+*/
+    fn build_query<'a>(&self, query_params:&'a Value, params :&mut Vec<&'a (dyn ToSql + Sync)>, order_by :&Vec<String>) -> String {
+		fn build_conditions<'a> (query_params:&'a Value, params: &mut Vec<&'a (dyn ToSql + Sync)>, operator:&str, conditions : &mut Vec<String>) {
+			let mut count = 1;
+			let _null : Option<bool> = None;
 
-func (dbSql *DbClientSql) buildQuery(queryParams map[string]any, params *[]any, orderBy []string) string {
-	buildConditions := func(queryParams map[string]any, params *[]any, operator string, conditions *[]string) {
-		count := 1
+			for (field_name, field) in query_params.as_object().unwrap() {
+				let param_id = format!("${}", count);
+				count += 1;
 
-		for fieldName, field := range queryParams {
-			/*
-				if value, ok := dbSql.options.aliasMapExternalToInternal[fieldName]; ok {
-					fieldName = value
+				match field {
+					Value::Array(_) => conditions.push(format!("{} {} ANY ({})", field_name.to_case(convert_case::Case::Snake), operator, param_id)),
+					_ => conditions.push(format!("{} {} {}", field_name.to_case(convert_case::Case::Snake), operator, param_id)),
 				}
-			*/
-			paramId := fmt.Sprintf("$%d", count)
-			count++
-			var condition string
 
-			switch value := field.(type) {
-			case []any:
-				condition = CamelToUnderscore(fieldName) + operator + " ANY (" + paramId + ")"
-			case []string:
-				fmt.Printf("Unexpected case condition of %s", value)
-				condition = CamelToUnderscore(fieldName) + operator + paramId
-			default:
-				condition = CamelToUnderscore(fieldName) + operator + paramId
+				match field {
+					Value::Null => todo!(),
+					Value::Bool(_value) => todo!(),
+					Value::Number(_value) => todo!(),
+					Value::String(value) => params.push(value),
+					Value::Array(value) => params.push(value),
+					Value::Object(_) => todo!(),
+				}
+			}
+		}
+
+		let mut conditions: Vec<String> = vec![];
+
+		if query_params.is_object() {
+			let filter = &query_params["filter"];
+			let filter_range_min = &query_params["filterRangeMin"];
+			let filter_range_max = &query_params["filterRangeMax"];
+	
+			if !filter.is_null() || !filter_range_min.is_null() || !filter_range_max.is_null() {
+				if !filter.is_null() {
+					build_conditions(filter, params, "=", &mut conditions)
+				}
+				if !filter_range_min.is_null() {
+					build_conditions(filter_range_min, params, ">", &mut conditions)
+				}
+				if !filter_range_max.is_null() {
+					build_conditions(filter_range_max, params, "<", &mut conditions)
+				}
+			} else if query_params.as_object().iter().len() > 0 {
+				build_conditions(query_params, params, "=", &mut conditions)
+			}
+		}
+
+		let str = if conditions.len() > 0 {
+			format!(" WHERE {}", conditions.join(" AND "))
+		} else {
+			"".to_string()
+		};
+
+		if order_by.len() > 0 {
+			let mut order_by_internal: Vec<String> = vec![];
+
+			for field_name in order_by {
+				let (field_name, extra) = if let Some(pos) = field_name.find(" ") {
+					(field_name[0..pos].to_string(), field_name[pos..].to_string())
+				} else {
+					(field_name.to_string(), "".to_string())
+				};
+
+				order_by_internal.push(format!("{} {}", field_name.to_case(convert_case::Case::Snake), extra));
 			}
 
-			*conditions = append(*conditions, condition)
-			*params = append(*params, field)
+			format!("{} ORDER BY {}", str, order_by_internal.join(","))
+		} else {
+			str
 		}
-	}
-
-	conditions := []string{}
-	filter, okFilter := queryParams["filter"]
-	filterRangeMin, okFilterRangeMin := queryParams["filterRangeMin"]
-	filterRangeMax, okFilterRangeMax := queryParams["filterRangeMax"]
-
-	if okFilter || okFilterRangeMin || okFilterRangeMax {
-		if okFilter {
-			buildConditions(filter.(map[string]any), params, "=", &conditions)
-		}
-		if okFilterRangeMin {
-			buildConditions(filterRangeMin.(map[string]any), params, ">", &conditions)
-		}
-		if okFilterRangeMax {
-			buildConditions(filterRangeMax.(map[string]any), params, "<", &conditions)
-		}
-	} else if len(queryParams) > 0 {
-		buildConditions(queryParams, params, "=", &conditions)
-	}
-
-	str := ""
-
-	if len(conditions) > 0 {
-		str = " WHERE " + strings.Join(conditions, " AND ")
-	}
-
-	if len(orderBy) > 0 {
-		orderByInternal := []string{}
-
-		for _, fieldName := range orderBy {
-			pos := strings.Index(fieldName, " ")
-			extra := ""
-
-			if pos >= 0 {
-				extra = fieldName[pos:]
-				fieldName = fieldName[0:pos]
-			}
-
-			orderByInternal = append(orderByInternal, CamelToUnderscore(fieldName)+extra)
-		}
-
-		str = str + " ORDER BY " + strings.Join(orderByInternal, ",")
-	}
-
-	return str
+    }
 }
 
-func (dbSql *DbClientSql) Insert(schemaName string, obj map[string]any) (map[string]any, error) {
-	buildInsertSql := func(schemaName string, schema *Schema, obj map[string]any, params *[]any) string {
+#[tide::utils::async_trait]
+impl EntityManager for DbAdapterPostgres<'_> {
+    fn insert(&self, _openapi: &OpenAPI, table_name :&str, obj :&Value) -> Result<Value, Error> {
+        println!("[DbAdapterPostgres.find({}, {})]", table_name, obj.to_string());
+        Ok(obj.clone())
+    }
+
+/*
+fn Insert(schemaName:&str, obj map[string]any) (map[string]any, error) {
+	buildInsertSql := func(schemaName:&str, schema *Schema, obj:&Value, params *[]any) string {
 		tableName := CamelToUnderscore(schemaName)
 		strFields := []string{}
 		strValues := []string{}
@@ -198,7 +212,7 @@ func (dbSql *DbClientSql) Insert(schemaName string, obj map[string]any) (map[str
 			if property, ok := schema.Properties[fieldName]; ok && property.IdentityGeneration != "" && value == nil {
 				continue
 			}
-			//			if (dbSql.options.aliasMapExternalToInternal[fieldName] != null) fieldName = dbSql.options.aliasMapExternalToInternal[fieldName];
+			//			if (self.options.aliasMapExternalToInternal[fieldName] != null) fieldName = self.options.aliasMapExternalToInternal[fieldName];
 			strFields = append(strFields, CamelToUnderscore(fieldName))
 			strValues = append(strValues, fmt.Sprintf("$%d", idx))
 			idx++
@@ -220,14 +234,14 @@ func (dbSql *DbClientSql) Insert(schemaName string, obj map[string]any) (map[str
 				list := pgtype.JSONBArray{Elements: elements, Dimensions: dimensions, Status: pgtype.Present}
 				*params = append(*params, list)
 			default:
-				*params = append(*params, dbSql.openapi.getValueFromSchema(schema, fieldName, obj))
+				*params = append(*params, self.openapi.getValueFromSchema(schema, fieldName, obj))
 			}
 		}
 
 		return fmt.Sprintf(`INSERT INTO %s (%s) VALUES (%s) RETURNING *;`, tableName, strings.Join(strFields, ","), strings.Join(strValues, ","))
 	}
 
-	schema, ok := dbSql.openapi.getSchemaFromSchemas(schemaName)
+	schema, ok := self.openapi.getSchemaFromSchemas(schemaName)
 
 	if !ok {
 		return nil, fmt.Errorf(`[dbClientSql.Insert] : Missing schema %s`, schemaName)
@@ -236,7 +250,7 @@ func (dbSql *DbClientSql) Insert(schemaName string, obj map[string]any) (map[str
 	params := []any{}
 	sql := buildInsertSql(schemaName, schema, obj, &params)
 	fmt.Println(sql)
-	rows, err := dbSql.client.Query(sql, params...)
+	rows, err := self.client.Query(sql, params...)
 
 	if err != nil {
 		return nil, err
@@ -246,7 +260,7 @@ func (dbSql *DbClientSql) Insert(schemaName string, obj map[string]any) (map[str
 		return nil, fmt.Errorf(`Failt to insert : %s : %s`, sql, rows.Err())
 	}
 
-	item, err := dbSql.getMapFromRow(rows, schema)
+	item, err := self.getMapFromRow(rows, schema)
 
 	if err != nil {
 		return nil, err
@@ -254,71 +268,68 @@ func (dbSql *DbClientSql) Insert(schemaName string, obj map[string]any) (map[str
 
 	return item, nil
 }
+*/
+async fn find(&self, _openapi: &OpenAPI, schema_name: &str, query_params: &Value, order_by: &Vec<String>) -> Vec<Value> {
+	let table_name = schema_name.to_case(convert_case::Case::Snake);
 
-func (dbSql *DbClientSql) Find(schemaName string, queryParams map[string]any, orderBy []string) ([]map[string]any, error) {
-	tableName := CamelToUnderscore(schemaName)
-	params := []any{}
-	sqlQuery := dbSql.buildQuery(queryParams, &params, orderBy)
-	fieldsOut := "*"
+	let mut params = vec![];
+	let sql_query = self.build_query(query_params, &mut params, order_by);
 
-	if dbSql.openapi == nil {
-		return nil, fmt.Errorf(`Missing openapi`)
-	}
+	let properties = self.openapi.unwrap().get_properties_from_schema_name(schema_name).unwrap();
+	let mut count = 0;
+	let mut names = vec![];
 
-	schema, ok := dbSql.openapi.getSchemaFromSchemas(schemaName)
-
-	if !ok {
-		return nil, fmt.Errorf(`[dbClientSql.Find] : Missing schema %s`, schemaName)
-	}
-
-	count := 0
-	names := []string{}
-
-	for fieldName, property := range schema.Properties {
-		if property.InternalName != "" {
-			count++
-			names = append(names, CamelToUnderscore(property.InternalName)+" as "+CamelToUnderscore(fieldName))
+	for (field_name, property) in properties {
+		if let Some(internal_name) = property.as_item().unwrap().schema_data.extensions.get("x-internalName") {
+			count += 1;
+			names.push(format!("{} as {}", internal_name.as_str().unwrap().to_case(convert_case::Case::Snake), field_name.to_case(convert_case::Case::Snake)));
 		} else {
-			names = append(names, CamelToUnderscore(fieldName))
+			names.push(field_name.to_case(convert_case::Case::Snake));
 		}
 	}
 
-	if count > 0 {
-		fieldsOut = strings.Join(names, ",")
-	}
+	let fields_out = if count > 0 {
+		names.join(",")
+	} else {
+		"*".to_string()
+	};
 
-	sqlFirst := ""
-	sqlLimit := ""
+	let mut sql_first = "".to_string();
+	let mut sql_limit = "".to_string();
 
-	if slices.Contains(dbSql.dbConfig.limitQueryExceptions, tableName) == false {
-		if dbSql.dbConfig.driverName == "firebird" {
-			sqlFirst = fmt.Sprintf(`FIRST %d`, dbSql.dbConfig.limitQuery)
+	if self.db_config.limit_query_exceptions.contains(&table_name) == false {
+		if self.db_config.driver_name == "firebird" {
+			sql_first = format!("FIRST {}", self.db_config.limit_query);
 		} else {
-			sqlLimit = fmt.Sprintf(`LIMIT %d`, dbSql.dbConfig.limitQuery)
+			sql_limit = format!("LIMIT {}", self.db_config.limit_query);
 		}
 	}
 
-	sql := fmt.Sprintf(`SELECT %s %s FROM %s %s %s`, sqlFirst, fieldsOut, tableName, sqlQuery, sqlLimit)
-	fmt.Println(sql)
-	return dbSql.getArrayMap(sql, params, schema)
+	let sql = format!("SELECT {} {} FROM {} {} {}", sql_first, fields_out, table_name, sql_query, sql_limit);
+	let params = params.as_slice();
+    let list = self.client.as_ref().unwrap().query(&sql, params).await.unwrap();
+    return self.get_json_list(&list);
 }
 
-func (dbSql *DbClientSql) FindOne(tableName string, queryParams map[string]any) (map[string]any, error) {
-	list, err := dbSql.Find(tableName, queryParams, []string{})
+async fn find_one(&self, openapi: &OpenAPI, table: &str, key: &Value) -> Option<Box<Value>> {
+    println!("[DbAdapterPostgres.find_one({}, {})]", table, key);
+    let list = self.find(openapi, table, key, &vec![]).await;
 
-	if err != nil {
-		return nil, err
-	}
-
-	if len(list) == 0 {
-		return nil, nil
-	}
-
-	return list[0], nil
+    if list.len() == 0 {
+        None
+    } else {
+        Some(Box::new(list.get(0).unwrap().clone()))
+    }
 }
 
-func (dbSql *DbClientSql) Update(schemaName string, key map[string]any, obj map[string]any) (map[string]any, error) {
-	schema, ok := dbSql.openapi.getSchemaFromSchemas(schemaName)
+fn update<'a>(&'a self, _openapi: &OpenAPI, table_name :&str, key :&Value, obj :&'a Value) -> Result<&'a Value, Error> {
+    println!("[DbAdapterPostgres.find({}, {}, {})]", table_name, key, obj.to_string());
+    Ok(&self.tmp)
+}
+
+/*
+fn Update(schemaName:&str, key:&Value, obj map[string]any) (map[string]any, error) {
+	schema, ok := self.openapi.getSchemaFromSchemas(schemaName)
 
 	if !ok {
 		return nil, fmt.Errorf(`[dbClientSql.Insert] : Missing schema %s`, schemaName)
@@ -326,7 +337,7 @@ func (dbSql *DbClientSql) Update(schemaName string, key map[string]any, obj map[
 
 	tableName := CamelToUnderscore(schemaName)
 	params := []any{}
-	sqlQuery := dbSql.buildQuery(key, &params, []string{})
+	sqlQuery := self.buildQuery(key, &params, []string{})
 	list := []string{}
 	idx := 1
 
@@ -357,13 +368,13 @@ func (dbSql *DbClientSql) Update(schemaName string, key map[string]any, obj map[
 			list := pgtype.JSONBArray{Elements: elements, Dimensions: dimensions, Status: pgtype.Present}
 			params = append(params, list)
 		default:
-			params = append(params, dbSql.openapi.getValueFromSchema(schema, fieldName, obj))
+			params = append(params, self.openapi.getValueFromSchema(schema, fieldName, obj))
 		}
 	}
 
 	sql := fmt.Sprintf(`UPDATE %s SET %s %s RETURNING *`, tableName, strings.Join(list, ","), sqlQuery)
 	fmt.Println(sql)
-	rows, err := dbSql.client.Query(sql, params...)
+	rows, err := self.client.Query(sql, params...)
 
 	if err != nil {
 		return nil, err
@@ -373,7 +384,7 @@ func (dbSql *DbClientSql) Update(schemaName string, key map[string]any, obj map[
 		return nil, fmt.Errorf(`Failt to update : %s : %s`, sql, rows.Err())
 	}
 
-	item, err := dbSql.getMapFromRow(rows, schema)
+	item, err := self.getMapFromRow(rows, schema)
 
 	if err != nil {
 		return nil, err
@@ -381,14 +392,19 @@ func (dbSql *DbClientSql) Update(schemaName string, key map[string]any, obj map[
 
 	return item, nil
 }
-
-func (dbSql *DbClientSql) DeleteOne(schemaName string, key map[string]any) error {
+*/
+fn delete_one(&self, _openapi: &OpenAPI, table_name: &str, key: &Value) -> Result<(), Error> {
+    println!("[DbAdapterPostgres.delete_one({}, {})]", table_name, key);
+    Ok(())
+}
+/*
+fn DeleteOne(schemaName:&str, key map[string]any) error {
 	tableName := CamelToUnderscore(schemaName)
 	params := []any{}
-	sqlQuery := dbSql.buildQuery(key, &params, []string{})
+	sqlQuery := self.buildQuery(key, &params, []string{})
 	sql := fmt.Sprintf(`DELETE FROM %s %s`, tableName, sqlQuery)
 	fmt.Println(sql)
-	result, err := dbSql.client.Exec(sql, params...)
+	result, err := self.client.Exec(sql, params...)
 
 	if err != nil {
 		return err
@@ -401,100 +417,18 @@ func (dbSql *DbClientSql) DeleteOne(schemaName string, key map[string]any) error
 	return err
 }
 
-func (dbSql *DbClientSql) getMapFromRow(rows *sql.Rows, schema *Schema) (map[string]any, error) {
-	cols, _ := rows.Columns()
-	columns := make([]any, len(cols))
-	columnPointers := make([]any, len(cols))
-
-	for i := range columns {
-		columnPointers[i] = &columns[i]
-	}
-
-	if err := rows.Scan(columnPointers...); err != nil {
-		return nil, err
-	}
-
-	m := make(map[string]any)
-
-	for i, colName := range cols {
-		val := columnPointers[i].(*any)
-		fieldName := UnderscoreToCamel(colName, false)
-
-		if schema != nil {
-			if field, ok := schema.Properties[fieldName]; ok {
-				if field.Type == "object" {
-					data := (*val).([]byte)
-					obj := map[string]any{}
-
-					if err := json.Unmarshal(data, &obj); err != nil {
-						UtilsShowJsonUnmarshalError(string(data), err)
-						return nil, err
-					}
-
-					m[fieldName] = obj
-				} else if field.Type == "array" {
-					// {"{\"mask\": 1, \"path\": \"/rufs_group_owner\"}","{\"mask\": 1, \"path\": \"/rufs_group\"}"}
-					str1 := (*val).(string)
-					//fmt.Printf("\nstr1 :\n%s\n", str1)
-					str2 := regexp.MustCompile(`^{"(.*)"}$`).ReplaceAllString(str1, `[${1}]`)
-					//fmt.Printf("\nstr2 :\n%s\n", str2)
-					str3 := regexp.MustCompile(`\\"`).ReplaceAllString(str2, `"`)
-					//fmt.Printf("\nstr3 :\n%s\n", str3)
-					str4 := regexp.MustCompile(`}","{`).ReplaceAllString(str3, `},{`)
-					//fmt.Printf("\nstr4 :\n%s\n", str4)
-					data := []byte(str4)
-					obj := []any{}
-
-					if err := json.Unmarshal(data, &obj); err != nil {
-						UtilsShowJsonUnmarshalError(string(data), err)
-						return nil, err
-					}
-
-					m[fieldName] = obj
-				}
-			}
-		}
-
-		if _, ok := m[fieldName]; !ok {
-			m[fieldName] = *val
-		}
-	}
-
-	return m, nil
-}
-
-func (dbSql *DbClientSql) getArrayMap(sql string, params []any, schema *Schema) ([]map[string]any, error) {
-	rows, err := dbSql.client.Query(sql, params...)
-
-	if err != nil {
-		return nil, err
-	}
-
-	result := []map[string]any{}
-
-	for rows.Next() {
-		item, err := dbSql.getMapFromRow(rows, schema)
-		if err != nil {
-			return nil, err
-		}
-		result = append(result, item)
-	}
-
-	return result, nil
-}
-
-func (dbSql *DbClientSql) UpdateOpenApi(openapi *OpenApi, options FillOpenApiOptions) error {
-	getFieldName := func(columnName string, field *Schema) (fieldName string) {
+fn UpdateOpenApi(openapi *OpenApi, options FillOpenApiOptions) error {
+	getFieldName := func(columnName:&str, field *Schema) (fieldName string) {
 		fieldName = UnderscoreToCamel(strings.ToLower(columnName), false)
 		fieldNameLowerCase := strings.ToLower(fieldName)
 
-		for aliasMapName, value := range dbSql.aliasMap {
+		for aliasMapName, value := range self.aliasMap {
 			if strings.ToLower(aliasMapName) == fieldNameLowerCase {
 				if field != nil {
 					field.InternalName = fieldName
 
 					if len(value) > 0 {
-						dbSql.aliasMapExternalToInternal[value] = fieldName
+						self.aliasMapExternalToInternal[value] = fieldName
 					}
 				}
 
@@ -511,13 +445,13 @@ func (dbSql *DbClientSql) UpdateOpenApi(openapi *OpenApi, options FillOpenApiOpt
 		return fieldName
 	}
 
-	setRef := func(schema *Schema, fieldName string, tableRef string) {
+	setRef := func(schema *Schema, fieldName:&str, tableRef string) {
 		field := schema.Properties[fieldName]
 
 		if field != nil {
 			field.Ref = "#/components/schemas/" + tableRef
 		} else {
-			log.Printf(`${dbSql.constructor.name}.getTablesInfo.processConstraints.setRef : field ${fieldName} not exists in schema ${schema.name}`)
+			log.Printf(`${self.constructor.name}.getTablesInfo.processConstraints.setRef : field ${fieldName} not exists in schema ${schema.name}`)
 		}
 	}
 
@@ -528,19 +462,19 @@ func (dbSql *DbClientSql) UpdateOpenApi(openapi *OpenApi, options FillOpenApiOpt
 			"SELECT constraint_name,column_name,ordinal_position FROM information_schema.key_column_usage ORDER BY constraint_name,ordinal_position"
 		sqlInfoConstraintsFieldsRef :=
 			"SELECT constraint_name,table_name,column_name FROM information_schema.constraint_column_usage"
-		result, err := dbSql.getArrayMap(sqlInfoConstraints, []any{}, nil)
+		result, err := self.getArrayMap(sqlInfoConstraints, []any{}, nil)
 
 		if err != nil {
 			return err
 		}
 
-		resultFields, err := dbSql.getArrayMap(sqlInfoConstraintsFields, []any{}, nil)
+		resultFields, err := self.getArrayMap(sqlInfoConstraintsFields, []any{}, nil)
 
 		if err != nil {
 			return err
 		}
 
-		resultFieldsRef, err := dbSql.getArrayMap(sqlInfoConstraintsFieldsRef, []any{}, nil)
+		resultFieldsRef, err := self.getArrayMap(sqlInfoConstraintsFieldsRef, []any{}, nil)
 
 		if err != nil {
 			return err
@@ -591,12 +525,12 @@ func (dbSql *DbClientSql) UpdateOpenApi(openapi *OpenApi, options FillOpenApiOpt
 						if foreignKey.TableRef == "" || foreignKey.TableRef == tableRef {
 							foreignKey.TableRef = tableRef
 						} else {
-							log.Printf(`[${dbSql.constructor.name}.getOpenApi().processConstraints()] : tableRef already defined : new (${tableRef}, old (${foreignKey.tableRef}))`)
+							log.Printf(`[${self.constructor.name}.getOpenApi().processConstraints()] : tableRef already defined : new (${tableRef}, old (${foreignKey.tableRef}))`)
 						}
 					}
 
 					if len(foreignKey.Fields) != len(foreignKey.FieldsRef) {
-						log.Printf(`[${dbSql.constructor.name}.getOpenApi().processConstraints()] : fields and fieldsRef length don't match : fields (${foreignKey.fields.toString()}, fieldsRef (${foreignKey.fieldsRef.toString()}))`)
+						log.Printf(`[${self.constructor.name}.getOpenApi().processConstraints()] : fields and fieldsRef length don't match : fields (${foreignKey.fields.toString()}, fieldsRef (${foreignKey.fieldsRef.toString()}))`)
 						continue
 					}
 
@@ -650,7 +584,7 @@ func (dbSql *DbClientSql) UpdateOpenApi(openapi *OpenApi, options FillOpenApiOpt
 				}
 			}
 
-			if list, ok := dbSql.missingPrimaryKeys[schemaName]; ok {
+			if list, ok := self.missingPrimaryKeys[schemaName]; ok {
 				for _, columnName := range list {
 					if slices.Index(schema.PrimaryKeys, columnName) < 0 {
 						schema.PrimaryKeys = append(schema.PrimaryKeys, columnName)
@@ -662,14 +596,14 @@ func (dbSql *DbClientSql) UpdateOpenApi(openapi *OpenApi, options FillOpenApiOpt
 				}
 			}
 
-			if list, ok := dbSql.missingForeignKeys[schemaName]; ok {
+			if list, ok := self.missingForeignKeys[schemaName]; ok {
 				for fieldName, tableRef := range list {
 					setRef(schema, fieldName, tableRef)
 				}
 			}
 
 			if len(schema.Required) == 0 {
-				log.Printf(`[${dbSql.constructor.name}.getOpenApi().processColumns()] missing required fields of table ${schemaName}`)
+				log.Printf(`[${self.constructor.name}.getOpenApi().processColumns()] missing required fields of table ${schemaName}`)
 			}
 		}
 
@@ -677,8 +611,8 @@ func (dbSql *DbClientSql) UpdateOpenApi(openapi *OpenApi, options FillOpenApiOpt
 	}
 
 	processColumns := func() (map[string]*Schema, error) {
-		dbSql.sqlTypes = []string{"boolean", "character varying", "character", "integer", "jsonb", "jsonb array", "numeric", "timestamp without time zone", "timestamp with time zone", "time without time zone", "bigint", "smallint", "text", "date", "double precision", "bytea"}
-		dbSql.rufsTypes = []string{"boolean", "string", "string", "integer", "object", "array", "number", "date-time", "date-time", "date-time", "integer", "integer", "string", "date-time", "number", "string"}
+		self.sqlTypes = []string{"boolean", "character varying", "character", "integer", "jsonb", "jsonb array", "numeric", "timestamp without time zone", "timestamp with time zone", "time without time zone", "bigint", "smallint", "text", "date", "double precision", "bytea"}
+		self.rufsTypes = []string{"boolean", "string", "string", "integer", "object", "array", "number", "date-time", "date-time", "date-time", "integer", "integer", "string", "date-time", "number", "string"}
 		sqlInfoTables := `
 		select 
 		c.data_type,
@@ -698,7 +632,7 @@ func (dbSql *DbClientSql) UpdateOpenApi(openapi *OpenApi, options FillOpenApiOpt
 		right outer join information_schema.columns c on (pgd.objsubid=c.ordinal_position and c.table_schema=st.schemaname and c.table_name=st.relname)
 		where table_schema = 'public' order by c.table_name,c.ordinal_position
 		`
-		rows, err := dbSql.client.Query(sqlInfoTables)
+		rows, err := self.client.Query(sqlInfoTables)
 
 		if err != nil {
 			return nil, err
@@ -707,7 +641,7 @@ func (dbSql *DbClientSql) UpdateOpenApi(openapi *OpenApi, options FillOpenApiOpt
 		schemas := map[string]*Schema{}
 
 		for rows.Next() {
-			rec, _ := dbSql.getMapFromRow(rows, nil)
+			rec, _ := self.getMapFromRow(rows, nil)
 			sqlType := strings.ToLower(strings.Trim(rec["dataType"].(string), " "))
 			sqlSubType := strings.ToLower(strings.Trim(rec["udtName"].(string), " "))
 
@@ -715,7 +649,7 @@ func (dbSql *DbClientSql) UpdateOpenApi(openapi *OpenApi, options FillOpenApiOpt
 				sqlType = "jsonb array"
 			}
 
-			typeIndex := slices.Index(dbSql.sqlTypes, sqlType)
+			typeIndex := slices.Index(self.sqlTypes, sqlType)
 
 			if typeIndex < 0 {
 				log.Printf(`DbClientPostgres.getTablesInfo().processColumns() : Invalid Database Type : ${rec["dataType"].trim().toLowerCase()}, full rec : ${JSON.stringify(rec)}`)
@@ -732,7 +666,7 @@ func (dbSql *DbClientSql) UpdateOpenApi(openapi *OpenApi, options FillOpenApiOpt
 			field := &Schema{}
 			fieldName := getFieldName(rec["columnName"].(string), field)
 			field.UniqueKeys = nil
-			field.Type = dbSql.rufsTypes[typeIndex] // LocalDateTime,ZonedDateTime,Date,Time
+			field.Type = self.rufsTypes[typeIndex] // LocalDateTime,ZonedDateTime,Date,Time
 
 			if field.Type == "date-time" {
 				field.Type = "string"
@@ -803,13 +737,13 @@ func (dbSql *DbClientSql) UpdateOpenApi(openapi *OpenApi, options FillOpenApiOpt
 	schemas, _ := processColumns()
 	processConstraints(schemas)
 	options.schemas = schemas
-	dbSql.openapi = openapi
+	self.openapi = openapi
 	openapi.FillOpenApi(options)
 	return nil
 }
 
-func (dbSql *DbClientSql) CreateTable(name string, schema *Schema) (sql.Result, error) {
-	genSqlColumnDescription := func(fieldName string, field *Schema) (string, error) {
+fn CreateTable(name:&str, schema *Schema) (sql.Result, error) {
+	genSqlColumnDescription := func(fieldName:&str, field *Schema) (string, error) {
 		if field.Type == "" {
 			if field.IdentityGeneration != "" {
 				field.Type = "integer"
@@ -818,13 +752,13 @@ func (dbSql *DbClientSql) CreateTable(name string, schema *Schema) (sql.Result, 
 			}
 		}
 
-		pos := slices.Index(dbSql.rufsTypes, field.Type)
+		pos := slices.Index(self.rufsTypes, field.Type)
 
 		if pos < 0 {
 			return "", fmt.Errorf(`[CreateTable(%s).genSqlColumnDescription(%s)] Missing rufsType equivalent of %s`, name, fieldName, field.Type)
 		}
 
-		sqlType := dbSql.sqlTypes[pos]
+		sqlType := self.sqlTypes[pos]
 
 		if field.Type == "string" && field.MaxLength > 0 && field.MaxLength < 32 {
 			sqlType = "character"
@@ -873,7 +807,7 @@ func (dbSql *DbClientSql) CreateTable(name string, schema *Schema) (sql.Result, 
 		return fmt.Sprintf(`%s %s%s %s %s`, CamelToUnderscore(fieldName), sqlType, sqlLengthScale, sqlDefault, sqlNotNull), nil
 	}
 	// TODO : refatorar função genSqlForeignKey(fieldName, field) para genSqlForeignKey(tableName)
-	genSqlForeignKey := func(fieldName string, field *Schema) string {
+	genSqlForeignKey := func(fieldName:&str, field *Schema) string {
 		ref := OpenApiGetSchemaName(field.Ref)
 		tableOut := CamelToUnderscore(ref)
 		return fmt.Sprintf(`FOREIGN KEY(%s) REFERENCES %s`, CamelToUnderscore(fieldName), tableOut)
@@ -904,44 +838,15 @@ func (dbSql *DbClientSql) CreateTable(name string, schema *Schema) (sql.Result, 
 	tableName := CamelToUnderscore(name)
 	sql := fmt.Sprintf(`CREATE TABLE %s (%s)`, tableName, tableBody)
 	fmt.Printf("entityManager.createTable() : table %s, sql : \n%s\n", name, sql)
-	result, err := dbSql.client.Exec(sql)
+	result, err := self.client.Exec(sql)
 
 	if err != nil {
 		return nil, err
 	}
 
-	err = dbSql.UpdateOpenApi(dbSql.openapi, FillOpenApiOptions{requestBodyContentType: dbSql.dbConfig.requestBodyContentType})
+	err = self.UpdateOpenApi(self.openapi, FillOpenApiOptions{requestBodyContentType: self.dbConfig.requestBodyContentType})
 
 	return result, err
 }
 */
-}
-
-#[tide::utils::async_trait]
-impl EntityManager for DbAdapterPostgres {
-    fn insert(&self, _openapi: &OpenAPI, table_name :&str, obj :&Value) -> Result<Value, Error> {
-        println!("[DbAdapterPostgres.find({}, {})]", table_name, obj.to_string());
-        Ok(obj.clone())
-    }
-
-    fn find_one(self: &Self, table: &str, key: &Value) -> Option<Box<Value>> {
-        println!("[DbAdapterPostgres.find_one({}, {})]", table, key);
-        //let list = self.find(table, key, vec![]);
-        None
-    }
-
-    async fn find(self: &Self, table: &str, _key: &Value, _order_by: &Vec<String>) -> Vec<Value> {
-        let list = self.client.as_ref().unwrap().query(format!("SELECT * FROM {}", table).as_str(), &[]).await.unwrap();
-        return self.get_json_list(&list);
-    }
-
-    fn update<'a>(&'a self, table_name :&str, key :&Value, obj :&'a Value) -> Result<&'a Value, Error> {
-        println!("[DbAdapterPostgres.find({}, {}, {})]", table_name, key, obj.to_string());
-        Ok(&self.tmp)
-    }
-
-    fn delete_one(self: &Self, table_name: &str, key: &Value) -> Result<(), Error> {
-        println!("[DbAdapterPostgres.delete_one({}, {})]", table_name, key);
-        Ok(())
-    }
 }

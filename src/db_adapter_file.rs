@@ -68,7 +68,7 @@ impl EntityManager for DbAdapterFile<'_> {
         return Ok(obj.clone());
     }
 
-    async fn find(self: &Self, table: &str, key: &Value, _order_by: &Vec<String>) -> Vec<Value> {
+    async fn find(&self, _openapi: &OpenAPI, table: &str, key: &Value, _order_by: &Vec<String>) -> Vec<Value> {
         let tables: LockResult<RwLockReadGuard<HashMap<String, Value>>> = self.tables.read();
         let tables: RwLockReadGuard<HashMap<String, Value>> = tables.unwrap();
         let list = tables.get(table).unwrap().as_array().unwrap();
@@ -82,7 +82,7 @@ impl EntityManager for DbAdapterFile<'_> {
         list_out
     }
 
-    fn find_one(self: &Self, table: &str, key: &Value) -> Option<Box<Value>> {
+    async fn find_one(&self, _openapi: &OpenAPI, table: &str, key: &Value) -> Option<Box<Value>> {
         let tables: LockResult<RwLockReadGuard<HashMap<String, Value>>> = self.tables.read();
         let tables: RwLockReadGuard<HashMap<String, Value>> = tables.unwrap();
         let list = tables.get(table).unwrap().as_array().unwrap();
@@ -90,7 +90,7 @@ impl EntityManager for DbAdapterFile<'_> {
         Some(Box::new(obj.clone()))
     }
 
-    fn update<'a>(&self, table_name :&str, key :&Value, obj :&'a Value) -> Result<&'a Value, Error> {
+    fn update<'a>(&self, _openapi: &OpenAPI, table_name :&str, key :&Value, obj :&'a Value) -> Result<&'a Value, Error> {
         let tables: LockResult<RwLockWriteGuard<HashMap<String, Value>>> = self.tables.write();
         let mut tables: RwLockWriteGuard<HashMap<String, Value>> = tables.unwrap();
         let list = tables.get(table_name).unwrap().as_array().unwrap();
@@ -106,7 +106,7 @@ impl EntityManager for DbAdapterFile<'_> {
         Err(Error::new(std::io::ErrorKind::NotFound, format!("[FileDbAdapter.Update(name = {}, key = {})] : don't find table", table_name, key)))
     }
 
-    fn delete_one(self: &Self, table_name: &str, key: &Value) -> Result<(), Error> {
+    fn delete_one(&self, _openapi: &OpenAPI, table_name: &str, key: &Value) -> Result<(), Error> {
         let tables: LockResult<RwLockWriteGuard<HashMap<String, Value>>> = self.tables.write();
         let mut tables: RwLockWriteGuard<HashMap<String, Value>> = tables.unwrap();
         let list = tables.get(table_name).unwrap().as_array().unwrap();

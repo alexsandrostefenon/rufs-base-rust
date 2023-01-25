@@ -33,6 +33,8 @@ pub trait RufsOpenAPI {
     fn get_path_params(&self, uri: &str, params: &Value) -> Result<String, Error>;
     fn get_schema_name_from_ref(&self, xref: &str) -> String;
     fn get_schema_name(&self, path: &str, method: &str) -> Result<String, Error>;
+    fn get_properties_from_schema_name<'a>(&'a self, schema_name :&str) -> Option<&'a IndexMap<String, ReferenceOr<Box<Schema>>>>;
+    fn get_properties_from_schema<'a>(&'a self, schema :&'a Schema) -> Option<&'a IndexMap<String, ReferenceOr<Box<Schema>>>>;
     fn get_property_from_schema<'a>(&'a self, schema :&'a Schema, property_name :&'a str) -> Option<&'a Schema>;
     fn get_property_from_schemas<'a>(&'a self, schema_name: &str, property_name :&'a str) -> Option<&Schema>;
     fn get_property_from_request_bodies<'a>(&'a self, schema_name :&str, property_name :&'a str) -> Option<&Schema>;
@@ -1073,42 +1075,49 @@ fn copy_fields(&self, schema: &Schema, data_in: &Value, ignorenil: bool, ignore_
         Err(Error::new(std::io::ErrorKind::NotFound, ""))
     }
 
-    fn get_property_from_schema<'a>(&'a self, schema :&'a Schema, property_name :&'a str) -> Option<&'a Schema> {
-        fn process<'b>(openapi: &'b OpenAPI, properties: &'b IndexMap<String, ReferenceOr<Box<Schema>>>, property_name :&'b str) -> Option<&'b Schema> {
-            if let Some(value) = properties.get(property_name) {
-                match value {
-                    ReferenceOr::Item(item) => return Some(item),
-                    ReferenceOr::Reference { reference } => match openapi.get_schema_from_ref(reference) {
-                        Ok(schema) => return Some(schema),
-                        Err(_) => todo!(),
-                    },
-                }
-            }
-    
-            for (_, field) in properties {
-                match field {
-                    ReferenceOr::Item(item) => {
-                        if let Some(internal_name) = item.schema_data.extensions.get("x-internalName") {
-                            if internal_name == property_name {
-                                return Some(item);
-                            }
-                        }
-                    },
-                    _ => continue,
-                }
-            }
-    
-            None
-        }
-
+    fn get_properties_from_schema<'a>(&'a self, schema :&'a Schema) -> Option<&'a IndexMap<String, ReferenceOr<Box<Schema>>>> {
         match &schema.schema_kind {
             SchemaKind::Type(typ) => match typ {
-                Type::Object(object) => return process(self, &object.properties, property_name),
+                Type::Object(object) => Some(&object.properties),
                 _ => None,
             },
-            SchemaKind::Any(any) => return process(self, &any.properties, property_name),
+            SchemaKind::Any(any) => Some(&any.properties),
             _ => None,
         }
+    }
+
+    fn get_properties_from_schema_name<'a>(&'a self, schema_name :&str) -> Option<&'a IndexMap<String, ReferenceOr<Box<Schema>>>> {
+        let schema = self.get_schema_from_schemas(schema_name)?;
+        self.get_properties_from_schema(schema)
+    }
+
+    fn get_property_from_schema<'a>(&'a self, schema :&'a Schema, property_name :&'a str) -> Option<&'a Schema> {
+        let properties = self.get_properties_from_schema(schema)?;
+
+        if let Some(value) = properties.get(property_name) {
+            match value {
+                ReferenceOr::Item(item) => return Some(item),
+                ReferenceOr::Reference { reference } => match self.get_schema_from_ref(reference) {
+                    Ok(schema) => return Some(schema),
+                    Err(_) => todo!(),
+                },
+            }
+        }
+
+        for (_, field) in properties {
+            match field {
+                ReferenceOr::Item(item) => {
+                    if let Some(internal_name) = item.schema_data.extensions.get("x-internalName") {
+                        if internal_name == property_name {
+                            return Some(item);
+                        }
+                    }
+                },
+                _ => continue,
+            }
+        }
+
+        None
     }
 
     fn get_property_from_schemas<'a>(&'a self, schema_name: &str, property_name :&'a str) -> Option<&Schema> {
