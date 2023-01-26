@@ -383,6 +383,7 @@ impl IMicroServiceServer for RufsMicroService<'_> {
         let mut list_out: Vec<u64> = vec![];
 
         for item in list_in {
+            println!("[RufsMicroService.authenticate_user] rufsGroupUser : {}", item);
             list_out.push(item.get("rufsGroup").unwrap().as_u64().unwrap());
         }
 

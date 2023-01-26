@@ -81,6 +81,7 @@ async fn handle_login(mut request: Request<RufsMicroService<'_>>) -> tide::Resul
 }
 
 async fn handle_api(mut request: Request<RufsMicroService<'_>>) -> tide::Result {
+    println!("\n\n[handle_api] {} : {}", request.method(), request.url());
     let method = request.method().to_string().to_lowercase();
 
     let obj_in = if method == "post" || method == "put" || method == "patch" {

@@ -7,12 +7,19 @@ use tokio_postgres::{NoTls, Client, Row, types::{Type, ToSql}};
 
 use crate::{entity_manager::EntityManager, openapi::RufsOpenAPI};
 
-#[derive(Clone,Default)]
+#[derive(Clone)]
 struct DbConfig {
 	driver_name: String,
 	limit_query: usize,
 	limit_query_exceptions: Vec<String>,
 }
+
+impl Default for DbConfig {
+    fn default() -> Self {
+        Self { driver_name: Default::default(), limit_query: 1000, limit_query_exceptions: Default::default() }
+    }
+}
+
 #[derive(Clone,Default)]
 pub struct DbAdapterPostgres<'a> {
     pub openapi    : Option<&'a OpenAPI>,
@@ -32,10 +39,31 @@ impl DbAdapterPostgres<'_> {
             let typ = column.type_();
 
             let value : Value = match *typ {
-                Type::VARCHAR => Value::String(row.get(idx)),
-                Type::INT4 => Value::Number(Number::from(row.get::<usize, i32>(idx))),
-                Type::INT8 => Value::Number(Number::from(row.get::<usize, i64>(idx))),
-                Type::JSONB => row.get(idx),
+                Type::VARCHAR => {
+					if let Some(value) = row.get(idx) {
+						Value::String(value)
+					} else {
+						Value::Null
+					}
+				},
+                Type::INT4 => {
+					if let Some(value) = row.get::<_, Option<i32>>(idx) {
+						Value::Number(Number::from(value))
+					} else {
+						Value::Null
+					}
+				},
+                Type::INT8 => {
+					if let Some(value) = row.get::<usize, Option<i64>>(idx) {
+						Value::Number(Number::from(value))
+					} else {
+						Value::Null
+					}
+				},
+                Type::JSONB => 
+				{
+					row.get(idx)
+				},
                 Type::JSONB_ARRAY => {
                     let list = row.get::<_, Vec<Value>>(idx);
                     Value::Array(list)
@@ -43,7 +71,7 @@ impl DbAdapterPostgres<'_> {
                 _ => row.get(idx)
             };
 
-            obj[name] = value;
+            obj[name.to_case(convert_case::Case::Camel)] = value;
         }
 
         obj
@@ -126,21 +154,31 @@ fn Disconnect() error {
 			let _null : Option<bool> = None;
 
 			for (field_name, field) in query_params.as_object().unwrap() {
+				let field_name = field_name.to_case(convert_case::Case::Snake);
 				let param_id = format!("${}", count);
 				count += 1;
 
+				println!("{field_name} : {}", field);
+
 				match field {
-					Value::Array(_) => conditions.push(format!("{} {} ANY ({})", field_name.to_case(convert_case::Case::Snake), operator, param_id)),
-					_ => conditions.push(format!("{} {} {}", field_name.to_case(convert_case::Case::Snake), operator, param_id)),
+					Value::Null => conditions.push(format!("{} {} NULL", field_name, operator)),
+					Value::Bool(value) => conditions.push(format!("{} {} {}", field_name, operator, value)),
+					Value::Number(value) => if value.is_i64() {
+						conditions.push(format!("{} {} {}", field_name, operator, value.as_i64().unwrap()));
+					} else if value.is_u64() {
+						conditions.push(format!("{} {} {}", field_name, operator, value.as_u64().unwrap()));
+					} else if value.is_f64() {
+						conditions.push(format!("{} {} {}", field_name, operator, value.as_f64().unwrap()));
+					},
+					Value::Array(_) => conditions.push(format!("{} {} ANY ({})", field_name, operator, param_id)),
+					_ => conditions.push(format!("{} {} {}", field_name, operator, param_id)),
 				}
 
 				match field {
-					Value::Null => todo!(),
-					Value::Bool(_value) => todo!(),
-					Value::Number(_value) => todo!(),
 					Value::String(value) => params.push(value),
 					Value::Array(value) => params.push(value),
-					Value::Object(_) => todo!(),
+					Value::Object(_) => params.push(field),
+					_ => count -= 1,
 				}
 			}
 		}
@@ -326,6 +364,10 @@ async fn find_one(&self, openapi: &OpenAPI, table: &str, key: &Value) -> Option<
     if list.len() == 0 {
         None
     } else {
+		if list.len() > 1 {
+			println!("[DbAdapterPostgres.find_one({}, {})] Error : expected one, found {} registers.", table, key, list.len());
+		}
+
         Some(Box::new(list.get(0).unwrap().clone()))
     }
 }

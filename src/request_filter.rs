@@ -52,12 +52,17 @@ impl<'a> RequestFilter<'a> {
 
         rf.schema_name = rms.micro_service_server.openapi.get_schema_name(&rf.path, &rf.method).unwrap();
 
+        if rf.schema_name.ends_with("List") {
+            rf.schema_name = rf.schema_name[0..rf.schema_name.len()-4].to_string();
+        }
+
         if rms.db_adapter_file.have_table(&rf.schema_name) {
             rf.entity_manager = Some(Box::new(&rms.db_adapter_file));
         } else {
             rf.entity_manager = Some(Box::new(&rms.entity_manager));
         }
 
+        println!("[RequestFilter.new] : path = {}, method = {}, schema_name = {}, parameters = {}", rf.path, rf.method, rf.schema_name, rf.parameters);
         Ok(rf)
     }
     // private to create,update,delete,read
@@ -125,6 +130,7 @@ impl<'a> RequestFilter<'a> {
 
     async fn get_object(&self, use_document :bool) -> Result<Box<Value>, Error> {
         let key = self.parse_query_parameters()?;
+        println!("[RequestFilter.get_object({})] : {}", self.schema_name, key);
         let obj = self.entity_manager.as_ref().unwrap().find_one(&self.micro_service.micro_service_server.openapi, &self.schema_name, &key).await.unwrap();
 
         if use_document != true {
@@ -135,6 +141,7 @@ impl<'a> RequestFilter<'a> {
     }
 
     async fn process_read(&self) -> tide::Response {
+        println!("[RequestFilter.process_read({})]", self.schema_name);
         // TODO : check RequestBody schema
         match self.get_object(false).await {
             Ok(obj) => tide::Response::builder(200).body(obj.as_ref().clone()).build(),
@@ -236,6 +243,7 @@ impl<'a> RequestFilter<'a> {
         };
 
         let list = self.entity_manager.as_ref().unwrap().find(&self.micro_service.micro_service_server.openapi, &self.schema_name, &fields, &order_by).await;
+        println!("[RequestFilter.process_query] : returning {} registers.", list.len());
         tide::Response::builder(200).body(Value::Array(list)).build()
     }
 
@@ -332,27 +340,35 @@ impl<'a> RequestFilter<'a> {
 
     pub async fn process_request(&mut self) -> tide::Response {
         let schema_response = self.micro_service.micro_service_server.openapi.get_schema(&self.path, &self.method, "responseObject").unwrap();
-        println!("[process_request] : {} {}", self.path, self.method);
+        println!("[RequestFilter.process_request] : {} {}", self.path, self.method);
 
         if self.method == "get" {
             match &schema_response.schema_kind {
                 openapiv3::SchemaKind::Type(typ) => match typ {
-                    openapiv3::Type::Object(_) => return self.process_read().await,
-                    openapiv3::Type::Array(_) => return self.process_query().await,
+                    openapiv3::Type::Object(_) => {
+                        println!("[RequestFilter.process_request] openapiv3::Type::Object : {} {}", self.path, self.method);
+                        return self.process_read().await
+                    },
+                    openapiv3::Type::Array(_) => {
+                        println!("[RequestFilter.process_request] openapiv3::Type::Array : {} {}", self.path, self.method);
+                        return self.process_query().await
+                    },
                     _ => todo!(),
                 },
                 openapiv3::SchemaKind::Any(any) => {
                     if any.items.is_some() {
+                        println!("[RequestFilter.process_request] any.items : {} {}", self.path, self.method);
                         return self.process_query().await;
                     } else {
+                        println!("[RequestFilter.process_request] not any.items : {} {}", self.path, self.method);
                         return self.process_read().await;
                     }
                 },
                 _ => todo!(),
             }            
-      } else if self.method == "post" {
-            return self.process_create();
-      } else if self.method == "put" {
+        } else if self.method == "post" {
+                return self.process_create();
+        } else if self.method == "put" {
             return self.process_update().await;
       /*} else if self.method == "patch" {
             resp = self.processPatch()*/

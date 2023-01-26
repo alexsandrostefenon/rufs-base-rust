@@ -19,19 +19,25 @@ pub struct ForeignKeyDescription {
     //is_unique_key: bool
 }
 
+pub struct SchemaInfo<'a> {
+    pub name: &'a str,
+    pub schema: &'a Schema,
+    pub is_array: bool
+}
+
 pub trait RufsOpenAPI {
     fn copy_value(&self, schema: &Schema, field_name:&String, field: &Schema, value :&Value) -> Result<Value, Error>;
     fn get_value_from_schema<'a>(&'a self, schema :&Schema, property_name :&str, obj: &'a Value) -> Option<&Value>;
     fn copy_fields(&self, schema: &Schema, data_in: &Value, ignorenil: bool, ignore_hiden: bool, only_primary_keys: bool) -> Result<Value, Error>;
     fn fill(&mut self, options: &mut FillOpenAPIOptions) -> Result<(), Error>;
-    fn get_schema_from_schemas(&self, xref :&str) -> Option<&Schema>;
+    fn get_schema_from_schemas(&self, reference :&str) -> Option<&Schema>;
     fn get_schema_from_request_bodies(&self, schema_name: &str) -> Option<&Schema>;
     fn get_schema_from_responses(&self, schema_name: &str) -> Option<&Schema>;
     fn get_schema_from_parameters(&self, path: &str, method: &str) -> Result<&Schema, Error>;
-    fn get_schema(&self, path :&str, method :&str, _type :&str) -> Result<&Schema, Error>;
-    fn get_schema_from_ref(&self, xref: &str) -> Result<&Schema, Error>;
+    fn get_schema(&self, path :&str, method :&str, typ :&str) -> Result<&Schema, Error>;
+    fn get_schema_from_ref(&self, reference: &str) -> Result<&Schema, Error>;
     fn get_path_params(&self, uri: &str, params: &Value) -> Result<String, Error>;
-    fn get_schema_name_from_ref(&self, xref: &str) -> String;
+    fn get_schema_name_from_ref(&self, reference: &str) -> String;
     fn get_schema_name(&self, path: &str, method: &str) -> Result<String, Error>;
     fn get_properties_from_schema_name<'a>(&'a self, schema_name :&str) -> Option<&'a IndexMap<String, ReferenceOr<Box<Schema>>>>;
     fn get_properties_from_schema<'a>(&'a self, schema :&'a Schema) -> Option<&'a IndexMap<String, ReferenceOr<Box<Schema>>>>;
@@ -39,7 +45,7 @@ pub trait RufsOpenAPI {
     fn get_property_from_schemas<'a>(&'a self, schema_name: &str, property_name :&'a str) -> Option<&Schema>;
     fn get_property_from_request_bodies<'a>(&'a self, schema_name :&str, property_name :&'a str) -> Option<&Schema>;
     fn get_property<'a>(&'a self, schema_name :&str, property_name :&'a str) -> Option<&Schema>;
-    //fn get_properties_with_ref(&self, schema_name :&str, xref :&str) -> Vec<PropertiesWithRef>;
+    //fn get_properties_with_ref(&self, schema_name :&str, reference :&str) -> Vec<PropertiesWithRef>;
     fn get_foreign_key_description(&self, schema :&str, field_name: &str) -> Result<Option<ForeignKeyDescription>, Error>;
     fn get_primary_key_foreign(&self, schema_name :&str, field_name :&str, obj :&Value) -> Result<Option<PrimaryKeyForeign>, Error>;
 }
@@ -764,20 +770,21 @@ fn copy_fields(&self, schema: &Schema, data_in: &Value, ignorenil: bool, ignore_
         Ok(())
     }
 
-    fn get_schema_name_from_ref(&self, xref: &str) -> String {
-        if let Some(pos) = xref.rfind("/") {
-            return xref[pos + 1..].to_string();
+    fn get_schema_name_from_ref(&self, reference: &str) -> String {
+        if let Some(pos) = reference.rfind("/") {
+            return reference[pos + 1..].to_string();
         }
 
-        if let Some(pos) = xref.find("?") {
-            return xref[..pos].to_string();
+        if let Some(pos) = reference.find("?") {
+            return reference[..pos].to_string();
         }
 
-        return xref.to_case(Case::Camel);
+        return reference.to_case(Case::Camel);
     }
 
-    fn get_schema_from_schemas(&self, xref :&str) -> Option<&Schema> {
-        let schema_name = self.get_schema_name_from_ref(xref);
+    fn get_schema_from_schemas(&self, reference :&str) -> Option<&Schema> {
+        let schema_name = self.get_schema_name_from_ref(reference);
+        println!("[OpenAPI.get_schema_from_schemas({reference})] : {}", schema_name);
         let schema = self.components.as_ref().unwrap().schemas.get(&schema_name)?;
 
         return match schema {
@@ -843,11 +850,12 @@ fn copy_fields(&self, schema: &Schema, data_in: &Value, ignorenil: bool, ignore_
         None
     }
 
-    fn get_schema_from_ref(&self, xref: &str) -> Result<&Schema, Error> {
+    fn get_schema_from_ref(&self, reference: &str) -> Result<&Schema, Error> {
         let openapi = self;
-        let schema_name = self.get_schema_name_from_ref(xref);
+        let schema_name = self.get_schema_name_from_ref(reference);
+        println!("[OpenAPI.get_schema_from_ref({reference})]");
 
-        let schema = if xref.starts_with("#/components/parameters/") {
+        let schema = if reference.starts_with("#/components/parameters/") {
             if let Some(parameter_object) = openapi.components.as_ref().unwrap().parameters.get(&schema_name) {
                 match &parameter_object {
                     ReferenceOr::Reference { reference: _ } => todo!(),
@@ -869,29 +877,39 @@ fn copy_fields(&self, schema: &Schema, data_in: &Value, ignorenil: bool, ignore_
             } else {
                 return Err(Error::new(
                     std::io::ErrorKind::NotFound,
-                    format!("[OpenAPI.get_schema_from_parameters] don't find schema from {}", xref),
+                    format!("[OpenAPI.get_schema_from_parameters] don't find schema from {}", reference),
                 ));
             }
-        } else if xref.starts_with("#/components/schemas/") {
+        } else if reference.starts_with("#/components/schemas/") {
             let aux = openapi.components.as_ref().unwrap().schemas.get(&schema_name).unwrap();
             aux
-        } else if xref.starts_with("#/components/responses/") {
+        } else if reference.starts_with("#/components/responses/") {
             let aux = openapi.components.as_ref().unwrap().responses.get(&schema_name).unwrap().as_item().unwrap().content.first().unwrap().1.schema.as_ref().unwrap();
             aux
         } else {
             return Err(Error::new(
                 std::io::ErrorKind::NotFound,
-                format!("[OpenAPI.get_schema_from_parameters] don't find schema from {}", xref),
+                format!("[OpenAPI.get_schema_from_parameters] don't find schema from {}", reference),
             ));
         };
 
-        match &schema {
-            ReferenceOr::Reference { reference: xref } => return self.get_schema_from_ref(xref),
+        match schema {
+            ReferenceOr::Reference { reference } => return self.get_schema_from_ref(reference),
             ReferenceOr::Item(schema) => match &schema.schema_kind {
                 SchemaKind::Type(typ) => {
                     match typ {
                         Type::Object(_) => Ok(&schema),
-                        _ => todo!(),
+                        Type::String(_) => todo!(),
+                        Type::Number(_) => todo!(),
+                        Type::Integer(_) => todo!(),
+                        Type::Array(array) => match &array.items {
+                            Some(schema) => match schema {
+                                ReferenceOr::Reference { reference } => self.get_schema_from_ref(reference),
+                                ReferenceOr::Item(schema) => Ok(schema),
+                            },
+                            None => todo!(),
+                        },
+                        Type::Boolean {  } => todo!(),
                     }
                 },
                 SchemaKind::OneOf { one_of: _ } => todo!(),
@@ -973,7 +991,7 @@ fn copy_fields(&self, schema: &Schema, data_in: &Value, ignorenil: bool, ignore_
         Err(Error::new(std::io::ErrorKind::NotFound, format!("[OpenAPI.get_schema_from_parameters] don't find schema parameter from {}", path)))
     }
 
-    fn get_schema(&self, path :&str, method :&str, _type :&str) -> Result<&Schema, Error> {
+    fn get_schema(&self, path :&str, method :&str, typ :&str) -> Result<&Schema, Error> {
         fn get_schema_from_content<'a>(openapi: &'a OpenAPI, content :&'a Content) -> Result<&'a Schema, Error> {
             for (_, media_type_object) in content {
                 match media_type_object.schema.as_ref().unwrap() {
@@ -998,21 +1016,19 @@ fn copy_fields(&self, schema: &Schema, data_in: &Value, ignorenil: bool, ignore_
             Err(Error::new(std::io::ErrorKind::NotFound, ""))
         }
 
-        let openapi = self;
-
-        if let Some(path_item_object) = openapi.paths.paths.get(path) {
+        if let Some(path_item_object) = self.paths.paths.get(path) {
             let path_item_object = match path_item_object {
                 ReferenceOr::Reference { reference: _ } => todo!(),
                 ReferenceOr::Item(path_item_object) => path_item_object,
             };
 
             if let Some((_, operation_object)) = path_item_object.iter().find(|x| x.0 == method) {
-                if _type == "responseObject" {
+                if typ == "responseObject" {
                     if let Some(response_object) = operation_object.responses.responses.get(&StatusCode::Code(200)) {
                         match response_object {
-                            ReferenceOr::Item(response_object) => return get_schema_from_content(openapi, &response_object.content),
+                            ReferenceOr::Item(response_object) => return get_schema_from_content(self, &response_object.content),
                             ReferenceOr::Reference { reference } => {
-                                if let Some(schema) = openapi.get_schema_from_responses(reference) {
+                                if let Some(schema) = self.get_schema_from_responses(reference) {
                                     return Ok(schema);
                                 } else {
                                     return Err(Error::new(std::io::ErrorKind::NotFound, ""));
@@ -1051,7 +1067,9 @@ fn copy_fields(&self, schema: &Schema, data_in: &Value, ignorenil: bool, ignore_
                 let schema = match &response_object.unwrap() {
                     ReferenceOr::Reference { reference } => openapi.get_schema_from_ref(reference).unwrap(),
                     ReferenceOr::Item(response) => match &response.content.first().as_ref().unwrap().1.schema.as_ref().unwrap() {
-                        ReferenceOr::Reference { reference } => return Ok(self.get_schema_name_from_ref(&reference)),
+                        ReferenceOr::Reference { reference } => {
+                            return Ok(self.get_schema_name_from_ref(&reference))
+                        },
                         ReferenceOr::Item(schema) => schema,
                     },
                 };
@@ -1060,13 +1078,19 @@ fn copy_fields(&self, schema: &Schema, data_in: &Value, ignorenil: bool, ignore_
                     SchemaKind::Type(typ) => match typ {
                         Type::Array(array) => {
                             match array.items.as_ref().unwrap() {
-                                ReferenceOr::Reference { reference } => return Ok(self.get_schema_name_from_ref(&reference)),
+                                ReferenceOr::Reference { reference } => {
+                                    println!("[OpenAPI.get_schema_name({path}, {method})] : SchemaKind::Type::Array : {}", reference);
+                                    return Ok(self.get_schema_name_from_ref(&reference))
+                                },
                                 ReferenceOr::Item(_) => todo!(),
                             }
                         },
                         _ => todo!(),
                     },
-                    SchemaKind::Any(_) => return Ok(path[1..].to_string().to_case(Case::Camel)),
+                    SchemaKind::Any(_) => {
+                        let schema_name = path[1..].to_string().to_case(Case::Camel);
+                        return Ok(schema_name)
+                    },
                     _ => todo!(),
                 }
             }
@@ -1142,13 +1166,13 @@ fn copy_fields(&self, schema: &Schema, data_in: &Value, ignorenil: bool, ignore_
         field
     }
 /*
-    fn get_properties_with_ref(&self, schema_name :&str, xref :&str) -> Vec<PropertiesWithRef> {
-        fn process_schema(schema :&Schema, xref :&str, mut list_out: &Vec<PropertiesWithRef>) {
-            fn process_properties(properties: &IndexMap<String, ReferenceOr<Box<Schema>>>, xref :&str, mut list_out: &Vec<PropertiesWithRef>) {
+    fn get_properties_with_ref(&self, schema_name :&str, reference :&str) -> Vec<PropertiesWithRef> {
+        fn process_schema(schema :&Schema, reference :&str, mut list_out: &Vec<PropertiesWithRef>) {
+            fn process_properties(properties: &IndexMap<String, ReferenceOr<Box<Schema>>>, reference :&str, mut list_out: &Vec<PropertiesWithRef>) {
                 for (field_name, field) in properties {
                     match field {
                         ReferenceOr::Reference { reference } => {
-                            if reference == xref {
+                            if reference == reference {
                                 let found = false;
         
                                 for item in list_out {
@@ -1170,10 +1194,10 @@ fn copy_fields(&self, schema: &Schema, data_in: &Value, ignorenil: bool, ignore_
 
             match &schema.schema_kind {
                 SchemaKind::Type(typ) => match typ {
-                    Type::Object(object) => process_properties(&object.properties, xref, list_out),
+                    Type::Object(object) => process_properties(&object.properties, reference, list_out),
                     _ => todo!(),
                 },
-                SchemaKind::Any(any) => process_properties(&any.properties, xref, list_out),
+                SchemaKind::Any(any) => process_properties(&any.properties, reference, list_out),
                 _ => todo!(),
             }
         }
@@ -1183,13 +1207,13 @@ fn copy_fields(&self, schema: &Schema, data_in: &Value, ignorenil: bool, ignore_
         let mut list;
 
         if schema.is_some() {
-            process_schema(schema.unwrap(), xref, &list);
+            process_schema(schema.unwrap(), reference, &list);
         }
 
         let schema = self.get_schema_from_request_bodies(&schema_name);
 
         if schema.is_some() {
-            process_schema(schema.unwrap(), xref, &list);
+            process_schema(schema.unwrap(), reference, &list);
         }
 
         return list;
@@ -1204,18 +1228,18 @@ fn copy_fields(&self, schema: &Schema, data_in: &Value, ignorenil: bool, ignore_
             return Ok(None);
         }
 
-        let xref = field.unwrap().schema_data.extensions.get("$ref");
+        let reference = field.unwrap().schema_data.extensions.get("$ref");
 
-        if xref.is_none() {
+        if reference.is_none() {
             println!("[openapi.get_foreign_key_description({}, {})] : trace : missing $ref \n{:?}", schema, field_name, field);
             return Ok(None);
         }
 
-        let xref = xref.unwrap().as_str().unwrap();
-        let service_ref = self.get_schema_from_schemas(xref);
+        let reference = reference.unwrap().as_str().unwrap();
+        let service_ref = self.get_schema_from_schemas(reference);
 
         if service_ref.is_none() {
-            return Err(Error::new(std::io::ErrorKind::NotFound, format!("Don't found schema {}", xref)));
+            return Err(Error::new(std::io::ErrorKind::NotFound, format!("Don't found schema {}", reference)));
         }
 
         let mut fields_ref  = json!({});
@@ -1232,7 +1256,7 @@ fn copy_fields(&self, schema: &Schema, data_in: &Value, ignorenil: bool, ignore_
             }
         } else if fields_ref.as_object().unwrap().len() > 1 {
             for (field_ref, value) in fields_ref.as_object_mut().unwrap() {
-                let property = self.get_property(xref, field_ref);
+                let property = self.get_property(reference, field_ref);
 
                 if property.is_some() && value.is_null() {
                     value.clone_from(&Value::String(field_ref.clone()));
@@ -1253,7 +1277,7 @@ fn copy_fields(&self, schema: &Schema, data_in: &Value, ignorenil: bool, ignore_
         }
 
         let ret = ForeignKeyDescription{
-            //table_ref: xref.to_string(), 
+            //table_ref: reference.to_string(), 
             fields_ref: fields_ref, 
             //is_unique_key: true
         };
