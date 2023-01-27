@@ -19,12 +19,6 @@ pub struct ForeignKeyDescription {
     //is_unique_key: bool
 }
 
-pub struct SchemaInfo<'a> {
-    pub name: &'a str,
-    pub schema: &'a Schema,
-    pub is_array: bool
-}
-
 pub trait RufsOpenAPI {
     fn copy_value(&self, schema: &Schema, field_name:&String, field: &Schema, value :&Value) -> Result<Value, Error>;
     fn get_value_from_schema<'a>(&'a self, schema :&Schema, property_name :&str, obj: &'a Value) -> Option<&Value>;

@@ -127,26 +127,6 @@ type DbClientSql struct {
 	sqlTypes                   []string
 	rufsTypes                  []string
 }
-
-fn Connect() (err error) {
-	if self.dbConfig.limitQuery == 0 {
-		self.dbConfig.limitQuery = 1000
-	}
-
-	dataSourceName := fmt.Sprintf("postgres://%s:%s@localhost:5432/%s", self.dbConfig.user, self.dbConfig.password, self.dbConfig.database)
-	self.dbConfig.driverName = "pgx"
-	self.client, err = sql.Open(self.dbConfig.driverName, dataSourceName)
-
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-fn Disconnect() error {
-	return self.client.Close()
-}
 */
     fn build_query<'a>(&self, query_params:&'a Value, params :&mut Vec<&'a (dyn ToSql + Sync)>, order_by :&Vec<String>) -> String {
 		fn build_conditions<'a> (query_params:&'a Value, params: &mut Vec<&'a (dyn ToSql + Sync)>, operator:&str, conditions : &mut Vec<String>) {

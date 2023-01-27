@@ -28,11 +28,12 @@ pub struct RequestFilter<'a> {
     schema_name: String,
     parameters: Value,
     obj_in: Value,
+    is_array_out: bool
 }
 
 impl<'a> RequestFilter<'a> {
     pub fn new<'b,  State>(req: &'b Request<State>, rms: &'b RufsMicroService<'b>, method: &'b str, obj_in: Value) -> Result<RequestFilter<'a>, tide::Error> where 'b: 'a {
-        let mut rf = Self { micro_service: &rms, entity_manager: Default::default(), token_payload: Default::default(), path: Default::default(), method: Default::default(), schema_name: Default::default(), parameters: Default::default(), obj_in: Default::default() };
+        let mut rf = Self { micro_service: &rms, entity_manager: Default::default(), token_payload: Default::default(), path: Default::default(), method: Default::default(), schema_name: Default::default(), parameters: Default::default(), obj_in: Default::default(), is_array_out: false };
         rf.method = method.to_string();
         rf.obj_in = obj_in;
 
@@ -54,6 +55,7 @@ impl<'a> RequestFilter<'a> {
 
         if rf.schema_name.ends_with("List") {
             rf.schema_name = rf.schema_name[0..rf.schema_name.len()-4].to_string();
+            rf.is_array_out = true;
         }
 
         if rms.db_adapter_file.have_table(&rf.schema_name) {
@@ -216,7 +218,7 @@ impl<'a> RequestFilter<'a> {
                                         openapiv3::StringFormat::DateTime => order_by.push(format!("{} desc", field_name)),
                                         _ => todo!(),
                                     },
-                                    _ => todo!(),
+                                    _ => order_by.push(field_name.to_string()),
                                 };
                             },
                             _ => todo!(),
@@ -339,33 +341,15 @@ impl<'a> RequestFilter<'a> {
     }
 
     pub async fn process_request(&mut self) -> tide::Response {
-        let schema_response = self.micro_service.micro_service_server.openapi.get_schema(&self.path, &self.method, "responseObject").unwrap();
+        //let schema_response = self.micro_service.micro_service_server.openapi.get_schema(&self.path, &self.method, "responseObject").unwrap();
         println!("[RequestFilter.process_request] : {} {}", self.path, self.method);
 
         if self.method == "get" {
-            match &schema_response.schema_kind {
-                openapiv3::SchemaKind::Type(typ) => match typ {
-                    openapiv3::Type::Object(_) => {
-                        println!("[RequestFilter.process_request] openapiv3::Type::Object : {} {}", self.path, self.method);
-                        return self.process_read().await
-                    },
-                    openapiv3::Type::Array(_) => {
-                        println!("[RequestFilter.process_request] openapiv3::Type::Array : {} {}", self.path, self.method);
-                        return self.process_query().await
-                    },
-                    _ => todo!(),
-                },
-                openapiv3::SchemaKind::Any(any) => {
-                    if any.items.is_some() {
-                        println!("[RequestFilter.process_request] any.items : {} {}", self.path, self.method);
-                        return self.process_query().await;
-                    } else {
-                        println!("[RequestFilter.process_request] not any.items : {} {}", self.path, self.method);
-                        return self.process_read().await;
-                    }
-                },
-                _ => todo!(),
-            }            
+            if self.is_array_out {
+                return self.process_query().await
+            } else {
+                return self.process_read().await
+            }
         } else if self.method == "post" {
                 return self.process_create();
         } else if self.method == "put" {
