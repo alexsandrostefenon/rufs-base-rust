@@ -7,6 +7,34 @@ use tokio_postgres::{NoTls, Client, Row, types::{Type, ToSql}};
 
 use crate::{entity_manager::EntityManager, openapi::RufsOpenAPI};
 
+/*
+type DbConfig struct {
+	driverName             string
+	host                   string
+	port                   int
+	database               string
+	user                   string
+	password               string
+	connectionString       string
+	limitQuery             int
+	limitQueryExceptions   []string
+	requestBodyContentType string
+}
+
+type DbClientSql struct {
+	dbConfig                   *DbConfig
+	missingPrimaryKeys         map[string][]string
+	missingForeignKeys         map[string]map[string]string
+	aliasMap                   map[string]string
+	aliasMapExternalToInternal map[string]any
+	openapi                    *OpenApi
+	client                     *sql.DB
+	sqlTypes                   []string
+	rufsTypes                  []string
+}
+*/
+
+
 #[derive(Clone)]
 struct DbConfig {
 	driver_name: String,
@@ -26,7 +54,6 @@ pub struct DbAdapterPostgres<'a> {
 	db_config: DbConfig,
     client: Option<Arc<Client>>,
     //client: Option<Arc<RwLock<Client>>>,
-    tmp: Value,
 }
 
 impl DbAdapterPostgres<'_> {
@@ -102,43 +129,15 @@ impl DbAdapterPostgres<'_> {
         self.client = Some(client);
         Ok(())
     }
-/*
-type DbConfig struct {
-	driverName             string
-	host                   string
-	port                   int
-	database               string
-	user                   string
-	password               string
-	connectionString       string
-	limitQuery             int
-	limitQueryExceptions   []string
-	requestBodyContentType string
-}
 
-type DbClientSql struct {
-	dbConfig                   *DbConfig
-	missingPrimaryKeys         map[string][]string
-	missingForeignKeys         map[string]map[string]string
-	aliasMap                   map[string]string
-	aliasMapExternalToInternal map[string]any
-	openapi                    *OpenApi
-	client                     *sql.DB
-	sqlTypes                   []string
-	rufsTypes                  []string
-}
-*/
     fn build_query<'a>(&self, query_params:&'a Value, params :&mut Vec<&'a (dyn ToSql + Sync)>, order_by :&Vec<String>) -> String {
 		fn build_conditions<'a> (query_params:&'a Value, params: &mut Vec<&'a (dyn ToSql + Sync)>, operator:&str, conditions : &mut Vec<String>) {
 			let mut count = 1;
-			let _null : Option<bool> = None;
 
 			for (field_name, field) in query_params.as_object().unwrap() {
 				let field_name = field_name.to_case(convert_case::Case::Snake);
 				let param_id = format!("${}", count);
 				count += 1;
-
-				println!("{field_name} : {}", field);
 
 				match field {
 					Value::Null => conditions.push(format!("{} {} NULL", field_name, operator)),
@@ -213,240 +212,168 @@ type DbClientSql struct {
 
 #[tide::utils::async_trait]
 impl EntityManager for DbAdapterPostgres<'_> {
-    fn insert(&self, _openapi: &OpenAPI, table_name :&str, obj :&Value) -> Result<Value, Error> {
-        println!("[DbAdapterPostgres.find({}, {})]", table_name, obj.to_string());
-        Ok(obj.clone())
-    }
+    async fn insert(&self, _openapi: &OpenAPI, schema_name :&str, obj :&Value) -> Result<Value, Error> {
+        println!("[DbAdapterPostgres.find({}, {})]", schema_name, obj.to_string());
+		let table_name = schema_name.to_case(convert_case::Case::Snake);
+		let mut params: Vec<&(dyn ToSql + Sync)> = vec![];
+		let mut str_fields = vec![];
+		let mut str_values = vec![];
+		let mut count = 1;
 
-/*
-fn Insert(schemaName:&str, obj map[string]any) (map[string]any, error) {
-	buildInsertSql := func(schemaName:&str, schema *Schema, obj:&Value, params *[]any) string {
-		tableName := CamelToUnderscore(schemaName)
-		strFields := []string{}
-		strValues := []string{}
-		idx := 1
+		for (field_name, field) in obj.as_object().unwrap() {
+			str_fields.push(field_name.to_case(convert_case::Case::Snake));
 
-		for fieldName, value := range obj {
-			if property, ok := schema.Properties[fieldName]; ok && property.IdentityGeneration != "" && value == nil {
-				continue
-			}
-			//			if (self.options.aliasMapExternalToInternal[fieldName] != null) fieldName = self.options.aliasMapExternalToInternal[fieldName];
-			strFields = append(strFields, CamelToUnderscore(fieldName))
-			strValues = append(strValues, fmt.Sprintf("$%d", idx))
-			idx++
-
-			switch v := value.(type) {
-			case map[string]any:
-				b, _ := json.Marshal(v)
-				*params = append(*params, string(b))
-			case []any:
-				elements := []pgtype.JSONB{}
-
-				for _, item := range v {
-					b, _ := json.Marshal(item)
-					element := pgtype.JSONB{Bytes: b, Status: pgtype.Present}
-					elements = append(elements, element)
-				}
-
-				dimensions := []pgtype.ArrayDimension{{Length: int32(len(elements)), LowerBound: 1}}
-				list := pgtype.JSONBArray{Elements: elements, Dimensions: dimensions, Status: pgtype.Present}
-				*params = append(*params, list)
-			default:
-				*params = append(*params, self.openapi.getValueFromSchema(schema, fieldName, obj))
-			}
-		}
-
-		return fmt.Sprintf(`INSERT INTO %s (%s) VALUES (%s) RETURNING *;`, tableName, strings.Join(strFields, ","), strings.Join(strValues, ","))
-	}
-
-	schema, ok := self.openapi.getSchemaFromSchemas(schemaName)
-
-	if !ok {
-		return nil, fmt.Errorf(`[dbClientSql.Insert] : Missing schema %s`, schemaName)
-	}
-
-	params := []any{}
-	sql := buildInsertSql(schemaName, schema, obj, &params)
-	fmt.Println(sql)
-	rows, err := self.client.Query(sql, params...)
-
-	if err != nil {
-		return nil, err
-	}
-
-	if rows.Next() == false {
-		return nil, fmt.Errorf(`Failt to insert : %s : %s`, sql, rows.Err())
-	}
-
-	item, err := self.getMapFromRow(rows, schema)
-
-	if err != nil {
-		return nil, err
-	}
-
-	return item, nil
-}
-*/
-async fn find(&self, openapi: &OpenAPI, schema_name: &str, query_params: &Value, order_by: &Vec<String>) -> Vec<Value> {
-	let table_name = schema_name.to_case(convert_case::Case::Snake);
-
-	let mut params = vec![];
-	let sql_query = self.build_query(query_params, &mut params, order_by);
-
-	let properties = openapi.get_properties_from_schema_name(schema_name).unwrap();
-	let mut count = 0;
-	let mut names = vec![];
-
-	for (field_name, property) in properties {
-		match property {
-			openapiv3::ReferenceOr::Reference { reference } => {
-				println!("{} -> {}", field_name, reference);
-			},
-			openapiv3::ReferenceOr::Item(property) => {
-				if let Some(internal_name) = property.schema_data.extensions.get("x-internalName") {
+			match field {
+				Value::Null => str_values.push("NULL".to_string()),
+				Value::Bool(value) => str_values.push(value.to_string()),
+				Value::Number(value) => if value.is_i64() {
+					str_values.push(value.as_i64().unwrap().to_string());
+				} else if value.is_u64() {
+					str_values.push(value.as_u64().unwrap().to_string());
+				} else if value.is_f64() {
+					str_values.push(value.as_f64().unwrap().to_string());
+				},
+				Value::String(value) => {
+					str_values.push(format!("${}", count));
+					params.push(value);
 					count += 1;
-					names.push(format!("{} as {}", internal_name.as_str().unwrap().to_case(convert_case::Case::Snake), field_name.to_case(convert_case::Case::Snake)));
-					continue;
-				}
-			},
+				},
+				Value::Array(value) => {
+					str_values.push(format!("${}", count));
+					params.push(value);
+					count += 1;
+				},
+				Value::Object(_) => {
+					str_values.push(format!("${}", count));
+					params.push(field);
+					count += 1;
+				},
+			}
 		}
 
-		names.push(field_name.to_case(convert_case::Case::Snake));
+		let sql = format!("INSERT INTO {} ({}) VALUES ({}) RETURNING *", table_name, str_fields.join(","), str_values.join(","));
+		let params = params.as_slice();
+		let list = self.client.as_ref().unwrap().query(&sql, params).await.unwrap();
+		return Ok(self.get_json_list(&list).get(0).unwrap().clone());
 	}
 
-	let fields_out = if count > 0 {
-		names.join(",")
-	} else {
-		"*".to_string()
-	};
+	async fn find(&self, openapi: &OpenAPI, schema_name: &str, query_params: &Value, order_by: &Vec<String>) -> Vec<Value> {
+		let table_name = schema_name.to_case(convert_case::Case::Snake);
+		let mut params = vec![];
+		let sql_query = self.build_query(query_params, &mut params, order_by);
+		let properties = openapi.get_properties_from_schema_name(schema_name).unwrap();
+		let mut count = 0;
+		let mut names = vec![];
 
-	let mut sql_first = "".to_string();
-	let mut sql_limit = "".to_string();
-
-	if self.db_config.limit_query_exceptions.contains(&table_name) == false {
-		if self.db_config.driver_name == "firebird" {
-			sql_first = format!("FIRST {}", self.db_config.limit_query);
-		} else {
-			sql_limit = format!("LIMIT {}", self.db_config.limit_query);
-		}
-	}
-
-	let sql = format!("SELECT {} {} FROM {} {} {}", sql_first, fields_out, table_name, sql_query, sql_limit);
-	let params = params.as_slice();
-    let list = self.client.as_ref().unwrap().query(&sql, params).await.unwrap();
-    return self.get_json_list(&list);
-}
-
-async fn find_one(&self, openapi: &OpenAPI, table: &str, key: &Value) -> Option<Box<Value>> {
-    println!("[DbAdapterPostgres.find_one({}, {})]", table, key);
-    let list = self.find(openapi, table, key, &vec![]).await;
-
-    if list.len() == 0 {
-        None
-    } else {
-		if list.len() > 1 {
-			println!("[DbAdapterPostgres.find_one({}, {})] Error : expected one, found {} registers.", table, key, list.len());
-		}
-
-        Some(Box::new(list.get(0).unwrap().clone()))
-    }
-}
-
-fn update<'a>(&'a self, _openapi: &OpenAPI, table_name :&str, key :&Value, obj :&'a Value) -> Result<&'a Value, Error> {
-    println!("[DbAdapterPostgres.find({}, {}, {})]", table_name, key, obj.to_string());
-    Ok(&self.tmp)
-}
-
-/*
-fn Update(schemaName:&str, key:&Value, obj map[string]any) (map[string]any, error) {
-	schema, ok := self.openapi.getSchemaFromSchemas(schemaName)
-
-	if !ok {
-		return nil, fmt.Errorf(`[dbClientSql.Insert] : Missing schema %s`, schemaName)
-	}
-
-	tableName := CamelToUnderscore(schemaName)
-	params := []any{}
-	sqlQuery := self.buildQuery(key, &params, []string{})
-	list := []string{}
-	idx := 1
-
-	for fieldName, value := range obj {
-		if property, ok := schema.Properties[fieldName]; ok && property.IdentityGeneration != "" && value == nil {
-			continue
-		}
-
-		strField := CamelToUnderscore(fieldName)
-		strValue := fmt.Sprintf("$%d", idx)
-		list = append(list, fmt.Sprintf("%s=%s", strField, strValue))
-		idx++
-
-		switch v := value.(type) {
-		case map[string]any:
-			b, _ := json.Marshal(v)
-			params = append(params, string(b))
-		case []any:
-			elements := []pgtype.JSONB{}
-
-			for _, item := range v {
-				b, _ := json.Marshal(item)
-				element := pgtype.JSONB{Bytes: b, Status: pgtype.Present}
-				elements = append(elements, element)
+		for (field_name, property) in properties {
+			match property {
+				openapiv3::ReferenceOr::Reference { reference } => {
+					println!("{} -> {}", field_name, reference);
+				},
+				openapiv3::ReferenceOr::Item(property) => {
+					if let Some(internal_name) = property.schema_data.extensions.get("x-internalName") {
+						count += 1;
+						names.push(format!("{} as {}", internal_name.as_str().unwrap().to_case(convert_case::Case::Snake), field_name.to_case(convert_case::Case::Snake)));
+						continue;
+					}
+				},
 			}
 
-			dimensions := []pgtype.ArrayDimension{{Length: int32(len(elements)), LowerBound: 1}}
-			list := pgtype.JSONBArray{Elements: elements, Dimensions: dimensions, Status: pgtype.Present}
-			params = append(params, list)
-		default:
-			params = append(params, self.openapi.getValueFromSchema(schema, fieldName, obj))
+			names.push(field_name.to_case(convert_case::Case::Snake));
+		}
+
+		let fields_out = if count > 0 {
+			names.join(",")
+		} else {
+			"*".to_string()
+		};
+
+		let mut sql_first = "".to_string();
+		let mut sql_limit = "".to_string();
+
+		if self.db_config.limit_query_exceptions.contains(&table_name) == false {
+			if self.db_config.driver_name == "firebird" {
+				sql_first = format!("FIRST {}", self.db_config.limit_query);
+			} else {
+				sql_limit = format!("LIMIT {}", self.db_config.limit_query);
+			}
+		}
+
+		let sql = format!("SELECT {} {} FROM {} {} {}", sql_first, fields_out, table_name, sql_query, sql_limit);
+		let params = params.as_slice();
+		let list = self.client.as_ref().unwrap().query(&sql, params).await.unwrap();
+		return self.get_json_list(&list);
+	}
+
+	async fn find_one(&self, openapi: &OpenAPI, table: &str, key: &Value) -> Option<Box<Value>> {
+		println!("[DbAdapterPostgres.find_one({}, {})]", table, key);
+		let list = self.find(openapi, table, key, &vec![]).await;
+
+		if list.len() == 0 {
+			None
+		} else {
+			if list.len() > 1 {
+				println!("[DbAdapterPostgres.find_one({}, {})] Error : expected one, found {} registers.", table, key, list.len());
+			}
+
+			Some(Box::new(list.get(0).unwrap().clone()))
 		}
 	}
 
-	sql := fmt.Sprintf(`UPDATE %s SET %s %s RETURNING *`, tableName, strings.Join(list, ","), sqlQuery)
-	fmt.Println(sql)
-	rows, err := self.client.Query(sql, params...)
+	async fn update(&self, _openapi: &OpenAPI, schema_name :&str, query_params :&Value, obj :&Value) -> Result<Value, Error> {
+        println!("[DbAdapterPostgres.update({}, {})]", schema_name, obj.to_string());
+		let table_name = schema_name.to_case(convert_case::Case::Snake);
+		let mut params: Vec<&(dyn ToSql + Sync)> = vec![];
+		let mut str_values = vec![];
+		let mut count = 1;
 
-	if err != nil {
-		return nil, err
+		for (field_name, field) in obj.as_object().unwrap() {
+			match field {
+				Value::Null => str_values.push(format!("{}=NULL", field_name)),
+				Value::Bool(value) => str_values.push(format!("{}={}", field_name, value)),
+				Value::Number(value) => if value.is_i64() {
+					str_values.push(format!("{}={}", field_name, value.as_i64().unwrap()));
+				} else if value.is_u64() {
+					str_values.push(format!("{}={}", field_name, value.as_u64().unwrap()));
+				} else if value.is_f64() {
+					str_values.push(format!("{}={}", field_name, value.as_f64().unwrap()));
+				},
+				Value::String(value) => {
+					str_values.push(format!("{}=${}", field_name, count));
+					params.push(value);
+					count += 1;
+				},
+				Value::Array(value) => {
+					str_values.push(format!("{}=${}", field_name, count));
+					params.push(value);
+					count += 1;
+				},
+				Value::Object(_) => {
+					str_values.push(format!("{}=${}", field_name, count));
+					params.push(field);
+					count += 1;
+				},
+			}
+		}
+
+		let sql_query = self.build_query(query_params, &mut params, &vec![]);
+		let sql = format!("UPDATE {} SET {} {} RETURNING *", table_name, str_values.join(","), sql_query);
+		let params = params.as_slice();
+		let list = self.client.as_ref().unwrap().query(&sql, params).await.unwrap();
+		return Ok(self.get_json_list(&list).get(0).unwrap().clone());
 	}
 
-	if rows.Next() == false {
-		return nil, fmt.Errorf(`Failt to update : %s : %s`, sql, rows.Err())
+	async fn delete_one(&self, _openapi: &OpenAPI, schema_name: &str, query_params: &Value) -> Result<(), Error> {
+		println!("[DbAdapterPostgres.delete_one({}, {})]", schema_name, query_params);
+		let table_name = schema_name.to_case(convert_case::Case::Snake);
+		let mut params: Vec<&(dyn ToSql + Sync)> = vec![];
+		let sql_query = self.build_query(query_params, &mut params, &vec![]);
+		let sql = format!("DELETE FROM {} WHERE {}", table_name, sql_query);
+		let params = params.as_slice();
+		let _count = self.client.as_ref().unwrap().execute(&sql, params).await.unwrap();
+		Ok(())
 	}
-
-	item, err := self.getMapFromRow(rows, schema)
-
-	if err != nil {
-		return nil, err
-	}
-
-	return item, nil
-}
-*/
-fn delete_one(&self, _openapi: &OpenAPI, table_name: &str, key: &Value) -> Result<(), Error> {
-    println!("[DbAdapterPostgres.delete_one({}, {})]", table_name, key);
-    Ok(())
-}
 /*
-fn DeleteOne(schemaName:&str, key map[string]any) error {
-	tableName := CamelToUnderscore(schemaName)
-	params := []any{}
-	sqlQuery := self.buildQuery(key, &params, []string{})
-	sql := fmt.Sprintf(`DELETE FROM %s %s`, tableName, sqlQuery)
-	fmt.Println(sql)
-	result, err := self.client.Exec(sql, params...)
-
-	if err != nil {
-		return err
-	}
-
-	if numRows, err := result.RowsAffected(); err != nil || numRows != 1 {
-		return fmt.Errorf(`[dbClientSql.DeleteOne] : wrong delete numRows = %d, err = %s`, numRows, err)
-	}
-
-	return err
-}
-
 fn UpdateOpenApi(openapi *OpenApi, options FillOpenApiOptions) error {
 	getFieldName := func(columnName:&str, field *Schema) (fieldName string) {
 		fieldName = UnderscoreToCamel(strings.ToLower(columnName), false)

@@ -112,14 +112,14 @@ impl<'a> RequestFilter<'a> {
         Err(Error::from_str(500, "unknow"))
     }
 
-    fn process_create(&mut self) -> tide::Response {
+    async fn process_create(&mut self) -> tide::Response {
         if let Err(error) = self.check_object_access() {
             return tide::Response::builder(error.status()).body(error.to_string()).build();
         }
 
         let entity_manager = self.entity_manager.as_ref().unwrap();
         let openapi = &self.micro_service.micro_service_server.openapi;
-        let new_obj = entity_manager.insert(openapi, &self.schema_name, &self.obj_in.clone());
+        let new_obj = entity_manager.insert(openapi, &self.schema_name, &self.obj_in.clone()).await;
 
         match &new_obj {
             Ok(new_obj) => {
@@ -162,11 +162,11 @@ impl<'a> RequestFilter<'a> {
 
         let primary_key = &self.parse_query_parameters().unwrap();
         let entity_manager = self.entity_manager.as_ref().unwrap();
-        let new_obj = entity_manager.update(&self.micro_service.micro_service_server.openapi, &self.schema_name, primary_key, &self.obj_in);
+        let new_obj = entity_manager.update(&self.micro_service.micro_service_server.openapi, &self.schema_name, primary_key, &self.obj_in).await;
 
         match new_obj {
             Ok(new_obj) => {
-                self.notify(new_obj, false);
+                self.notify(&new_obj, false);
                 tide::Response::builder(200).body(new_obj.clone()).build()
             },
             Err(error) => tide::Response::builder(500).body(error.to_string()).build(),
@@ -181,7 +181,7 @@ impl<'a> RequestFilter<'a> {
 
         let primary_key = &self.parse_query_parameters().unwrap();
         let entity_manager = self.entity_manager.as_ref().unwrap();
-        let res = entity_manager.delete_one(&self.micro_service.micro_service_server.openapi, &self.schema_name, primary_key);
+        let res = entity_manager.delete_one(&self.micro_service.micro_service_server.openapi, &self.schema_name, primary_key).await;
 
         if let Err(error) = res {
             return tide::Response::builder(500).body(error.to_string()).build();
@@ -351,7 +351,7 @@ impl<'a> RequestFilter<'a> {
                 return self.process_read().await
             }
         } else if self.method == "post" {
-                return self.process_create();
+                return self.process_create().await;
         } else if self.method == "put" {
             return self.process_update().await;
       /*} else if self.method == "patch" {

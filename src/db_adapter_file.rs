@@ -39,7 +39,7 @@ impl DbAdapterFile<'_> {
 
 #[tide::utils::async_trait]
 impl EntityManager for DbAdapterFile<'_> {
-    fn insert(&self, openapi: &OpenAPI, table_name :&str, obj: &Value) -> Result<Value, Error> {
+    async fn insert(&self, openapi: &OpenAPI, table_name :&str, obj: &Value) -> Result<Value, Error> {
         let mut obj = obj.clone();
         let tables: LockResult<RwLockWriteGuard<HashMap<String, Value>>> = self.tables.write();
         let mut tables: RwLockWriteGuard<HashMap<String, Value>> = tables.unwrap();
@@ -90,7 +90,7 @@ impl EntityManager for DbAdapterFile<'_> {
         Some(Box::new(obj.clone()))
     }
 
-    fn update<'a>(&self, _openapi: &OpenAPI, table_name :&str, key :&Value, obj :&'a Value) -> Result<&'a Value, Error> {
+    async fn update(&self, _openapi: &OpenAPI, table_name :&str, key :&Value, obj :&Value) -> Result<Value, Error> {
         let tables: LockResult<RwLockWriteGuard<HashMap<String, Value>>> = self.tables.write();
         let mut tables: RwLockWriteGuard<HashMap<String, Value>> = tables.unwrap();
         let list = tables.get(table_name).unwrap().as_array().unwrap();
@@ -100,13 +100,13 @@ impl EntityManager for DbAdapterFile<'_> {
             let list = json_array.as_array_mut().unwrap();
             list.insert(pos, obj.clone());
             self.store(table_name, json_array)?;
-            return Ok(obj);
+            return Ok(obj.clone());
         }
 
         Err(Error::new(std::io::ErrorKind::NotFound, format!("[FileDbAdapter.Update(name = {}, key = {})] : don't find table", table_name, key)))
     }
 
-    fn delete_one(&self, _openapi: &OpenAPI, table_name: &str, key: &Value) -> Result<(), Error> {
+    async fn delete_one(&self, _openapi: &OpenAPI, table_name: &str, key: &Value) -> Result<(), Error> {
         let tables: LockResult<RwLockWriteGuard<HashMap<String, Value>>> = self.tables.write();
         let mut tables: RwLockWriteGuard<HashMap<String, Value>> = tables.unwrap();
         let list = tables.get(table_name).unwrap().as_array().unwrap();

@@ -13,9 +13,9 @@ type EntityManager interface {
 
 #[tide::utils::async_trait]
 pub trait EntityManager {
-    fn insert(&self, openapi: &OpenAPI, table_name :&str, obj: &Value) -> Result<Value, Error>;
+    async fn insert(&self, openapi: &OpenAPI, table_name :&str, obj: &Value) -> Result<Value, Error>;
     async fn find(&self, openapi: &OpenAPI, table: &str, key: &Value, order_by: &Vec<String>) -> Vec<Value>;
     async fn find_one(&self, openapi: &OpenAPI, table: &str, key: &Value) -> Option<Box<Value>>;
-    fn update<'a>(&'a self, openapi: &OpenAPI, table_name :&str, key :&Value, obj :&'a Value) -> Result<&'a Value, Error>;
-    fn delete_one(&self, openapi: &OpenAPI, table: &str, key: &Value) -> Result<(), Error>;
+    async fn update(&self, openapi: &OpenAPI, table_name :&str, key :&Value, obj :&Value) -> Result<Value, Error>;
+    async fn delete_one(&self, openapi: &OpenAPI, table: &str, key: &Value) -> Result<(), Error>;
 }
