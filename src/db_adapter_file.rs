@@ -1,7 +1,7 @@
 use openapiv3::OpenAPI;
 use std::{collections::HashMap, fs, io::Error, sync::{RwLock, LockResult, RwLockReadGuard, RwLockWriteGuard, Arc}};
 use serde_json::{Value, Number};
-use crate::entity_manager::EntityManager;
+use crate::{entity_manager::EntityManager, openapi::FillOpenAPIOptions};
 use crate::openapi::RufsOpenAPI;
 
 #[derive(Debug, Clone, Default)]
@@ -121,4 +121,9 @@ impl EntityManager for DbAdapterFile<'_> {
 
         Err(Error::new(std::io::ErrorKind::NotFound, format!("[FileDbAdapter.Update(name = {}, key = {})] : don't find table", table_name, key)))
     }
+/*
+    async fn update_open_api(&self, _options :&FillOpenAPIOptions) -> Result<(), Error> {
+        Ok(())
+    }
+    */
 }

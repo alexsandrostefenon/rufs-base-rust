@@ -3,6 +3,7 @@ use std::{collections::HashMap, io::Error};
 use convert_case::{Case, Casing};
 use indexmap::IndexMap;
 use openapiv3::*;
+use serde::{Serialize, Deserialize};
 use serde_json::{Value, json};
 
 // (service, (service.field|foreign_table_name), service.obj) => [{name: constraint_name, table: foreign_table_name, foreignKey: {}}]
@@ -68,7 +69,49 @@ impl std::fmt::Display for FillOpenAPIOptions {
         write!(f, "request_schemas: {:?}\nschemas: {:?}", self.request_schemas, self.schemas)
     }
 }
+/*
+pub trait RufsSchema {
+    fn set_extension(&self, field_name :&str, value :Value) -> Result<(), Error>;
+    //fn get_extension_mut(&self, field_name :&str, default :Value) -> ;
+    fn as_object_type(&self) -> Result<ObjectType, Error>;
+}
 
+impl RufsSchema for Schema {
+
+    fn set_extension(&self, field_name :&str, value :Value) -> Result<(), Error> {
+        todo!()        
+    }
+
+    fn as_object_type(&self) -> Result<ObjectType, Error> {
+        todo!()        
+    }
+
+}
+
+impl RufsSchema for ReferenceOr<Schema> {
+
+    fn set_extension(&self, field_name :&str, value :Value) -> Result<(), Error> {
+        todo!()        
+    }
+
+    fn as_object_type(&self) -> Result<ObjectType, Error> {
+        todo!()        
+    }
+
+}
+
+impl RufsSchema for ReferenceOr<Box<Schema>> {
+
+    fn set_extension(&self, field_name :&str, value :Value) -> Result<(), Error> {
+        todo!()        
+    }
+    
+    fn as_object_type(&self) -> Result<ObjectType, Error> {
+        todo!()        
+    }
+    
+}
+*/
 /*
 type OpenAPISecurity struct {
 }
@@ -108,13 +151,14 @@ type OperationObject struct {
     Responses   map[string]*ResponseObject  `json:"responses,omitempty"`
     Security    []SecurityRequirementObject `json:"security,omitempty"`
 }
-
-type ForeignKey struct {
-    TableRef  string   `json:"table_ref"`
-    Fields    []string `json:"fields"`
-    FieldsRef []string `json:"fields_ref"`
+*/
+#[derive(Serialize,Deserialize, Clone)]
+pub struct ForeignKey {
+    pub table_ref :String,
+    pub fields    :Vec<String>,
+    pub fields_ref :Vec<String>
 }
-
+/*
 type Schema struct {
     Name               string                `json:"-"`
     PrimaryKeys        []string              `json:"x-primaryKeys,omitempty"`

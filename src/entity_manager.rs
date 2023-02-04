@@ -3,6 +3,8 @@ use std::{io::Error};
 use openapiv3::OpenAPI;
 use serde_json::Value;
 
+use crate::openapi::FillOpenAPIOptions;
+
 /*
 type EntityManager interface {
     UpdateOpenApi(openapi *OpenApi, options FillOpenApiOptions) error
@@ -18,4 +20,5 @@ pub trait EntityManager {
     async fn find_one(&self, openapi: &OpenAPI, table: &str, key: &Value) -> Option<Box<Value>>;
     async fn update(&self, openapi: &OpenAPI, table_name :&str, key :&Value, obj :&Value) -> Result<Value, Error>;
     async fn delete_one(&self, openapi: &OpenAPI, table: &str, key: &Value) -> Result<(), Error>;
+    //async fn update_open_api(&self, options :&FillOpenAPIOptions) -> Result<(), Error>;
 }

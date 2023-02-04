@@ -1,11 +1,12 @@
-use std::{io::Error, sync::{Arc}};
+use std::{io::{Error, ErrorKind}, sync::{Arc}, collections::HashMap};
 
 use convert_case::Casing;
-use openapiv3::OpenAPI;
+use indexmap::IndexMap;
+use openapiv3::{OpenAPI, Schema, ReferenceOr};
 use serde_json::{Value, Number, json};
 use tokio_postgres::{NoTls, Client, Row, types::{Type, ToSql}};
 
-use crate::{entity_manager::EntityManager, openapi::RufsOpenAPI};
+use crate::{entity_manager::EntityManager, openapi::{RufsOpenAPI, FillOpenAPIOptions, ForeignKey}};
 
 /*
 type DbConfig struct {
@@ -23,10 +24,6 @@ type DbConfig struct {
 
 type DbClientSql struct {
 	dbConfig                   *DbConfig
-	missingPrimaryKeys         map[string][]string
-	missingForeignKeys         map[string]map[string]string
-	aliasMap                   map[string]string
-	aliasMapExternalToInternal map[string]any
 	openapi                    *OpenApi
 	client                     *sql.DB
 	sqlTypes                   []string
@@ -52,6 +49,10 @@ impl Default for DbConfig {
 pub struct DbAdapterPostgres<'a> {
     pub openapi    : Option<&'a OpenAPI>,
 	db_config: DbConfig,
+	alias_map: HashMap<String, String>,
+	alias_map_external_to_internal :HashMap<String, String>,
+	missing_primary_keys: HashMap<String, Vec<String>>,
+	missing_foreign_keys: HashMap<String, Vec<ForeignKey>>,
     client: Option<Arc<Client>>,
     //client: Option<Arc<RwLock<Client>>>,
 }
@@ -208,6 +209,12 @@ impl DbAdapterPostgres<'_> {
 			str
 		}
     }
+
+	async fn query(&self, sql: &str, params: &[&(dyn ToSql + Sync)]) -> Vec<Value> {
+		let list = self.client.as_ref().unwrap().query(sql, params).await.unwrap();
+		self.get_json_list(&list)
+	}
+
 }
 
 #[tide::utils::async_trait]
@@ -301,8 +308,7 @@ impl EntityManager for DbAdapterPostgres<'_> {
 
 		let sql = format!("SELECT {} {} FROM {} {} {}", sql_first, fields_out, table_name, sql_query, sql_limit);
 		let params = params.as_slice();
-		let list = self.client.as_ref().unwrap().query(&sql, params).await.unwrap();
-		return self.get_json_list(&list);
+		self.query(&sql, params).await
 	}
 
 	async fn find_one(&self, openapi: &OpenAPI, table: &str, key: &Value) -> Option<Box<Value>> {
@@ -374,331 +380,333 @@ impl EntityManager for DbAdapterPostgres<'_> {
 		Ok(())
 	}
 /*
-fn UpdateOpenApi(openapi *OpenApi, options FillOpenApiOptions) error {
-	getFieldName := func(columnName:&str, field *Schema) (fieldName string) {
-		fieldName = UnderscoreToCamel(strings.ToLower(columnName), false)
-		fieldNameLowerCase := strings.ToLower(fieldName)
+	async fn update_open_api(&self, options :&FillOpenAPIOptions) -> Result<(), Error> {
+		fn get_field_name(adapter :&DbAdapterPostgres, column_name :&str, field :Option<&ReferenceOr<Schema>>) -> String {
+			let field_name = column_name.to_case(convert_case::Case::Camel);
+			let field_name_lower_case = field_name.to_lowercase();
 
-		for aliasMapName, value := range self.aliasMap {
-			if strings.ToLower(aliasMapName) == fieldNameLowerCase {
-				if field != nil {
-					field.InternalName = fieldName
+			for (alias_map_name, value) in adapter.alias_map {
+				if alias_map_name.to_lowercase() == field_name_lower_case {
+					if let Some(field) = field {
+						field.set_extension("internalName", Value::String(field_name));
 
-					if len(value) > 0 {
-						self.aliasMapExternalToInternal[value] = fieldName
+						if value.len() > 0 {
+							adapter.alias_map_external_to_internal.insert(value, field_name);
+						}
 					}
-				}
 
-				if len(value) > 0 {
-					fieldName = value
-				} else {
-					fieldName = aliasMapName
-				}
+					if value.len() > 0 {
+						field_name = value;
+					} else {
+						field_name = alias_map_name;
+					}
 
-				break
+					break;
+				}
+			}
+
+			return field_name;
+		}
+
+		fn set_ref(properties: IndexMap<String, ReferenceOr<Box<Schema>>>, field_name :&str, table_ref :&str) {
+			if let Some(field) = properties.get(field_name) {
+				field.set_extension("ref", Value::String(format!("#/components/schemas/{}", table_ref)));
 			}
 		}
 
-		return fieldName
-	}
+		async fn process_constraints(adapter :&DbAdapterPostgres<'_>, schemas :&IndexMap<String, Schema>) -> Result<(), Error> {
+			let sql_info_constraints = "SELECT table_name,constraint_name,constraint_type FROM information_schema.table_constraints ORDER BY table_name,constraint_name";
+			let sql_info_constraints_fields = "SELECT constraint_name,column_name,ordinal_position FROM information_schema.key_column_usage ORDER BY constraint_name,ordinal_position";
+			let sql_info_constraints_fields_ref = "SELECT constraint_name,table_name,column_name FROM information_schema.constraint_column_usage";
+			let result = adapter.query(sql_info_constraints, &[]).await;
+			let result_fields = adapter.query(sql_info_constraints_fields, &[]).await;
+			let result_fields_ref = adapter.query(sql_info_constraints_fields_ref, &[]).await;
 
-	setRef := func(schema *Schema, fieldName:&str, tableRef string) {
-		field := schema.Properties[fieldName]
+			for (schema_name, schema) in schemas {
+				let table_name = schema_name.to_case(convert_case::Case::Snake);
+				let primary_keys = schema.schema_data.extensions.get_mut("x-primaryKeys").unwrap_or(&mut json!([]));
+				let foreign_keys = schema.schema_data.extensions.get_mut("x-foreignKeys").unwrap_or(&mut json!({}));
+				let unique_keys = schema.schema_data.extensions.get_mut("x-uniqueKeys").unwrap_or(&mut json!({}));
 
-		if field != nil {
-			field.Ref = "#/components/schemas/" + tableRef
-		} else {
-			log.Printf(`${self.constructor.name}.getTablesInfo.processConstraints.setRef : field ${fieldName} not exists in schema ${schema.name}`)
+				let mut object_type = match &schema.schema_kind {
+					openapiv3::SchemaKind::Type(typ) => match typ {
+						openapiv3::Type::Object(object_type) => object_type,
+						_ => todo!()
+					},
+					_ => todo!()
+				};
+
+				for constraint in result {
+					if constraint["tableName"].as_str().unwrap().to_lowercase().trim_end() != table_name {
+						continue;
+					}
+
+					if constraint["constraintName"] == "" {
+						continue;
+					}
+
+					let constraint_name = constraint["constraintName"].as_str().unwrap().trim_end();
+					let name = constraint_name.to_case(convert_case::Case::Camel);
+					let mut list : Vec<Value> = vec![];
+
+					for item in result_fields {
+						if item["constraintName"].as_str().unwrap().trim_end() == constraint_name {
+							list.push(item);
+						}
+					}
+
+					let mut list_ref : Vec<Value> = vec![];
+
+					for item in result_fields_ref {
+						if item["constraintName"].as_str().unwrap().trim_end() == constraint_name {
+							list_ref.push(item);
+						}
+					}
+
+					let constraint_type = constraint["constraintType"].as_str().unwrap().trim_end();
+
+					if constraint_type == "FOREIGN KEY" {
+						let mut foreign_key = ForeignKey{fields: vec![], fields_ref: vec![], table_ref: String::new()};
+
+						for item in list {
+							foreign_key.fields.push(get_field_name(adapter, item["columnName"].as_str().unwrap(), None));
+						}
+
+						for item_ref in list_ref {
+							foreign_key.fields_ref.push(get_field_name(adapter, item_ref["columnName"].as_str().unwrap(), None));
+							let table_ref = item_ref["tableName"].as_str().unwrap().to_lowercase().to_case(convert_case::Case::Camel);
+
+							if foreign_key.table_ref == "" || foreign_key.table_ref == table_ref {
+								foreign_key.table_ref = table_ref;
+							}
+						}
+
+						if foreign_key.fields.len() != foreign_key.fields_ref.len() {
+							continue;
+						}
+
+						if foreign_key.fields.len() == 1 {
+							set_ref(schema.as_object_type().unwrap().properties, &foreign_key.fields[0], &foreign_key.table_ref);
+							continue;
+						}
+
+						if foreign_key.fields.len() > 1 && foreign_key.fields.contains(&foreign_key.table_ref) {
+							set_ref(schema.as_object_type().unwrap().properties, &foreign_key.table_ref, &foreign_key.table_ref);
+						}
+
+						foreign_keys[name] = serde_json::to_value(foreign_key)?;
+					} else if constraint_type == "UNIQUE" {
+						for item in list {
+							let field_name = get_field_name(adapter, item["columnName"].as_str().unwrap(), None);
+
+							if let Some(list) = unique_keys.get_mut(name) {
+								list.as_array().unwrap().push(Value::String(field_name));
+							} else {
+								unique_keys[name] = json!([field_name]);
+							}
+						}
+					} else if constraint_type == "PRIMARY KEY" {
+						for item in list {
+							let field_name = get_field_name(adapter, item["columnName"].as_str().unwrap(), None);
+							let value = Value::String(field_name);
+
+							if let Some(list) = schema.schema_data.extensions.get_mut("x-primaryKeys") {
+								if list.as_array().unwrap().contains(&value) == false {
+									list.as_array().unwrap().push(value);
+								}
+							} else {
+								schema.schema_data.extensions.insert("x-primaryKeys".to_string(), json!([value]));
+							}
+
+							if object_type.required.contains(&field_name) == false {
+								object_type.required.push(field_name);
+							}
+						}
+					}
+				}
+
+				for (name, foreign_key) in foreign_keys.as_object().unwrap() {
+					let foreign_key : ForeignKey = serde_json::from_value(foreign_key.clone()).unwrap();
+					let candidates = vec![];
+
+					for field_name in foreign_key.fields {
+						if let Some(field) = object_type.properties.get(&field_name) {
+							if field.as_item().unwrap().schema_data.extensions.contains_key("x-ref") == false {
+								candidates.push(field_name);
+							}
+						}
+					}
+
+					if candidates.len() == 1 {
+						set_ref(object_type.properties, &candidates[0], &foreign_key.table_ref);
+						foreign_keys.as_object().unwrap().remove(name);
+					}
+				}
+
+				if let Some(list) = adapter.missing_primary_keys.get(schema_name) {
+					for column_name in list {
+						let value = Value::String(column_name.to_string());
+
+						if primary_keys.as_array().unwrap().contains(&value) == false {
+							primary_keys.as_array().unwrap().push(value);
+						}
+
+						if object_type.required.contains(column_name) == false {
+							object_type.required.push(column_name.clone());
+						}
+					}
+				}
+
+				if let Some(list) = adapter.missing_foreign_keys.get(schema_name) {
+					for foreign_key in list {
+						set_ref(object_type.properties, field_name, table_ref);
+					}
+				}
+
+				if schema.required.len() == 0 {
+					println!("[process_columns()] : missing required fields of table {schema_name}");
+				}
+
+				schema.schema_data.extensions.insert("x-primaryKeys".to_string(), primary_keys.clone());
+				schema.schema_data.extensions.insert("x-uniqueKeys".to_string(), unique_keys.clone());
+				schema.schema_data.extensions.insert("x-foreignKeys".to_string(), foreign_keys.clone());
+			}
+
+			Ok()
 		}
-	}
 
-	processConstraints := func(schemas map[string]*Schema) error {
-		sqlInfoConstraints :=
-			"SELECT table_name,constraint_name,constraint_type FROM information_schema.table_constraints ORDER BY table_name,constraint_name"
-		sqlInfoConstraintsFields :=
-			"SELECT constraint_name,column_name,ordinal_position FROM information_schema.key_column_usage ORDER BY constraint_name,ordinal_position"
-		sqlInfoConstraintsFieldsRef :=
-			"SELECT constraint_name,table_name,column_name FROM information_schema.constraint_column_usage"
-		result, err := self.getArrayMap(sqlInfoConstraints, []any{}, nil)
+		fn process_columns(adapter :&DbAdapterPostgres, schemas :&mut IndexMap<String, Schema>) -> Result<(), Error> {
+			let sql_types = vec!["boolean", "character varying", "character", "integer", "jsonb", "jsonb array", "numeric", "timestamp without time zone", "timestamp with time zone", "time without time zone", "bigint", "smallint", "text", "date", "double precision", "bytea"];
+			let rufs_types = vec!["boolean", "string", "string", "integer", "object", "array", "number", "date-time", "date-time", "date-time", "integer", "integer", "string", "date-time", "number", "string"];
+			let sql_info_tables = "
+			select 
+			c.data_type,
+			c.udt_name,
+			c.table_name,
+			c.column_name,
+			c.is_nullable,
+			c.is_updatable,
+			COALESCE(c.numeric_scale, 0) as numeric_scale,
+			COALESCE(c.numeric_precision, 0) as numeric_precision,
+			COALESCE(c.character_maximum_length, 0) as character_maximum_length,
+			COALESCE(c.column_default, '') as column_default,
+			COALESCE(c.identity_generation, '') as identity_generation,
+			left(COALESCE(pgd.description, ''),100) as description
+			from pg_catalog.pg_statio_all_tables as st
+			inner join pg_catalog.pg_description pgd on (pgd.objoid=st.relid)
+			right outer join information_schema.columns c on (pgd.objsubid=c.ordinal_position and c.table_schema=st.schemaname and c.table_name=st.relname)
+			where table_schema = 'public' order by c.table_name,c.ordinal_position
+			";
+			let rows = adapter.client.query(sql_info_tables);
 
-		if err != nil {
-			return err
-		}
+			for row in rows {
+				let rec = adapter.get_map_from_row(rows, None);
+				let sql_type = rec["dataType"].trim(" ").to_lower();
+				let sql_sub_type = rec["udtName"].trim(" ").to_lower();
 
-		resultFields, err := self.getArrayMap(sqlInfoConstraintsFields, []any{}, nil)
+				if sql_type == "array" && sql_sub_type == "_jsonb" {
+					sql_type = "jsonb array"
+				}
 
-		if err != nil {
-			return err
-		}
+				let type_index = adapter.sql_types.index(sql_type);
 
-		resultFieldsRef, err := self.getArrayMap(sqlInfoConstraintsFieldsRef, []any{}, nil)
-
-		if err != nil {
-			return err
-		}
-
-		for schemaName, schema := range schemas {
-			schema.ForeignKeys = map[string]ForeignKey{}
-			tableName := CamelToUnderscore(schemaName)
-
-			for _, constraint := range result {
-				if strings.TrimSpace(strings.ToLower(constraint["tableName"].(string))) != tableName {
+				if type_index < 0 {
+					println!("DbClientPostgres.getTablesInfo().processColumns() : Invalid Database Type : {sql_type}, full rec : {}", rec);
 					continue
 				}
 
-				if constraint["constraintName"] == "" {
-					continue
-				}
+				let table_name = rec["tableName"].to_case(camel);
 
-				constraintName := strings.TrimSpace(constraint["constraintName"].(string))
-				name := UnderscoreToCamel(strings.ToLower(constraintName), false)
-				list := []map[string]any{}
-				for _, item := range resultFields {
-					if strings.TrimSpace(item["constraintName"].(string)) == constraintName {
-						list = append(list, item)
-					}
-				}
-
-				listRef := []map[string]any{}
-				for _, item := range resultFieldsRef {
-					if strings.TrimSpace(item["constraintName"].(string)) == constraintName {
-						listRef = append(listRef, item)
-					}
-				}
-
-				constraintType := strings.TrimSpace(constraint["constraintType"].(string))
-
-				if constraintType == "FOREIGN KEY" {
-					foreignKey := ForeignKey{Fields: []string{}, FieldsRef: []string{}}
-
-					for _, item := range list {
-						foreignKey.Fields = append(foreignKey.Fields, getFieldName(item["columnName"].(string), nil))
-					}
-
-					for _, itemRef := range listRef {
-						foreignKey.FieldsRef = append(foreignKey.FieldsRef, getFieldName(itemRef["columnName"].(string), nil))
-						tableRef := UnderscoreToCamel(strings.ToLower(itemRef["tableName"].(string)), false)
-
-						if foreignKey.TableRef == "" || foreignKey.TableRef == tableRef {
-							foreignKey.TableRef = tableRef
-						} else {
-							log.Printf(`[${self.constructor.name}.getOpenApi().processConstraints()] : tableRef already defined : new (${tableRef}, old (${foreignKey.tableRef}))`)
-						}
-					}
-
-					if len(foreignKey.Fields) != len(foreignKey.FieldsRef) {
-						log.Printf(`[${self.constructor.name}.getOpenApi().processConstraints()] : fields and fieldsRef length don't match : fields (${foreignKey.fields.toString()}, fieldsRef (${foreignKey.fieldsRef.toString()}))`)
-						continue
-					}
-
-					if len(foreignKey.Fields) == 1 {
-						setRef(schema, foreignKey.Fields[0], foreignKey.TableRef)
-						continue
-					}
-
-					if len(foreignKey.Fields) > 1 && slices.Index(foreignKey.Fields, foreignKey.TableRef) >= 0 {
-						setRef(schema, foreignKey.TableRef, foreignKey.TableRef)
-					}
-
-					schema.ForeignKeys[name] = foreignKey
-				} else if constraintType == "UNIQUE" {
-					schema.UniqueKeys[name] = []string{}
-
-					for _, item := range list {
-						fieldName := getFieldName(item["columnName"].(string), nil)
-
-						if slices.Index(schema.UniqueKeys[name], fieldName) < 0 {
-							schema.UniqueKeys[name] = append(schema.UniqueKeys[name], fieldName)
-						}
-					}
-				} else if constraintType == "PRIMARY KEY" {
-					for _, item := range list {
-						fieldName := getFieldName(item["columnName"].(string), nil)
-
-						if slices.Index(schema.PrimaryKeys, fieldName) < 0 {
-							schema.PrimaryKeys = append(schema.PrimaryKeys, fieldName)
-						}
-
-						if slices.Index(schema.Required, fieldName) < 0 {
-							schema.Required = append(schema.Required, fieldName)
-						}
-					}
-				}
-			}
-
-			for name, foreignKey := range schema.ForeignKeys {
-				candidates := []string{}
-
-				for _, fieldName := range foreignKey.Fields {
-					if field, ok := schema.Properties[fieldName]; ok && field.Ref == "" {
-						candidates = append(candidates, fieldName)
-					}
-				}
-
-				if len(candidates) == 1 {
-					setRef(schema, candidates[0], foreignKey.TableRef)
-					delete(schema.ForeignKeys, name)
-				}
-			}
-
-			if list, ok := self.missingPrimaryKeys[schemaName]; ok {
-				for _, columnName := range list {
-					if slices.Index(schema.PrimaryKeys, columnName) < 0 {
-						schema.PrimaryKeys = append(schema.PrimaryKeys, columnName)
-					}
-
-					if slices.Index(schema.Required, columnName) < 0 {
-						schema.Required = append(schema.Required, columnName)
-					}
-				}
-			}
-
-			if list, ok := self.missingForeignKeys[schemaName]; ok {
-				for fieldName, tableRef := range list {
-					setRef(schema, fieldName, tableRef)
-				}
-			}
-
-			if len(schema.Required) == 0 {
-				log.Printf(`[${self.constructor.name}.getOpenApi().processColumns()] missing required fields of table ${schemaName}`)
-			}
-		}
-
-		return nil
-	}
-
-	processColumns := func() (map[string]*Schema, error) {
-		self.sqlTypes = []string{"boolean", "character varying", "character", "integer", "jsonb", "jsonb array", "numeric", "timestamp without time zone", "timestamp with time zone", "time without time zone", "bigint", "smallint", "text", "date", "double precision", "bytea"}
-		self.rufsTypes = []string{"boolean", "string", "string", "integer", "object", "array", "number", "date-time", "date-time", "date-time", "integer", "integer", "string", "date-time", "number", "string"}
-		sqlInfoTables := `
-		select 
-		c.data_type,
-		c.udt_name,
-		c.table_name,
-		c.column_name,
-		c.is_nullable,
-		c.is_updatable,
-		COALESCE(c.numeric_scale, 0) as numeric_scale,
-		COALESCE(c.numeric_precision, 0) as numeric_precision,
-		COALESCE(c.character_maximum_length, 0) as character_maximum_length,
-		COALESCE(c.column_default, '') as column_default,
-		COALESCE(c.identity_generation, '') as identity_generation,
-		left(COALESCE(pgd.description, ''),100) as description
-		from pg_catalog.pg_statio_all_tables as st
-		inner join pg_catalog.pg_description pgd on (pgd.objoid=st.relid)
-		right outer join information_schema.columns c on (pgd.objsubid=c.ordinal_position and c.table_schema=st.schemaname and c.table_name=st.relname)
-		where table_schema = 'public' order by c.table_name,c.ordinal_position
-		`
-		rows, err := self.client.Query(sqlInfoTables)
-
-		if err != nil {
-			return nil, err
-		}
-
-		schemas := map[string]*Schema{}
-
-		for rows.Next() {
-			rec, _ := self.getMapFromRow(rows, nil)
-			sqlType := strings.ToLower(strings.Trim(rec["dataType"].(string), " "))
-			sqlSubType := strings.ToLower(strings.Trim(rec["udtName"].(string), " "))
-
-			if sqlType == "array" && sqlSubType == "_jsonb" {
-				sqlType = "jsonb array"
-			}
-
-			typeIndex := slices.Index(self.sqlTypes, sqlType)
-
-			if typeIndex < 0 {
-				log.Printf(`DbClientPostgres.getTablesInfo().processColumns() : Invalid Database Type : ${rec["dataType"].trim().toLowerCase()}, full rec : ${JSON.stringify(rec)}`)
-				continue
-			}
-
-			tableName := UnderscoreToCamel(rec["tableName"].(string), false)
-
-			if schemas[tableName] == nil {
-				schemas[tableName] = &Schema{Type: "object", Properties: map[string]*Schema{}, UniqueKeys: map[string][]string{}}
-			}
-
-			schema := schemas[tableName]
-			field := &Schema{}
-			fieldName := getFieldName(rec["columnName"].(string), field)
-			field.UniqueKeys = nil
-			field.Type = self.rufsTypes[typeIndex] // LocalDateTime,ZonedDateTime,Date,Time
-
-			if field.Type == "date-time" {
-				field.Type = "string"
-				field.Format = "date-time"
-			}
-
-			field.Nullable = rec["isNullable"] == "YES" || rec["isNullable"] == 1    // true,false
-			field.Updatable = rec["isUpdatable"] == "YES" || rec["isUpdatable"] == 1 // true,false
-			field.Scale = int(rec["numericScale"].(int64))                           // > 0 // 3,2,1
-			field.Precision = int(rec["numericPrecision"].(int64))                   // > 0
-			if rec["columnDefault"] != nil {
-				field.Default = rec["columnDefault"].(string) // 'pt-br'::character varying
-			}
-			if rec["description"] != nil {
-				field.Description = rec["description"].(string)
-			}
-
-			if field.Nullable != true {
-				if slices.Index(schema.Required, fieldName) < 0 {
-					schema.Required = append(schema.Required, fieldName)
-				}
-
-				field.Essential = true
-			}
-
-			if strings.HasPrefix(sqlType, "character") == true {
-				field.MaxLength = int(rec["characterMaximumLength"].(int64)) // > 0 // 255
-			}
-
-			if field.Type == "number" && field.Scale == 0 {
-				field.Type = "integer"
-			}
-
-			if field.Default != "" && field.Default[:1] == "'" && len(field.Default) > 2 {
-				posEnd := strings.LastIndex(field.Default, "'")
-
-				if field.Type == "string" && posEnd > 1 {
-					field.Default = field.Default[1:posEnd]
+				let schema = if let Some(schema) = schemas.get(table_name) {
+					schema
 				} else {
-					field.Default = ""
+					schemas.insert(tableName, Schema::new());
+					schemas.get(table_name).unwrap();
+				};
+
+				let field = Schema{};
+				let field_name = get_field_name(rec["columnName"], field);
+				field.unique_keys = None;
+				field.typ = adapter.rufs_types[type_index]; // LocalDateTime,ZonedDateTime,Date,Time
+
+				if field.typ == "date-time" {
+					field.typ = "string";
+					field.format = "date-time";
 				}
-			}
 
-			if (field.Type == "integer" || field.Type == "number") && len(field.Default) > 0 {
-				if _, err := strconv.ParseFloat(field.Default, 64); err != nil {
-					field.Default = ""
+				field.nullable = rec["isNullable"] == "YES" || rec["isNullable"] == 1;    // true,false
+				field.Updatable = rec["isUpdatable"] == "YES" || rec["isUpdatable"] == 1; // true,false
+				field.scale = rec["numericScale"];                           // > 0 // 3,2,1
+				field.precision = rec["numericPrecision"];                   // > 0
+
+				if rec["columnDefault"].is_nome == false {
+					field.default = rec["columnDefault"]; // 'pt-br'::character varying
 				}
+				if rec["description"].is_nome == false {
+					field.description = rec["description"];
+				}
+
+				if field.nullable != true {
+					if schema.required.index(field_name) < 0 {
+						schema.required = schema.required.append(field_name);
+					}
+
+					field.essential = true;
+				}
+
+				if sql_type.has_prefix("character") == true {
+					field.max_length = rec["characterMaximumLength"]; // > 0 // 255
+				}
+
+				if field.typ == "number" && field.scale == 0 {
+					field.typ = "integer";
+				}
+
+				if field.default != "" && field.default[0..1] == "'" && field.default.len() > 2 {
+					let pos_end = field.default.last_index("'");
+
+					if field.typ == "string" && pos_end > 1 {
+						field.default = field.default[1..pos_end];
+					} else {
+						field.default = "";
+					}
+				}
+
+				if (field.typ == "integer" || field.typ == "number") && field.default.len() > 0 {
+					if let Ok(_) = field.default.parse_float() {
+						field.default = "";
+					}
+				}
+
+				if rec["identityGeneration"].is_some() {
+					field.identity_generation = rec["identityGeneration"]
+				}
+				// SERIAL TYPE
+				if field.default.has_prefix("nextval") {
+					field.identity_generation = "BY DEFAULT";
+				}
+
+				if field.typ == "array" {
+					field.items = Schema{};
+				}
+
+				schema.properties[field_name] = field;
 			}
 
-			if rec["identityGeneration"] != nil {
-				field.IdentityGeneration = rec["identityGeneration"].(string)
-			}
-			// SERIAL TYPE
-			if strings.HasPrefix(field.Default, "nextval") {
-				field.IdentityGeneration = "BY DEFAULT"
-			}
+			Ok(schemas)
+		};
 
-			if field.Type == "array" {
-				field.Items = &Schema{}
-			}
-
-			schema.Properties[fieldName] = field
-		}
-
-		return schemas, nil
+		let mut schemas : IndexMap<String, Schema> = IndexMap::new();
+		process_columns(self, &schemas);
+		process_constraints(&schemas);
+		options.schemas = schemas;
+		adapter.openapi = openapi;
+		openapi.fill_open_api(options);
+		Ok()
 	}
 
-	schemas, _ := processColumns()
-	processConstraints(schemas)
-	options.schemas = schemas
-	self.openapi = openapi
-	openapi.FillOpenApi(options)
-	return nil
-}
-
+*/
+	/*
 fn CreateTable(name:&str, schema *Schema) (sql.Result, error) {
 	genSqlColumnDescription := func(fieldName:&str, field *Schema) (string, error) {
 		if field.Type == "" {
@@ -709,13 +717,13 @@ fn CreateTable(name:&str, schema *Schema) (sql.Result, error) {
 			}
 		}
 
-		pos := slices.Index(self.rufsTypes, field.Type)
+		pos := slices.Index(adapter.rufsTypes, field.Type)
 
 		if pos < 0 {
 			return "", fmt.Errorf(`[CreateTable(%s).genSqlColumnDescription(%s)] Missing rufsType equivalent of %s`, name, fieldName, field.Type)
 		}
 
-		sqlType := self.sqlTypes[pos]
+		sqlType := adapter.sqlTypes[pos]
 
 		if field.Type == "string" && field.MaxLength > 0 && field.MaxLength < 32 {
 			sqlType = "character"
@@ -761,7 +769,7 @@ fn CreateTable(name:&str, schema *Schema) (sql.Result, error) {
 		if field.Nullable != true {
 			sqlNotNull = "NOT NULL"
 		}
-		return fmt.Sprintf(`%s %s%s %s %s`, CamelToUnderscore(fieldName), sqlType, sqlLengthScale, sqlDefault, sqlNotNull), nil
+		return fmt.Sprintf(`%s %s%s %s %s`, CamelToUnderscore(fieldName), sqlType, sqlLengthScale, sqlDefault, sqlNotNull), None
 	}
 	// TODO : refatorar função genSqlForeignKey(fieldName, field) para genSqlForeignKey(tableName)
 	genSqlForeignKey := func(fieldName:&str, field *Schema) string {
