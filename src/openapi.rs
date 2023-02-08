@@ -152,11 +152,10 @@ type OperationObject struct {
     Security    []SecurityRequirementObject `json:"security,omitempty"`
 }
 */
-#[derive(Serialize,Deserialize, Clone)]
+#[derive(Serialize,Deserialize, Clone,Default)]
 pub struct ForeignKey {
     pub table_ref :String,
-    pub fields    :Vec<String>,
-    pub fields_ref :Vec<String>
+    pub fields    :HashMap<String, String>,
 }
 /*
 type Schema struct {

@@ -1,10 +1,11 @@
-use std::{io::{Error, ErrorKind}, sync::{Arc}, collections::HashMap};
+use std::{io::{Error}, sync::{Arc}, collections::HashMap};
 
 use convert_case::Casing;
 use indexmap::IndexMap;
-use openapiv3::{OpenAPI, Schema, ReferenceOr};
+use openapiv3::{OpenAPI, Schema, ReferenceOr, ObjectType, SchemaData, SchemaKind, VariantOrUnknownOrEmpty, StringFormat};
+use serde::Deserialize;
 use serde_json::{Value, Number, json};
-use tokio_postgres::{NoTls, Client, Row, types::{Type, ToSql}};
+use tokio_postgres::{NoTls, Client, Row, types::{ToSql}};
 
 use crate::{entity_manager::EntityManager, openapi::{RufsOpenAPI, FillOpenAPIOptions, ForeignKey}};
 
@@ -67,32 +68,32 @@ impl DbAdapterPostgres<'_> {
             let typ = column.type_();
 
             let value : Value = match *typ {
-                Type::VARCHAR => {
+                tokio_postgres::types::Type::VARCHAR => {
 					if let Some(value) = row.get(idx) {
 						Value::String(value)
 					} else {
 						Value::Null
 					}
 				},
-                Type::INT4 => {
+                tokio_postgres::types::Type::INT4 => {
 					if let Some(value) = row.get::<_, Option<i32>>(idx) {
 						Value::Number(Number::from(value))
 					} else {
 						Value::Null
 					}
 				},
-                Type::INT8 => {
+                tokio_postgres::types::Type::INT8 => {
 					if let Some(value) = row.get::<usize, Option<i64>>(idx) {
 						Value::Number(Number::from(value))
 					} else {
 						Value::Null
 					}
 				},
-                Type::JSONB => 
+                tokio_postgres::types::Type::JSONB => 
 				{
 					row.get(idx)
 				},
-                Type::JSONB_ARRAY => {
+                tokio_postgres::types::Type::JSONB_ARRAY => {
                     let list = row.get::<_, Vec<Value>>(idx);
                     Value::Array(list)
                 },
@@ -379,26 +380,26 @@ impl EntityManager for DbAdapterPostgres<'_> {
 		let _count = self.client.as_ref().unwrap().execute(&sql, params).await.unwrap();
 		Ok(())
 	}
-/*
-	async fn update_open_api(&self, options :&FillOpenAPIOptions) -> Result<(), Error> {
-		fn get_field_name(adapter :&DbAdapterPostgres, column_name :&str, field :Option<&ReferenceOr<Schema>>) -> String {
-			let field_name = column_name.to_case(convert_case::Case::Camel);
+
+	async fn update_open_api(&mut self, openapi: &mut OpenAPI, options :&mut FillOpenAPIOptions) -> Result<(), Error> {
+		fn get_field_name(adapter :&mut DbAdapterPostgres, column_name :&str, schema_data :Option<&mut SchemaData>) -> String {
+			let mut field_name = column_name.to_case(convert_case::Case::Camel);
 			let field_name_lower_case = field_name.to_lowercase();
 
-			for (alias_map_name, value) in adapter.alias_map {
+			for (alias_map_name, value) in &adapter.alias_map {
 				if alias_map_name.to_lowercase() == field_name_lower_case {
-					if let Some(field) = field {
-						field.set_extension("internalName", Value::String(field_name));
+					if let Some(schema_data) = schema_data {
+						schema_data.extensions.insert("x-internalName".to_string(), Value::String(field_name.clone()));
 
 						if value.len() > 0 {
-							adapter.alias_map_external_to_internal.insert(value, field_name);
+							adapter.alias_map_external_to_internal.insert(value.clone(), field_name.clone());
 						}
 					}
 
 					if value.len() > 0 {
-						field_name = value;
+						field_name = value.clone();
 					} else {
-						field_name = alias_map_name;
+						field_name = alias_map_name.clone();
 					}
 
 					break;
@@ -408,27 +409,53 @@ impl EntityManager for DbAdapterPostgres<'_> {
 			return field_name;
 		}
 
-		fn set_ref(properties: IndexMap<String, ReferenceOr<Box<Schema>>>, field_name :&str, table_ref :&str) {
-			if let Some(field) = properties.get(field_name) {
-				field.set_extension("ref", Value::String(format!("#/components/schemas/{}", table_ref)));
+		fn set_ref(properties: &mut IndexMap<String, ReferenceOr<Box<Schema>>>, field_name :&str, table_ref :&str) {
+			if let Some(field) = properties.get_mut(field_name) {
+				if let ReferenceOr::Item(field) = field {
+					field.schema_data.extensions.insert("x-ref".to_string(), Value::String(format!("#/components/schemas/{}", table_ref)));
+				}
 			}
 		}
 
-		async fn process_constraints(adapter :&DbAdapterPostgres<'_>, schemas :&IndexMap<String, Schema>) -> Result<(), Error> {
+		async fn process_constraints(adapter :&mut DbAdapterPostgres<'_>, schemas :&mut IndexMap<String, ReferenceOr<Schema>>) -> Result<(), Error> {
 			let sql_info_constraints = "SELECT table_name,constraint_name,constraint_type FROM information_schema.table_constraints ORDER BY table_name,constraint_name";
 			let sql_info_constraints_fields = "SELECT constraint_name,column_name,ordinal_position FROM information_schema.key_column_usage ORDER BY constraint_name,ordinal_position";
 			let sql_info_constraints_fields_ref = "SELECT constraint_name,table_name,column_name FROM information_schema.constraint_column_usage";
-			let result = adapter.query(sql_info_constraints, &[]).await;
-			let result_fields = adapter.query(sql_info_constraints_fields, &[]).await;
-			let result_fields_ref = adapter.query(sql_info_constraints_fields_ref, &[]).await;
+			let result = &adapter.query(sql_info_constraints, &[]).await;
+			let result_fields = &adapter.query(sql_info_constraints_fields, &[]).await;
+			let result_fields_ref = &adapter.query(sql_info_constraints_fields_ref, &[]).await;
 
 			for (schema_name, schema) in schemas {
-				let table_name = schema_name.to_case(convert_case::Case::Snake);
-				let primary_keys = schema.schema_data.extensions.get_mut("x-primaryKeys").unwrap_or(&mut json!([]));
-				let foreign_keys = schema.schema_data.extensions.get_mut("x-foreignKeys").unwrap_or(&mut json!({}));
-				let unique_keys = schema.schema_data.extensions.get_mut("x-uniqueKeys").unwrap_or(&mut json!({}));
+				let schema = if let ReferenceOr::Item(schema) = schema {
+					schema
+				} else {
+					continue;
+				};
 
-				let mut object_type = match &schema.schema_kind {
+				let table_name = schema_name.to_case(convert_case::Case::Snake);
+				let extensions = &mut schema.schema_data.extensions;
+
+				let mut primary_keys = if let Some(primary_keys) = extensions.get_mut("x-primaryKeys") {
+					primary_keys.clone()
+				} else {
+					json!([])
+				};
+
+				let mut foreign_keys = if let Some(foreign_keys) = extensions.get_mut("x-foreignKeys") {
+					foreign_keys.clone()
+				} else {
+					json!({})
+				};
+				
+				let mut unique_keys = if let Some(unique_keys) = extensions.get_mut("x-uniqueKeys") {
+					unique_keys.clone()
+				} else {
+					json!({})
+				};
+
+				let schema_kind = &mut schema.schema_kind;
+
+				let object_type = match schema_kind {
 					openapiv3::SchemaKind::Type(typ) => match typ {
 						openapiv3::Type::Object(object_type) => object_type,
 						_ => todo!()
@@ -446,12 +473,12 @@ impl EntityManager for DbAdapterPostgres<'_> {
 					}
 
 					let constraint_name = constraint["constraintName"].as_str().unwrap().trim_end();
-					let name = constraint_name.to_case(convert_case::Case::Camel);
-					let mut list : Vec<Value> = vec![];
+					let name = &constraint_name.to_case(convert_case::Case::Camel);
+					let list = &mut vec![];
 
 					for item in result_fields {
 						if item["constraintName"].as_str().unwrap().trim_end() == constraint_name {
-							list.push(item);
+							list.push(item.clone());
 						}
 					}
 
@@ -459,87 +486,98 @@ impl EntityManager for DbAdapterPostgres<'_> {
 
 					for item in result_fields_ref {
 						if item["constraintName"].as_str().unwrap().trim_end() == constraint_name {
-							list_ref.push(item);
+							list_ref.push(item.clone());
 						}
 					}
 
 					let constraint_type = constraint["constraintType"].as_str().unwrap().trim_end();
 
 					if constraint_type == "FOREIGN KEY" {
-						let mut foreign_key = ForeignKey{fields: vec![], fields_ref: vec![], table_ref: String::new()};
-
-						for item in list {
-							foreign_key.fields.push(get_field_name(adapter, item["columnName"].as_str().unwrap(), None));
+						if list.len() != list_ref.len() {
+							println!("[DbAdapterPostgres.update_open_api.process_constraints.FOREIGN KEY] not same size of lists :\n{:?}\n{:?}", list, list_ref);
+							continue;
 						}
 
-						for item_ref in list_ref {
-							foreign_key.fields_ref.push(get_field_name(adapter, item_ref["columnName"].as_str().unwrap(), None));
+						let mut foreign_key = ForeignKey::default();
+
+						for i in 0..list.len() {
+							let item = &list[i];
+							let item_ref = &list_ref[i];
+							let field = get_field_name(adapter, item["columnName"].as_str().unwrap(), None);
+							let field_ref = get_field_name(adapter, item_ref["columnName"].as_str().unwrap(), None);
+							foreign_key.fields.insert(field, field_ref);
 							let table_ref = item_ref["tableName"].as_str().unwrap().to_lowercase().to_case(convert_case::Case::Camel);
 
 							if foreign_key.table_ref == "" || foreign_key.table_ref == table_ref {
 								foreign_key.table_ref = table_ref;
+							} else {
+								println!("[DbAdapterPostgres.update_open_api.process_constraints.FOREIGN KEY] not same table_ref :\n{}\n{}", foreign_key.table_ref, table_ref);
 							}
 						}
 
-						if foreign_key.fields.len() != foreign_key.fields_ref.len() {
-							continue;
-						}
-
 						if foreign_key.fields.len() == 1 {
-							set_ref(schema.as_object_type().unwrap().properties, &foreign_key.fields[0], &foreign_key.table_ref);
+							for (field, _field_ref) in foreign_key.fields {
+								set_ref(&mut object_type.properties, &field, &foreign_key.table_ref);
+							}
+
 							continue;
 						}
 
-						if foreign_key.fields.len() > 1 && foreign_key.fields.contains(&foreign_key.table_ref) {
-							set_ref(schema.as_object_type().unwrap().properties, &foreign_key.table_ref, &foreign_key.table_ref);
+						if foreign_key.fields.len() > 1 && foreign_key.fields.contains_key(&foreign_key.table_ref) {
+							set_ref(&mut object_type.properties, &foreign_key.table_ref, &foreign_key.table_ref);
 						}
 
 						foreign_keys[name] = serde_json::to_value(foreign_key)?;
 					} else if constraint_type == "UNIQUE" {
 						for item in list {
-							let field_name = get_field_name(adapter, item["columnName"].as_str().unwrap(), None);
+							let field_name = &get_field_name(adapter, item["columnName"].as_str().unwrap(), None);
+							let value = &Value::String(field_name.clone());
 
 							if let Some(list) = unique_keys.get_mut(name) {
-								list.as_array().unwrap().push(Value::String(field_name));
+								let list = list.as_array_mut();
+								let list = list.unwrap();
+								list.push(value.clone());
 							} else {
-								unique_keys[name] = json!([field_name]);
+								unique_keys[name] = json!([value]);
 							}
 						}
 					} else if constraint_type == "PRIMARY KEY" {
 						for item in list {
-							let field_name = get_field_name(adapter, item["columnName"].as_str().unwrap(), None);
-							let value = Value::String(field_name);
+							let field_name = &get_field_name(adapter, item["columnName"].as_str().unwrap(), None);
+							let value = &Value::String(field_name.clone());
 
 							if let Some(list) = schema.schema_data.extensions.get_mut("x-primaryKeys") {
-								if list.as_array().unwrap().contains(&value) == false {
-									list.as_array().unwrap().push(value);
+								let list = list.as_array_mut().unwrap();
+
+								if list.contains(&value) == false {
+									list.push(value.clone());
 								}
 							} else {
 								schema.schema_data.extensions.insert("x-primaryKeys".to_string(), json!([value]));
 							}
 
 							if object_type.required.contains(&field_name) == false {
-								object_type.required.push(field_name);
+								object_type.required.push(field_name.clone());
 							}
 						}
 					}
 				}
 
-				for (name, foreign_key) in foreign_keys.as_object().unwrap() {
-					let foreign_key : ForeignKey = serde_json::from_value(foreign_key.clone()).unwrap();
-					let candidates = vec![];
+				for (name, foreign_key) in foreign_keys.as_object_mut().unwrap() {
+					let mut candidates = vec![];
+					let fields = foreign_key.get_mut("fields").unwrap().as_object_mut().unwrap();
 
-					for field_name in foreign_key.fields {
-						if let Some(field) = object_type.properties.get(&field_name) {
+					for (field_name, _field_ref) in &mut *fields {
+						if let Some(field) = object_type.properties.get(field_name) {
 							if field.as_item().unwrap().schema_data.extensions.contains_key("x-ref") == false {
-								candidates.push(field_name);
+								candidates.push(field_name.clone());
 							}
 						}
 					}
 
 					if candidates.len() == 1 {
-						set_ref(object_type.properties, &candidates[0], &foreign_key.table_ref);
-						foreign_keys.as_object().unwrap().remove(name);
+						fields.remove(name);
+						set_ref(&mut object_type.properties, &candidates[0], foreign_key.get("tableRef").unwrap().as_str().unwrap());
 					}
 				}
 
@@ -548,7 +586,7 @@ impl EntityManager for DbAdapterPostgres<'_> {
 						let value = Value::String(column_name.to_string());
 
 						if primary_keys.as_array().unwrap().contains(&value) == false {
-							primary_keys.as_array().unwrap().push(value);
+							primary_keys.as_array_mut().unwrap().push(value);
 						}
 
 						if object_type.required.contains(column_name) == false {
@@ -559,11 +597,13 @@ impl EntityManager for DbAdapterPostgres<'_> {
 
 				if let Some(list) = adapter.missing_foreign_keys.get(schema_name) {
 					for foreign_key in list {
-						set_ref(object_type.properties, field_name, table_ref);
+						for (field_name, _field_ref) in &foreign_key.fields {
+							set_ref(&mut object_type.properties, &field_name, &foreign_key.table_ref);
+						}
 					}
 				}
 
-				if schema.required.len() == 0 {
+				if object_type.required.len() == 0 {
 					println!("[process_columns()] : missing required fields of table {schema_name}");
 				}
 
@@ -572,18 +612,34 @@ impl EntityManager for DbAdapterPostgres<'_> {
 				schema.schema_data.extensions.insert("x-foreignKeys".to_string(), foreign_keys.clone());
 			}
 
-			Ok()
+			Ok(())
 		}
 
-		fn process_columns(adapter :&DbAdapterPostgres, schemas :&mut IndexMap<String, Schema>) -> Result<(), Error> {
-			let sql_types = vec!["boolean", "character varying", "character", "integer", "jsonb", "jsonb array", "numeric", "timestamp without time zone", "timestamp with time zone", "time without time zone", "bigint", "smallint", "text", "date", "double precision", "bytea"];
-			let rufs_types = vec!["boolean", "string", "string", "integer", "object", "array", "number", "date-time", "date-time", "date-time", "integer", "integer", "string", "date-time", "number", "string"];
+		#[derive(Deserialize,Debug)]
+		struct SqlInfoTables {
+			data_type :String,
+			udt_name :String,
+			table_name :String,
+			column_name :String,
+			is_nullable :String,
+			is_updatable :String,
+			numeric_scale :usize,
+			numeric_precision :usize,
+			character_maximum_length :usize,
+			column_default :String,
+			identity_generation :String,
+			description :String
+		}
+
+		async fn process_columns(adapter :&mut DbAdapterPostgres<'_>, schemas :&mut IndexMap<String, ReferenceOr<Schema>>) -> Result<(), Error> {
+			let sql_types = ["boolean", "character varying", "character", "integer", "jsonb", "jsonb array", "numeric", "timestamp without time zone", "timestamp with time zone", "time without time zone", "bigint", "smallint", "text", "date", "double precision", "bytea"];
+			let rufs_types = ["boolean", "string", "string", "integer", "object", "array", "number", "date-time", "date-time", "date-time", "integer", "integer", "string", "date-time", "number", "string"];
 			let sql_info_tables = "
 			select 
-			c.data_type,
-			c.udt_name,
-			c.table_name,
-			c.column_name,
+			LOWER(TRIM(c.data_type)) as data_type,
+			LOWER(TRIM(c.udt_name)) as udt_name,
+			LOWER(TRIM(c.table_name)) as table_name,
+			LOWER(TRIM(c.column_name)) as column_name,
 			c.is_nullable,
 			c.is_updatable,
 			COALESCE(c.numeric_scale, 0) as numeric_scale,
@@ -597,115 +653,122 @@ impl EntityManager for DbAdapterPostgres<'_> {
 			right outer join information_schema.columns c on (pgd.objsubid=c.ordinal_position and c.table_schema=st.schemaname and c.table_name=st.relname)
 			where table_schema = 'public' order by c.table_name,c.ordinal_position
 			";
-			let rows = adapter.client.query(sql_info_tables);
+			let rows = adapter.query(sql_info_tables, &[]).await;
 
 			for row in rows {
-				let rec = adapter.get_map_from_row(rows, None);
-				let sql_type = rec["dataType"].trim(" ").to_lower();
-				let sql_sub_type = rec["udtName"].trim(" ").to_lower();
+				let rec: SqlInfoTables = serde_json::from_value(row)?;
+				let mut sql_type = rec.data_type.trim().to_lowercase();
+				let sql_sub_type = rec.udt_name.trim().to_lowercase();
 
 				if sql_type == "array" && sql_sub_type == "_jsonb" {
-					sql_type = "jsonb array"
+					sql_type = "jsonb array".to_string();
 				}
 
-				let type_index = adapter.sql_types.index(sql_type);
+				let type_index = sql_types.iter().position(|&item| item == &sql_type);
 
-				if type_index < 0 {
-					println!("DbClientPostgres.getTablesInfo().processColumns() : Invalid Database Type : {sql_type}, full rec : {}", rec);
+				if type_index.is_none() {
+					println!("DbClientPostgres.getTablesInfo().processColumns() : Invalid Database Type : {sql_type}, full rec : {:?}", rec);
 					continue
 				}
 
-				let table_name = rec["tableName"].to_case(camel);
+				let table_name = rec.table_name.to_case(convert_case::Case::Camel);
 
-				let schema = if let Some(schema) = schemas.get(table_name) {
+				let schema = if let Some(schema) = schemas.get_mut(&table_name) {
 					schema
 				} else {
-					schemas.insert(tableName, Schema::new());
-					schemas.get(table_name).unwrap();
+					schemas.insert(table_name.clone(), ReferenceOr::Item(Schema { schema_data: SchemaData::default(), schema_kind: openapiv3::SchemaKind::Type(openapiv3::Type::Object(ObjectType::default())) }));
+					schemas.get_mut(&table_name).unwrap()
 				};
 
-				let field = Schema{};
-				let field_name = get_field_name(rec["columnName"], field);
-				field.unique_keys = None;
-				field.typ = adapter.rufs_types[type_index]; // LocalDateTime,ZonedDateTime,Date,Time
+				let schema = if let ReferenceOr::Item(schema) = schema {
+					schema
+				} else {
+					continue
+				};
 
-				if field.typ == "date-time" {
-					field.typ = "string";
-					field.format = "date-time";
+				let object_type = match &mut schema.schema_kind {
+					SchemaKind::Type(openapiv3::Type::Object(object_type)) => object_type,
+					_ => todo!()
+				};
+
+				let mut schema_data = SchemaData::default();
+
+				if rec.description.is_empty() == false {
+					schema_data.description = Some(rec.description);
 				}
 
-				field.nullable = rec["isNullable"] == "YES" || rec["isNullable"] == 1;    // true,false
-				field.Updatable = rec["isUpdatable"] == "YES" || rec["isUpdatable"] == 1; // true,false
-				field.scale = rec["numericScale"];                           // > 0 // 3,2,1
-				field.precision = rec["numericPrecision"];                   // > 0
+				schema_data.nullable = rec.is_nullable == "YES" || rec.is_nullable == "1";    // true,false
+				schema_data.extensions.insert("x-updatable".to_string(), Value::Bool(rec.is_updatable == "YES" || rec.is_updatable == "1"));
 
-				if rec["columnDefault"].is_nome == false {
-					field.default = rec["columnDefault"]; // 'pt-br'::character varying
-				}
-				if rec["description"].is_nome == false {
-					field.description = rec["description"];
-				}
-
-				if field.nullable != true {
-					if schema.required.index(field_name) < 0 {
-						schema.required = schema.required.append(field_name);
-					}
-
-					field.essential = true;
-				}
-
-				if sql_type.has_prefix("character") == true {
-					field.max_length = rec["characterMaximumLength"]; // > 0 // 255
-				}
-
-				if field.typ == "number" && field.scale == 0 {
-					field.typ = "integer";
-				}
-
-				if field.default != "" && field.default[0..1] == "'" && field.default.len() > 2 {
-					let pos_end = field.default.last_index("'");
-
-					if field.typ == "string" && pos_end > 1 {
-						field.default = field.default[1..pos_end];
-					} else {
-						field.default = "";
-					}
-				}
-
-				if (field.typ == "integer" || field.typ == "number") && field.default.len() > 0 {
-					if let Ok(_) = field.default.parse_float() {
-						field.default = "";
-					}
-				}
-
-				if rec["identityGeneration"].is_some() {
-					field.identity_generation = rec["identityGeneration"]
+				if rec.identity_generation.is_empty() == false {
+					schema_data.extensions.insert("x-identityGeneration".to_string(), Value::String(rec.identity_generation));
 				}
 				// SERIAL TYPE
-				if field.default.has_prefix("nextval") {
-					field.identity_generation = "BY DEFAULT";
+				if rec.column_default.starts_with("nextval") {
+					schema_data.extensions.insert("x-identityGeneration".to_string(), Value::String("BY DEFAULT".to_string()));
 				}
 
-				if field.typ == "array" {
-					field.items = Schema{};
+				let field_name = get_field_name(adapter, &rec.column_name, Some(&mut schema_data));
+
+				if schema_data.nullable == false {
+					if object_type.required.contains(&field_name) == false {
+						object_type.required.push(field_name.clone());
+					}
+
+					schema_data.extensions.insert("x-essential".to_string(), Value::Bool(true));
+				}
+				// LocalDateTime,ZonedDateTime,Date,Time
+				let mut rufs_type = rufs_types[type_index.unwrap()];
+
+				if rufs_type == "number" && rec.numeric_scale == 0 {
+					rufs_type = "integer";
 				}
 
-				schema.properties[field_name] = field;
+				let max_length = if rec.character_maximum_length > 0 {
+					Some(rec.character_maximum_length)
+				} else {
+					None
+				};
+
+				let schema_kind = match rufs_type {
+					"date-time" => SchemaKind::Type(openapiv3::Type::String(openapiv3::StringType { format: VariantOrUnknownOrEmpty::Item(StringFormat::DateTime), ..Default::default() })),
+					"boolean" => SchemaKind::Type(openapiv3::Type::Boolean {  }), 
+					"number" => SchemaKind::Type(openapiv3::Type::Number(openapiv3::NumberType { format: VariantOrUnknownOrEmpty::Empty, multiple_of: None, exclusive_minimum: false, exclusive_maximum: false, minimum: None, maximum: None, enumeration: vec![] })),
+					"integer" => SchemaKind::Type(openapiv3::Type::Integer(openapiv3::IntegerType { format: VariantOrUnknownOrEmpty::Empty, multiple_of: None, exclusive_minimum: false, exclusive_maximum: false, minimum: None, maximum: None, enumeration: vec![] })), 
+					"array"=> SchemaKind::Type(openapiv3::Type::Array(openapiv3::ArrayType { items: Some(ReferenceOr::Item(Box::new(Schema {schema_data: SchemaData::default(), schema_kind: SchemaKind::Type(openapiv3::Type::String(openapiv3::StringType { format: VariantOrUnknownOrEmpty::Empty, pattern: None, enumeration: vec![], min_length: None, max_length: None }))}))), min_items: None, max_items: None, unique_items: false })), 
+					"object" => SchemaKind::Type(openapiv3::Type::Object(ObjectType { properties: IndexMap::default(), required: vec![], additional_properties: None, min_properties: None, max_properties: None })),
+					_ => SchemaKind::Type(openapiv3::Type::String(openapiv3::StringType { format: VariantOrUnknownOrEmpty::Empty, pattern: None, enumeration: vec![], min_length: None, max_length })), 
+				};
+
+
+				if rec.column_default.is_empty() == false {
+					schema_data.default = match rufs_type {
+						"integer" => Some(Value::Number(Number::from(rec.column_default.parse::<i64>().unwrap()))),
+						"number" => Some(Value::Number(Number::from_f64(rec.column_default.parse::<f64>().unwrap()).unwrap())),
+						_ => Some(Value::String(rec.column_default.replace("'", ""))), // TODO : usar regexp ^'(.*)'$ // 'pt-br'::character varying,
+					}
+				}
+
+				if ["number"].contains(&rufs_type) {
+					schema_data.extensions.insert("x-scale".to_string(), Value::Number(Number::from(rec.numeric_scale)));                           // > 0 // 3,2,1
+					schema_data.extensions.insert("x-precision".to_string(), Value::Number(Number::from(rec.numeric_precision)));                   // > 0
+				}
+
+				object_type.properties.insert(field_name, ReferenceOr::Item(Box::new(Schema { schema_data, schema_kind })));
 			}
 
-			Ok(schemas)
-		};
+			Ok(())
+		}
 
-		let mut schemas : IndexMap<String, Schema> = IndexMap::new();
-		process_columns(self, &schemas);
-		process_constraints(&schemas);
+		let mut schemas : IndexMap<String, ReferenceOr<Schema>> = IndexMap::new();
+		process_columns(self, &mut schemas).await?;
+		process_constraints(self, &mut schemas).await?;
 		options.schemas = schemas;
-		adapter.openapi = openapi;
-		openapi.fill_open_api(options);
-		Ok()
+		//self.openapi = openapi;
+		openapi.fill(options)?;
+		Ok(())
 	}
 
-*/
 	/*
 fn CreateTable(name:&str, schema *Schema) (sql.Result, error) {
 	genSqlColumnDescription := func(fieldName:&str, field *Schema) (string, error) {

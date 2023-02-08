@@ -121,9 +121,8 @@ impl EntityManager for DbAdapterFile<'_> {
 
         Err(Error::new(std::io::ErrorKind::NotFound, format!("[FileDbAdapter.Update(name = {}, key = {})] : don't find table", table_name, key)))
     }
-/*
-    async fn update_open_api(&self, _options :&FillOpenAPIOptions) -> Result<(), Error> {
+
+    async fn update_open_api(&mut self, _openapi: &mut OpenAPI, _options :&mut FillOpenAPIOptions) -> Result<(), Error> {
         Ok(())
     }
-    */
 }
