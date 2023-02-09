@@ -125,4 +125,9 @@ impl EntityManager for DbAdapterFile<'_> {
     async fn update_open_api(&mut self, _openapi: &mut OpenAPI, _options :&mut FillOpenAPIOptions) -> Result<(), Error> {
         Ok(())
     }
+
+    async fn exec(&self, _sql: &str) -> Result<(), Error> {
+        Ok(())
+    }   
+
 }

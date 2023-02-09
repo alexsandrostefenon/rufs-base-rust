@@ -220,6 +220,14 @@ impl DbAdapterPostgres<'_> {
 
 #[tide::utils::async_trait]
 impl EntityManager for DbAdapterPostgres<'_> {
+	async fn exec(&self, sql: &str) -> Result<(), Error> {
+		if let Err(error) = self.client.as_ref().unwrap().batch_execute(sql).await {
+			Err(Error::new(std::io::ErrorKind::InvalidInput, error.to_string()))
+		} else {
+			Ok(())
+		}
+	}
+
     async fn insert(&self, _openapi: &OpenAPI, schema_name :&str, obj :&Value) -> Result<Value, Error> {
         println!("[DbAdapterPostgres.find({}, {})]", schema_name, obj.to_string());
 		let table_name = schema_name.to_case(convert_case::Case::Snake);

@@ -107,7 +107,8 @@ async fn handle_api(mut request: Request<RufsMicroService<'_>>) -> tide::Result 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     let mut rufs = RufsMicroService{
-        check_rufs_tables: true, 
+        check_rufs_tables: true,
+        migration_path: "./rufs-nfe-es6/sql".to_string(),
         micro_service_server: MicroServiceServer{app_name: "nfe".to_string(), ..Default::default()}, 
         ..Default::default()
     };

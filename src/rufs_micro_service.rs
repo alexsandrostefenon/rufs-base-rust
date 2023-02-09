@@ -261,7 +261,7 @@ impl RufsMicroService<'_> {
             Ok(())
         }
 
-        fn exec_migrations(rms: &mut RufsMicroService) -> Result<(), Error> {
+        async fn exec_migrations(rms: &mut RufsMicroService<'_>) -> Result<(), Error> {
             fn get_version(name: &str) -> Result<usize, Error> {
                 let reg_exp = Regex::new(r"(\d{1,3})\.(\d{1,3})\.(\d{1,3})").unwrap();
                 let reg_exp_result = reg_exp.captures(name).unwrap();
@@ -281,20 +281,18 @@ impl RufsMicroService<'_> {
                 Ok(str_version.parse().unwrap())
             }
 
-            fn migrate(rms: &mut RufsMicroService, file_name: &str) -> Result<(), Error> {
+            async fn migrate(rms: &mut RufsMicroService<'_>, file_name: &str) -> Result<(), Error> {
                 let text = fs::read_to_string(PathBuf::from(rms.migration_path.clone()).join(file_name))?;
 
-                for _sql in text.split("--split") {
-                    //				rms.entity_manager.exec(sql)?;
+                for sql in text.split("--split") {
+                    if let Err(error) = rms.entity_manager.exec(sql).await {
+                        return Err(tide::Error::from_str(500, format!("{}", error)));
+                    }
                 }
 
                 let new_version = get_version(file_name)?;
                 rms.micro_service_server.openapi.info.version = format!("{}.{}.{}", ((new_version / 1000) / 1000) % 1000, (new_version / 1000) % 1000, new_version % 1000);
                 Ok(())
-            }
-
-            if rms.migration_path == "" {
-                rms.migration_path = format!("./rufs-{}-es6/sql", rms.micro_service_server.app_name);
             }
 
             if Path::new(&rms.migration_path).exists() == false {
@@ -322,7 +320,7 @@ impl RufsMicroService<'_> {
             });
 
             for file_name in list {
-                migrate(rms, &file_name).unwrap();
+                migrate(rms, &file_name).await.unwrap();
             }
 
             //rms.entity_manager.UpdateOpenAPI(rms.openapi, FillOpenAPIOptions{requestBodyContentType: rms.requestBodyContentType});
@@ -344,7 +342,7 @@ impl RufsMicroService<'_> {
         options.schemas = openapi_rufs.components.unwrap().schemas.clone();
         options.request_body_content_type = self.micro_service_server.request_body_content_type.clone();
         self.micro_service_server.openapi.fill(&mut options)?;
-        exec_migrations(self)?;
+        exec_migrations(self).await?;
         //rms.db_adapter_file.openapi = Some(&rms.micro_service_server.openapi);
 
         if self.check_rufs_tables == false {
