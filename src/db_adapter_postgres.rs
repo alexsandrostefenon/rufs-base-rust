@@ -778,111 +778,100 @@ impl EntityManager for DbAdapterPostgres<'_> {
 	}
 
 	/*
-fn CreateTable(name:&str, schema *Schema) (sql.Result, error) {
-	genSqlColumnDescription := func(fieldName:&str, field *Schema) (string, error) {
-		if field.Type == "" {
-			if field.IdentityGeneration != "" {
-				field.Type = "integer"
+async fn create_table(name:&str, schema *Schema) (sql.Result, error) {
+	fn gen_sql_column_description(field_name :&str, field :&Schema) -> Result<String, Error> {
+		if field.type == "" {
+			if field.identity_generation != "" {
+				field.type = "integer"
 			} else {
-				field.Type = "string"
+				field.type = "string"
 			}
 		}
 
-		pos := slices.Index(adapter.rufsTypes, field.Type)
+		let pos = adapter.rufs_types.index(field.type);
+		let mut sql_type := adapter.sql_types[pos];
 
-		if pos < 0 {
-			return "", fmt.Errorf(`[CreateTable(%s).genSqlColumnDescription(%s)] Missing rufsType equivalent of %s`, name, fieldName, field.Type)
+		if field.type == "string" && field.max_length > 0 && field.max_length < 32 {
+			sql_type = "character"
 		}
 
-		sqlType := adapter.sqlTypes[pos]
-
-		if field.Type == "string" && field.MaxLength > 0 && field.MaxLength < 32 {
-			sqlType = "character"
-		}
-
-		if field.MaxLength == 0 {
-			if field.Type == "string" {
-				field.MaxLength = 255
+		if field.max_length == 0 {
+			if field.type == "string" {
+				field.max_length = 255;
 			}
-			if field.Type == "number" {
-				field.MaxLength = 9
+			if field.type == "number" {
+				field.max_length = 9;
 			}
 		}
 
-		if field.Type == "number" && field.Scale == 0 {
-			field.Scale = 3
+		if field.type == "number" && field.scale == 0 {
+			field.scale = 3;
 		}
 
-		sqlLengthScale := ""
+		let mut sql_length_scale = "";
 
-		if field.MaxLength != 0 && field.Scale != 0 {
-			sqlLengthScale = fmt.Sprintf(`(%d,%d)`, field.MaxLength, field.Scale)
-		} else if field.MaxLength != 0 {
-			sqlLengthScale = fmt.Sprintf(`(%d)`, field.MaxLength)
+		if field.max_length != 0 && field.scale != 0 {
+			sql_length_scale = format!("({},{})", field.max_length, field.scale)
+		} else if field.max_length != 0 {
+			sql_length_scale = format!("({})", field.max_length)
 		}
 
-		sqlDefault := ""
+		let mut sql_default = "";
 
-		if field.IdentityGeneration != "" {
-			sqlDefault = fmt.Sprintf(`GENERATED %s AS IDENTITY`, field.IdentityGeneration)
-			sqlType = `int`
+		if field.identity_generation != "" {
+			sql_default = format!("GENERATED {} AS IDENTITY", field.identity_generation);
+			sql_type = "int";
 		}
 
-		if field.Default != "" {
-			if field.Type == "string" {
-				sqlDefault = fmt.Sprintf(` DEFAULT '%s'`, field.Default)
+		if field.default != "" {
+			if field.type == "string" {
+				sql_default = format!(" DEFAULT '{}'", field.default);
 			} else {
-				sqlDefault = " DEFAULT " + field.Default
+				sql_default = format!(" DEFAULT {}", field.default);
 			}
 		}
 
-		sqlNotNull := ""
-		if field.Nullable != true {
-			sqlNotNull = "NOT NULL"
+		let sql_not_null = "";
+
+		if field.nullable != true {
+			sql_not_null = "NOT NULL";
 		}
-		return fmt.Sprintf(`%s %s%s %s %s`, CamelToUnderscore(fieldName), sqlType, sqlLengthScale, sqlDefault, sqlNotNull), None
+
+		Ok(format!("{} {}{} {} {}", field_name.to_case(underscore), sql_type, sql_length_scale, sql_default, sql_not_null))
 	}
 	// TODO : refatorar função genSqlForeignKey(fieldName, field) para genSqlForeignKey(tableName)
-	genSqlForeignKey := func(fieldName:&str, field *Schema) string {
-		ref := OpenApiGetSchemaName(field.Ref)
-		tableOut := CamelToUnderscore(ref)
-		return fmt.Sprintf(`FOREIGN KEY(%s) REFERENCES %s`, CamelToUnderscore(fieldName), tableOut)
+	fn gen_sql_foreign_key(field_name :&str, field :&Schema) -> Result<String, Error> {
+		let ref = open_api.get_schema_name(field.ref);
+		let table_out = ref.to_case(underscore);
+		format!("FOREIGN KEY({}) REFERENCES {}", field_name.to_case(underscore), table_out);
 	}
 
-	tableBody := ""
-	for fieldName, field := range schema.Properties {
-		fieldDescription, err := genSqlColumnDescription(fieldName, field)
+	let mut table_body = "";
 
-		if err != nil {
-			return nil, err
-		}
-
-		tableBody = tableBody + fieldDescription + ", "
+	for (field_name, field) in schema.properties {
+		let field_description = gen_sql_column_description(field_name, field)?;
+		tableBody = table_body + field_description + ", ";
 	}
+
 	// add foreign keys
-	for fieldName, field := range schema.Properties {
-		if field.Ref != "" {
-			tableBody = tableBody + genSqlForeignKey(fieldName, field) + ", "
+	for (field_name, field) in schema.properties {
+		if field.ref.is_some() {
+			table_body = table_body + gen_sql_foreign_key(field_name, field) + ", ";
 		}
 	}
 	// add primary key
-	tableBody = tableBody + `PRIMARY KEY(`
+	table_body = tableBody + "PRIMARY KEY(";
+
 	for _, fieldName := range schema.PrimaryKeys {
-		tableBody = tableBody + CamelToUnderscore(fieldName) + `, `
-	}
-	tableBody = tableBody[:len(tableBody)-2] + `)`
-	tableName := CamelToUnderscore(name)
-	sql := fmt.Sprintf(`CREATE TABLE %s (%s)`, tableName, tableBody)
-	fmt.Printf("entityManager.createTable() : table %s, sql : \n%s\n", name, sql)
-	result, err := self.client.Exec(sql)
-
-	if err != nil {
-		return nil, err
+		tableBody = tableBody + field_name.to_case(underscore) + `, `;
 	}
 
-	err = self.UpdateOpenApi(self.openapi, FillOpenApiOptions{requestBodyContentType: self.dbConfig.requestBodyContentType})
-
-	return result, err
+	table_body = table_body[..table_body.len()-2] + `)`;
+	let table_name = name.to_case(underscore);
+	let sql = format!("CREATE TABLE {} ({})`, table_name, table_body);
+	self.client.exec(sql).await?;
+	self.update_open_api(self.openapi, FillOpenApiOptions{request_body_content_type: self.db_config.request_body_content_type})?;
+	Ok(())
 }
 */
 }
