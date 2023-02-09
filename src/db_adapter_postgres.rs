@@ -777,101 +777,100 @@ impl EntityManager for DbAdapterPostgres<'_> {
 		Ok(())
 	}
 
-	/*
-async fn create_table(name:&str, schema *Schema) (sql.Result, error) {
-	fn gen_sql_column_description(field_name :&str, field :&Schema) -> Result<String, Error> {
-		if field.type == "" {
+	async fn create_table(&self, name :&str, schema :&Schema) -> Result<(), Error> {
+		fn gen_sql_column_description(field_name :&str, field :&Schema) -> Result<String, Error> {
+			if field.typ == "" {
+				if field.identity_generation != "" {
+					field.typ = "integer";
+				} else {
+					field.typ = "string";
+				}
+			}
+
+			let pos = adapter.rufs_types.index(field.typ);
+			let mut sql_type = adapter.sql_types[pos];
+
+			if field.typ == "string" && field.max_length > 0 && field.max_length < 32 {
+				sql_type = "character"
+			}
+
+			if field.max_length == 0 {
+				if field.typ == "string" {
+					field.max_length = 255;
+				}
+				if field.typ == "number" {
+					field.max_length = 9;
+				}
+			}
+
+			if field.typ == "number" && field.scale == 0 {
+				field.scale = 3;
+			}
+
+			let mut sql_length_scale = "";
+
+			if field.max_length != 0 && field.scale != 0 {
+				sql_length_scale = format!("({},{})", field.max_length, field.scale)
+			} else if field.max_length != 0 {
+				sql_length_scale = format!("({})", field.max_length)
+			}
+
+			let mut sql_default = "";
+
 			if field.identity_generation != "" {
-				field.type = "integer"
-			} else {
-				field.type = "string"
+				sql_default = format!("GENERATED {} AS IDENTITY", field.identity_generation);
+				sql_type = "int";
+			}
+
+			if field.default != "" {
+				if field.typ == "string" {
+					sql_default = format!(" DEFAULT '{}'", field.default);
+				} else {
+					sql_default = format!(" DEFAULT {}", field.default);
+				}
+			}
+
+			let sql_not_null = "";
+
+			if field.nullable != true {
+				sql_not_null = "NOT NULL";
+			}
+
+			Ok(format!("{} {}{} {} {}", field_name.to_case(underscore), sql_type, sql_length_scale, sql_default, sql_not_null))
+		}
+		// TODO : refatorar função genSqlForeignKey(fieldName, field) para genSqlForeignKey(tableName)
+		fn gen_sql_foreign_key(field_name :&str, field :&Schema) -> Result<String, Error> {
+			let x_ref = open_api.get_schema_name(field.x_ref);
+			let table_out = x_ref.to_case(underscore);
+			format!("FOREIGN KEY({}) REFERENCES {}", field_name.to_case(underscore), table_out);
+		}
+
+		let mut table_body = "";
+
+		for (field_name, field) in schema.properties {
+			let field_description = gen_sql_column_description(field_name, field)?;
+			tableBody = table_body + field_description + ", ";
+		}
+
+		// add foreign keys
+		for (field_name, field) in schema.properties {
+			if field.x_ref.is_some() {
+				table_body = table_body + gen_sql_foreign_key(field_name, field) + ", ";
 			}
 		}
+		// add primary key
+		table_body = table_body + "PRIMARY KEY(";
 
-		let pos = adapter.rufs_types.index(field.type);
-		let mut sql_type := adapter.sql_types[pos];
-
-		if field.type == "string" && field.max_length > 0 && field.max_length < 32 {
-			sql_type = "character"
+		for (_, fieldName) in schema.primary_keys {
+			table_body = table_body + field_name.to_case(underscore) + ", ";
 		}
 
-		if field.max_length == 0 {
-			if field.type == "string" {
-				field.max_length = 255;
-			}
-			if field.type == "number" {
-				field.max_length = 9;
-			}
-		}
-
-		if field.type == "number" && field.scale == 0 {
-			field.scale = 3;
-		}
-
-		let mut sql_length_scale = "";
-
-		if field.max_length != 0 && field.scale != 0 {
-			sql_length_scale = format!("({},{})", field.max_length, field.scale)
-		} else if field.max_length != 0 {
-			sql_length_scale = format!("({})", field.max_length)
-		}
-
-		let mut sql_default = "";
-
-		if field.identity_generation != "" {
-			sql_default = format!("GENERATED {} AS IDENTITY", field.identity_generation);
-			sql_type = "int";
-		}
-
-		if field.default != "" {
-			if field.type == "string" {
-				sql_default = format!(" DEFAULT '{}'", field.default);
-			} else {
-				sql_default = format!(" DEFAULT {}", field.default);
-			}
-		}
-
-		let sql_not_null = "";
-
-		if field.nullable != true {
-			sql_not_null = "NOT NULL";
-		}
-
-		Ok(format!("{} {}{} {} {}", field_name.to_case(underscore), sql_type, sql_length_scale, sql_default, sql_not_null))
-	}
-	// TODO : refatorar função genSqlForeignKey(fieldName, field) para genSqlForeignKey(tableName)
-	fn gen_sql_foreign_key(field_name :&str, field :&Schema) -> Result<String, Error> {
-		let ref = open_api.get_schema_name(field.ref);
-		let table_out = ref.to_case(underscore);
-		format!("FOREIGN KEY({}) REFERENCES {}", field_name.to_case(underscore), table_out);
+		table_body = table_body[..table_body.len()-2] + ")";
+		let table_name = name.to_case(underscore);
+		let sql = format!("CREATE TABLE {} ({})", table_name, table_body);
+		self.client.exec(sql).await?;
+		self.update_open_api(self.openapi, FillOpenApiOptions{request_body_content_type: self.db_config.request_body_content_type})?;
+		Ok(())
 	}
 
-	let mut table_body = "";
-
-	for (field_name, field) in schema.properties {
-		let field_description = gen_sql_column_description(field_name, field)?;
-		tableBody = table_body + field_description + ", ";
-	}
-
-	// add foreign keys
-	for (field_name, field) in schema.properties {
-		if field.ref.is_some() {
-			table_body = table_body + gen_sql_foreign_key(field_name, field) + ", ";
-		}
-	}
-	// add primary key
-	table_body = tableBody + "PRIMARY KEY(";
-
-	for _, fieldName := range schema.PrimaryKeys {
-		tableBody = tableBody + field_name.to_case(underscore) + `, `;
-	}
-
-	table_body = table_body[..table_body.len()-2] + `)`;
-	let table_name = name.to_case(underscore);
-	let sql = format!("CREATE TABLE {} ({})`, table_name, table_body);
-	self.client.exec(sql).await?;
-	self.update_open_api(self.openapi, FillOpenApiOptions{request_body_content_type: self.db_config.request_body_content_type})?;
-	Ok(())
-}
-*/
 }

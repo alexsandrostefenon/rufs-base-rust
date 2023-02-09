@@ -1,4 +1,4 @@
-use openapiv3::OpenAPI;
+use openapiv3::{OpenAPI, Schema};
 use std::{collections::HashMap, fs, io::Error, sync::{RwLock, LockResult, RwLockReadGuard, RwLockWriteGuard, Arc}};
 use serde_json::{Value, Number};
 use crate::{entity_manager::EntityManager, openapi::FillOpenAPIOptions};
@@ -129,5 +129,9 @@ impl EntityManager for DbAdapterFile<'_> {
     async fn exec(&self, _sql: &str) -> Result<(), Error> {
         Ok(())
     }   
+
+    async fn create_table(&self, _name: &str, _schema :&Schema) -> Result<(), Error> {
+        Ok(())
+    }
 
 }

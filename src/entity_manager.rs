@@ -22,4 +22,5 @@ pub trait EntityManager {
     async fn delete_one(&self, openapi: &OpenAPI, table: &str, key: &Value) -> Result<(), Error>;
     async fn update_open_api(&mut self, openapi: &mut OpenAPI, options :&mut FillOpenAPIOptions) -> Result<(), Error>;
     async fn exec(&self, sql: &str) -> Result<(), Error>;
+    async fn create_table(&self, name:&str, schema :&Schema) -> Result<(), Error>;
 }
