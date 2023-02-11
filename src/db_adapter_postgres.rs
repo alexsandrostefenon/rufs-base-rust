@@ -129,7 +129,7 @@ impl DbAdapterPostgres<'_> {
         //let client = RwLock::new(client);
         let client = Arc::new(client);
         self.client = Some(client);
-        Ok(())
+		Ok(())
     }
 
     fn build_query<'a>(&self, query_params:&'a Value, params :&mut Vec<&'a (dyn ToSql + Sync)>, order_by :&Vec<String>) -> String {
@@ -779,97 +779,95 @@ impl EntityManager for DbAdapterPostgres<'_> {
 
 	async fn create_table(&self, name :&str, schema :&Schema) -> Result<(), Error> {
 		fn gen_sql_column_description(field_name :&str, field :&Schema) -> Result<String, Error> {
-			if field.typ == "" {
-				if field.identity_generation != "" {
-					field.typ = "integer";
-				} else {
-					field.typ = "string";
-				}
-			}
+			let typ = match &field.schema_kind {
+				SchemaKind::Type(typ) => typ,
+				_ => todo!(),
+			};
 
-			let pos = adapter.rufs_types.index(field.typ);
-			let mut sql_type = adapter.sql_types[pos];
+			let name = field_name.to_case(convert_case::Case::Snake);
 
-			if field.typ == "string" && field.max_length > 0 && field.max_length < 32 {
-				sql_type = "character"
-			}
+			let sql_not_null = if field.schema_data.nullable != true {
+				"NOT NULL"
+			} else {
+				""
+			};
 
-			if field.max_length == 0 {
-				if field.typ == "string" {
-					field.max_length = 255;
-				}
-				if field.typ == "number" {
-					field.max_length = 9;
-				}
-			}
+			let str = match typ {
+				openapiv3::Type::String(x) => {
+					if let Some(max_length) = x.max_length {
+						let sql_type = if max_length > 0 && max_length < 32 {
+							"character".to_string()
+						} else {
+							"varchar".to_string()
+						};
 
-			if field.typ == "number" && field.scale == 0 {
-				field.scale = 3;
-			}
+						format!("{} {}({}) {}", name, sql_type, max_length, sql_not_null)
+					} else {
+						format!("{} {} {}", name, "varchar", sql_not_null)
+					}
+				},
+				openapiv3::Type::Boolean {  } => {
+					format!("{} {} {}", name, "boolean", sql_not_null)
+				},
+				openapiv3::Type::Number(_) => {
+					format!("{} {} {}", name, "numeric", sql_not_null)
+				},
+				openapiv3::Type::Object(_) => {
+					format!("{} {} {}", name, "jsonb", sql_not_null)
+				},
+				openapiv3::Type::Array(_) => {
+					format!("{} {} {}", name, "jsonb array", sql_not_null)
+				},
+				openapiv3::Type::Integer(_) => {
+					if let Some(identity_generation) = field.schema_data.extensions.get("x-identityGeneration") {
+						format!("{} {} {}", name, "int", format!("GENERATED {} AS IDENTITY", identity_generation))
+					} else {
+						format!("{} {} {}", name, "int", sql_not_null)
+					}
+				},
+			};
 
-			let mut sql_length_scale = "";
-
-			if field.max_length != 0 && field.scale != 0 {
-				sql_length_scale = format!("({},{})", field.max_length, field.scale)
-			} else if field.max_length != 0 {
-				sql_length_scale = format!("({})", field.max_length)
-			}
-
-			let mut sql_default = "";
-
-			if field.identity_generation != "" {
-				sql_default = format!("GENERATED {} AS IDENTITY", field.identity_generation);
-				sql_type = "int";
-			}
-
-			if field.default != "" {
-				if field.typ == "string" {
-					sql_default = format!(" DEFAULT '{}'", field.default);
-				} else {
-					sql_default = format!(" DEFAULT {}", field.default);
-				}
-			}
-
-			let sql_not_null = "";
-
-			if field.nullable != true {
-				sql_not_null = "NOT NULL";
-			}
-
-			Ok(format!("{} {}{} {} {}", field_name.to_case(underscore), sql_type, sql_length_scale, sql_default, sql_not_null))
-		}
-		// TODO : refatorar função genSqlForeignKey(fieldName, field) para genSqlForeignKey(tableName)
-		fn gen_sql_foreign_key(field_name :&str, field :&Schema) -> Result<String, Error> {
-			let x_ref = open_api.get_schema_name(field.x_ref);
-			let table_out = x_ref.to_case(underscore);
-			format!("FOREIGN KEY({}) REFERENCES {}", field_name.to_case(underscore), table_out);
+			Ok(str)
 		}
 
-		let mut table_body = "";
-
-		for (field_name, field) in schema.properties {
-			let field_description = gen_sql_column_description(field_name, field)?;
-			tableBody = table_body + field_description + ", ";
-		}
-
+		let properties = match &schema.schema_kind {
+			SchemaKind::Type(typ) => match typ {
+				openapiv3::Type::Object(object_type) => &object_type.properties,
+				_ => todo!()
+			},
+			_ => todo!(),
+		};		
 		// add foreign keys
-		for (field_name, field) in schema.properties {
-			if field.x_ref.is_some() {
-				table_body = table_body + gen_sql_foreign_key(field_name, field) + ", ";
+		let mut list = vec![];
+
+		for (field_name, field) in properties {
+			let field_description = gen_sql_column_description(field_name, field.as_item().unwrap())?;
+			list.push(field_description);
+		}
+
+		for (field_name, field) in properties {
+			if let Some(reference) = field.as_item().unwrap().schema_data.extensions.get("x-ref") {
+				let reference = reference.as_str().unwrap();
+				let table_out = reference.to_case(convert_case::Case::Snake);
+				list.push(format!("FOREIGN KEY({}) REFERENCES {}", field_name.to_case(convert_case::Case::Snake), table_out));
 			}
 		}
-		// add primary key
-		table_body = table_body + "PRIMARY KEY(";
 
-		for (_, fieldName) in schema.primary_keys {
-			table_body = table_body + field_name.to_case(underscore) + ", ";
+		let mut list_primary_keys = vec![];
+
+		if let Some(primary_keys) = schema.schema_data.extensions.get("x-primaryKeys") {
+			let primary_keys = primary_keys.as_array().unwrap();
+
+			for field_name in primary_keys.into_iter() {
+				let field_name = field_name.as_str().unwrap();
+				list_primary_keys.push(field_name.to_case(convert_case::Case::Snake));
+			}
 		}
 
-		table_body = table_body[..table_body.len()-2] + ")";
-		let table_name = name.to_case(underscore);
-		let sql = format!("CREATE TABLE {} ({})", table_name, table_body);
-		self.client.exec(sql).await?;
-		self.update_open_api(self.openapi, FillOpenApiOptions{request_body_content_type: self.db_config.request_body_content_type})?;
+		let table_name = name.to_case(convert_case::Case::Snake);
+		let sql = format!("CREATE TABLE {} ({} PRIMARY KEY({}))", table_name, list.join(", "), list_primary_keys.join(", "));
+		self.exec(&sql).await?;
+		//self.update_open_api(self.openapi, FillOpenApiOptions{request_body_content_type: self.db_config.request_body_content_type})?;
 		Ok(())
 	}
 

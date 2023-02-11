@@ -1,6 +1,6 @@
 use std::{io::Error};
 
-use openapiv3::OpenAPI;
+use openapiv3::{OpenAPI, Schema};
 use serde_json::Value;
 
 use crate::openapi::FillOpenAPIOptions;

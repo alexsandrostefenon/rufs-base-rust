@@ -242,8 +242,8 @@ impl RufsMicroService<'_> {
 
             for name in ["rufsGroupOwner", "rufsUser", "rufsGroup", "rufsGroupUser"] {
                 if rms.micro_service_server.openapi.components.as_ref().unwrap().schemas.get(name).is_none() {
-                    let _schema = openapi_rufs.components.as_ref().unwrap().schemas.get(name).unwrap().as_item().unwrap();
-                    //rms.entity_manager.create_table(name, schema)?;
+                    let schema = openapi_rufs.components.as_ref().unwrap().schemas.get(name).unwrap().as_item().unwrap();
+                    rms.entity_manager.create_table(name, schema).await?;
                 }
             }
 
@@ -431,7 +431,7 @@ const RUFS_MICRO_SERVICE_OPENAPI_STR: &str = r##"{
 			"rufsGroupOwner": {
 				"properties": {
 					"id":   {"type": "integer", "x-identityGeneration": "BY DEFAULT"},
-					"name": {"nullable": false, "unique": true}
+					"name": {"type": "string", "nullable": false, "unique": true}
 				},
 				"x-primaryKeys": ["id"]
 			},
@@ -439,9 +439,9 @@ const RUFS_MICRO_SERVICE_OPENAPI_STR: &str = r##"{
 				"properties": {
 					"id":             {"type": "integer", "x-identityGeneration": "BY DEFAULT"},
 					"rufsGroupOwner": {"type": "integer", "nullable": false, "$ref": "#/components/schemas/rufsGroupOwner"},
-					"name":           {"maxLength": 32, "nullable": false, "unique": true},
-					"password":       {"nullable": false},
-					"path":           {},
+					"name":           {"type": "string", "maxLength": 32, "nullable": false, "unique": true},
+					"password":       {"type": "string", "nullable": false},
+					"path":           {"type": "string"},
 					"roles":          {"type": "array", "items": {"properties": {"name": {"type": "string"}, "mask": {"type": "integer"}}}},
 					"routes":         {"type": "array", "items": {"properties": {"path": {"type": "string"}, "controller": {"type": "string"}, "templateUrl": {"type": "string"}}}},
 					"menu":           {"type": "object", "properties": {"menu": {"type": "string"}, "label": {"type": "string"}, "path": {"type": "string"}}}
@@ -452,7 +452,7 @@ const RUFS_MICRO_SERVICE_OPENAPI_STR: &str = r##"{
 			"rufsGroup": {
 				"properties": {
 					"id":   {"type": "integer", "x-identityGeneration": "BY DEFAULT"},
-					"name": {"nullable": false, "unique": true}
+					"name": {"type": "string", "nullable": false, "unique": true}
 				},
 				"x-primaryKeys": ["id"]
 			},
