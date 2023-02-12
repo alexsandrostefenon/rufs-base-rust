@@ -247,15 +247,15 @@ impl RufsMicroService<'_> {
                 }
             }
 
-            let _default_group_owner_admin: serde_json::Value = serde_json::from_str(DEFAULT_GROUP_OWNER_ADMIN_STR).unwrap();
-            let _default_user_admin: serde_json::Value = serde_json::from_str(DEFAULT_USER_ADMIN_STR).unwrap();
+            let default_group_owner_admin: serde_json::Value = serde_json::from_str(DEFAULT_GROUP_OWNER_ADMIN_STR).unwrap();
+            let default_user_admin: serde_json::Value = serde_json::from_str(DEFAULT_USER_ADMIN_STR).unwrap();
 
             if rms.entity_manager.find_one(openapi_rufs, "rufsGroupOwner", &json!({"name": "ADMIN"})).await.is_none() {
-                //rms.entity_manager.insert("rufsGroupOwner", default_group_owner_admin)?;
+                rms.entity_manager.insert(openapi_rufs, "rufsGroupOwner", &default_group_owner_admin).await?;
             }
 
             if rms.entity_manager.find_one(openapi_rufs, "rufsUser", &json!({"name": "admin"})).await.is_none() {
-                //rms.entity_manager.insert("rufsUser", default_user_admin)?;
+                rms.entity_manager.insert(openapi_rufs, "rufsUser", &default_user_admin).await?;
             }
 
             Ok(())
@@ -323,9 +323,7 @@ impl RufsMicroService<'_> {
                 migrate(rms, &file_name).await.unwrap();
             }
 
-            //rms.entity_manager.UpdateOpenAPI(rms.openapi, FillOpenAPIOptions{requestBodyContentType: rms.requestBodyContentType});
-            //rms.StoreOpenAPI("")?
-            rms.micro_service_server.store_open_api("")
+            Ok(())
         }
 
         self.micro_service_server.connect()?;
@@ -336,6 +334,7 @@ impl RufsMicroService<'_> {
             Ok(openapi) => openapi,
             Err(err) => return Err(tide::Error::from_str(500, format!("{}", err))),
         };
+
         create_rufs_tables(self, &openapi_rufs).await.unwrap();
         let mut options = FillOpenAPIOptions::default();
         options.security = SecurityRequirement::from([("jwt".to_string(), vec![])]);
@@ -344,12 +343,15 @@ impl RufsMicroService<'_> {
         self.micro_service_server.openapi.fill(&mut options)?;
         exec_migrations(self).await?;
         //rms.db_adapter_file.openapi = Some(&rms.micro_service_server.openapi);
+        let mut options = FillOpenAPIOptions::default();
+        options.request_body_content_type = self.micro_service_server.request_body_content_type.clone();
+        self.entity_manager.update_open_api(&mut self.micro_service_server.openapi, &mut options).await?;
+        self.micro_service_server.store_open_api("")?;
 
         if self.check_rufs_tables == false {
             load_file_tables(self)?;
         }
 
-        //RequestFilterUpdateRufsServices(rms.entity_manager, rms.openapi)?;
         Ok(())
     }
 }

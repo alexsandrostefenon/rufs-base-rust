@@ -45,7 +45,7 @@ pub trait RufsOpenAPI {
     fn get_primary_key_foreign(&self, schema_name :&str, field_name :&str, obj :&Value) -> Result<Option<PrimaryKeyForeign>, Error>;
 }
 
-#[derive(Default, Debug)]
+#[derive(Debug)]
 pub struct FillOpenAPIOptions {
     force_generate_schemas: bool,
     pub request_body_content_type: String,
@@ -57,6 +57,12 @@ pub struct FillOpenAPIOptions {
     disable_response_list: HashMap<String, bool>,
     pub schemas: IndexMap<String, ReferenceOr<Schema>>,
     pub security: SecurityRequirement,
+}
+
+impl Default for FillOpenAPIOptions {
+    fn default() -> Self {
+        Self { force_generate_schemas: Default::default(), request_body_content_type: Default::default(), response_content_type: Default::default(), methods: Default::default(), parameter_schemas: Default::default(), request_schemas: Default::default(), response_schemas: Default::default(), disable_response_list: Default::default(), schemas: Default::default(), security: Default::default() }
+    }
 }
 /*
 struct PropertiesWithRef {

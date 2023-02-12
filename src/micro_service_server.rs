@@ -57,7 +57,7 @@ impl MicroServiceServer {
     
     pub fn store_open_api(&self, file_name :&str) -> Result<(), Error> {
         let file_name = if file_name.is_empty() {
-            format!("openapi-{}-tmp.json", self.app_name)
+            format!("openapi-{}-rust.json", self.app_name)
         } else {
             file_name.to_string()
         };
