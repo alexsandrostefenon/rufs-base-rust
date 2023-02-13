@@ -21,6 +21,8 @@ pub struct ForeignKeyDescription {
 }
 
 pub trait RufsOpenAPI {
+    fn get_schema_name_from_ref(reference: &str) -> String;
+    fn create(&mut self, security: &str);
     fn copy_value(&self, schema: &Schema, field_name:&String, field: &Schema, value :&Value) -> Result<Value, Error>;
     fn get_value_from_schema<'a>(&'a self, schema :&Schema, property_name :&str, obj: &'a Value) -> Option<&Value>;
     fn copy_fields(&self, schema: &Schema, data_in: &Value, ignorenil: bool, ignore_hiden: bool, only_primary_keys: bool) -> Result<Value, Error>;
@@ -32,7 +34,6 @@ pub trait RufsOpenAPI {
     fn get_schema(&self, path :&str, method :&str, typ :&str) -> Result<&Schema, Error>;
     fn get_schema_from_ref(&self, reference: &str) -> Result<&Schema, Error>;
     fn get_path_params(&self, uri: &str, params: &Value) -> Result<String, Error>;
-    fn get_schema_name_from_ref(&self, reference: &str) -> String;
     fn get_schema_name(&self, path: &str, method: &str) -> Result<String, Error>;
     fn get_properties_from_schema_name<'a>(&'a self, schema_name :&str) -> Option<&'a IndexMap<String, ReferenceOr<Box<Schema>>>>;
     fn get_properties_from_schema<'a>(&'a self, schema :&'a Schema) -> Option<&'a IndexMap<String, ReferenceOr<Box<Schema>>>>;
@@ -240,44 +241,58 @@ type OpenAPI struct {
     Tags     []TagObject                 `json:"tags,omitempty"`
 }
 */
-fn openapi_create(openapi: &mut OpenAPI, security: &str) {
+impl RufsOpenAPI for OpenAPI {
+    
+    fn get_schema_name_from_ref(reference: &str) -> String {
+        if let Some(pos) = reference.rfind("/") {
+            return reference[pos + 1..].to_string();
+        }
+
+        if let Some(pos) = reference.find("?") {
+            return reference[..pos].to_string();
+        }
+
+        return reference.to_case(Case::Camel);
+    }
+
+    fn create(&mut self, security: &str) {
     /*
-        if openapi.Openapi == "" {
-            openapi.Openapi = "3.0.3";
+        if self.Openapi == "" {
+            self.Openapi = "3.0.3";
         }
 
-        if openapi.Info == nil {
-            openapi.Info = &InfoObject{Title: "rufs-base-es6 openapi genetator", Version: "0.0.0", Description: "CRUD operations", Contact: ContactObject{Name: "API Support", Url: "http://www.example.com/support", Email: "support@example.com"}}
+        if self.Info == nil {
+            self.Info = &InfoObject{Title: "rufs-base-es6 openapi genetator", Version: "0.0.0", Description: "CRUD operations", Contact: ContactObject{Name: "API Support", Url: "http://www.example.com/support", Email: "support@example.com"}}
         }
 
-        if openapi.Paths == nil {
-            openapi.Paths = map[string]PathItemObject{}
+        if self.Paths == nil {
+            self.Paths = map[string]PathItemObject{}
         }
     */
-    if openapi.components.is_none() {
-        openapi.components = Some(Components::default());
+    if self.components.is_none() {
+        self.components = Some(Components::default());
     }
     /*
-    if openapi.Components.Parameters == nil {
-        openapi.Components.Parameters = map[string]*ParameterObject{}
+    if self.Components.Parameters == nil {
+        self.Components.Parameters = map[string]*ParameterObject{}
     }
 
-    if openapi.Components.RequestBodies == nil {
-        openapi.Components.RequestBodies = map[string]RequestBodyObject{}
+    if self.Components.RequestBodies == nil {
+        self.Components.RequestBodies = map[string]RequestBodyObject{}
     }
 
-    if openapi.Components.Responses == nil {
-        openapi.Components.Responses = map[string]ResponseObject{}
+    if self.Components.Responses == nil {
+        self.Components.Responses = map[string]ResponseObject{}
     }
     */
-    if openapi.components.as_ref().unwrap().security_schemes.len() == 0 {
-        openapi.components.as_mut().unwrap().security_schemes.insert("jwt".to_owned(), ReferenceOr::Item(SecurityScheme::HTTP { scheme: "bearer".to_owned(), bearer_format: Some("JWT".to_owned()), description: None }));
-        openapi.components.as_mut().unwrap().security_schemes.insert("apiKey".to_owned(),ReferenceOr::Item(SecurityScheme::APIKey { location: APIKeyLocation::Header, name: "X-API-KEY".to_owned(), description: None }));
-        openapi.components.as_mut().unwrap().security_schemes.insert("basic".to_owned(),ReferenceOr::Item(SecurityScheme::HTTP { scheme: "basic".to_owned(), bearer_format: None, description: None }));
+    if self.components.as_ref().unwrap().security_schemes.len() == 0 {
+        self.components.as_mut().unwrap().security_schemes.insert("jwt".to_owned(), ReferenceOr::Item(SecurityScheme::HTTP { scheme: "bearer".to_owned(), bearer_format: Some("JWT".to_owned()), description: None }));
+        self.components.as_mut().unwrap().security_schemes.insert("apiKey".to_owned(),ReferenceOr::Item(SecurityScheme::APIKey { location: APIKeyLocation::Header, name: "X-API-KEY".to_owned(), description: None }));
+        self.components.as_mut().unwrap().security_schemes.insert("basic".to_owned(),ReferenceOr::Item(SecurityScheme::HTTP { scheme: "basic".to_owned(), bearer_format: None, description: None }));
     }
 
-    if openapi.security.is_none() && security.len() > 0 {
-        openapi.security = Some(vec![IndexMap::from([(security.to_string(), vec![])])]);
+    if self.security.is_none() && security.len() > 0 {
+        self.security = Some(vec![IndexMap::from([(security.to_string(), vec![])])]);
     }
 }
 /*
@@ -286,7 +301,7 @@ func (source *OpenAPI) copy(paths []string) *OpenAPI {
     return dest
 }
 
-func (openapi *OpenAPI) convertStandartToRufs() {
+func (self *OpenAPI) convertStandartToRufs() {
     var convert_schema func(schema *Schema)
 
     convert_schema = func(schema *Schema) {
@@ -310,11 +325,11 @@ func (openapi *OpenAPI) convertStandartToRufs() {
         }
     }
 
-    for _, schema := range openapi.Components.Schemas {
+    for _, schema := range self.Components.Schemas {
         convert_schema(schema)
     }
 
-    for _, request_body_object := range openapi.Components.RequestBodies {
+    for _, request_body_object := range self.Components.RequestBodies {
         for _, media_type_object := range request_body_object.Content {
             if media_type_object.Schema.Properties != nil {
                 convert_schema(media_type_object.Schema)
@@ -323,7 +338,6 @@ func (openapi *OpenAPI) convertStandartToRufs() {
     }
 }
 */
-impl RufsOpenAPI for OpenAPI {
 
 fn copy_value(&self, schema: &Schema, field_name:&String, field: &Schema, value :&Value) -> Result<Value, Error> {
     let essential = match &schema.schema_kind {
@@ -486,7 +500,7 @@ fn copy_fields(&self, schema: &Schema, data_in: &Value, ignorenil: bool, ignore_
 }
 
     fn fill(&mut self, options: &mut FillOpenAPIOptions) -> Result<(), Error> {
-        openapi_create(self, "jwt");
+        self.create("jwt");
         let force_generate_path = options.request_schemas.is_empty() && options.parameter_schemas.is_empty();
 
         if options.request_body_content_type == "" {
@@ -813,20 +827,8 @@ fn copy_fields(&self, schema: &Schema, data_in: &Value, ignorenil: bool, ignore_
         Ok(())
     }
 
-    fn get_schema_name_from_ref(&self, reference: &str) -> String {
-        if let Some(pos) = reference.rfind("/") {
-            return reference[pos + 1..].to_string();
-        }
-
-        if let Some(pos) = reference.find("?") {
-            return reference[..pos].to_string();
-        }
-
-        return reference.to_case(Case::Camel);
-    }
-
     fn get_schema_from_schemas(&self, reference :&str) -> Option<&Schema> {
-        let schema_name = self.get_schema_name_from_ref(reference);
+        let schema_name = OpenAPI::get_schema_name_from_ref(reference);
         println!("[OpenAPI.get_schema_from_schemas({reference})] : {}", schema_name);
         let schema = self.components.as_ref().unwrap().schemas.get(&schema_name)?;
 
@@ -837,7 +839,7 @@ fn copy_fields(&self, schema: &Schema, data_in: &Value, ignorenil: bool, ignore_
     }
 
     fn get_schema_from_request_bodies(&self, schema_name: &str) -> Option<&Schema> {
-        let schema_name = self.get_schema_name_from_ref(schema_name);
+        let schema_name = OpenAPI::get_schema_name_from_ref(schema_name);
         let request_body_object = self.components.as_ref().unwrap().request_bodies.get(&schema_name)?.as_item()?;
 
         for (_, media_type_object) in &request_body_object.content {
@@ -859,7 +861,7 @@ fn copy_fields(&self, schema: &Schema, data_in: &Value, ignorenil: bool, ignore_
 
     fn get_schema_from_responses(&self, schema_name: &str) -> Option<&Schema> {
         let openapi = self;
-        let schema_name = &self.get_schema_name_from_ref(schema_name);
+        let schema_name = &OpenAPI::get_schema_name_from_ref(schema_name);
         let response_object = match openapi.components.as_ref().unwrap().responses.get(schema_name) {
             Some(response_object) => response_object.as_item().unwrap(),
             None => return None,
@@ -895,7 +897,7 @@ fn copy_fields(&self, schema: &Schema, data_in: &Value, ignorenil: bool, ignore_
 
     fn get_schema_from_ref(&self, reference: &str) -> Result<&Schema, Error> {
         let openapi = self;
-        let schema_name = self.get_schema_name_from_ref(reference);
+        let schema_name = OpenAPI::get_schema_name_from_ref(reference);
         println!("[OpenAPI.get_schema_from_ref({reference})]");
 
         let schema = if reference.starts_with("#/components/parameters/") {
@@ -1093,14 +1095,13 @@ fn copy_fields(&self, schema: &Schema, data_in: &Value, ignorenil: bool, ignore_
     }
 
     fn get_schema_name(&self, path: &str, method: &str) -> Result<String, Error> {
-        let openapi = self;
-        let path_item_object = openapi.paths.paths.get(path).unwrap().as_item().unwrap();
+        let path_item_object = self.paths.paths.get(path).unwrap().as_item().unwrap();
         let method = method.to_lowercase();
         let operation_object = path_item_object.iter().find(|item| item.0 == method).unwrap().1;
 
         if method == "post" {
             match operation_object.request_body.as_ref().unwrap() {
-                ReferenceOr::Reference { reference } => return Ok(self.get_schema_name_from_ref(&reference)),
+                ReferenceOr::Reference { reference } => return Ok(OpenAPI::get_schema_name_from_ref(&reference)),
                 ReferenceOr::Item(_) => todo!(),
             }
         } else {
@@ -1108,10 +1109,10 @@ fn copy_fields(&self, schema: &Schema, data_in: &Value, ignorenil: bool, ignore_
 
             if response_object.is_some() {
                 let schema = match &response_object.unwrap() {
-                    ReferenceOr::Reference { reference } => openapi.get_schema_from_ref(reference).unwrap(),
+                    ReferenceOr::Reference { reference } => self.get_schema_from_ref(reference).unwrap(),
                     ReferenceOr::Item(response) => match &response.content.first().as_ref().unwrap().1.schema.as_ref().unwrap() {
                         ReferenceOr::Reference { reference } => {
-                            return Ok(self.get_schema_name_from_ref(&reference))
+                            return Ok(OpenAPI::get_schema_name_from_ref(&reference))
                         },
                         ReferenceOr::Item(schema) => schema,
                     },
@@ -1123,7 +1124,7 @@ fn copy_fields(&self, schema: &Schema, data_in: &Value, ignorenil: bool, ignore_
                             match array.items.as_ref().unwrap() {
                                 ReferenceOr::Reference { reference } => {
                                     println!("[OpenAPI.get_schema_name({path}, {method})] : SchemaKind::Type::Array : {}", reference);
-                                    return Ok(self.get_schema_name_from_ref(&reference))
+                                    return Ok(OpenAPI::get_schema_name_from_ref(&reference))
                                 },
                                 ReferenceOr::Item(_) => todo!(),
                             }
@@ -1199,7 +1200,7 @@ fn copy_fields(&self, schema: &Schema, data_in: &Value, ignorenil: bool, ignore_
     }
 
     fn get_property<'a>(&'a self, schema_name :&str, property_name :&'a str) -> Option<&Schema> {
-        let schema_name = self.get_schema_name_from_ref(schema_name);
+        let schema_name = OpenAPI::get_schema_name_from_ref(schema_name);
         let field = self.get_property_from_schemas(&schema_name, property_name);
 
         if field.is_none() {
@@ -1245,7 +1246,7 @@ fn copy_fields(&self, schema: &Schema, data_in: &Value, ignorenil: bool, ignore_
             }
         }
 
-        let schema_name = self.get_schema_name_from_ref(schema_name);
+        let schema_name = OpenAPI::get_schema_name_from_ref(schema_name);
         let schema = self.get_schema_from_schemas(&schema_name);
         let mut list;
 
@@ -1370,7 +1371,7 @@ fn copy_fields(&self, schema: &Schema, data_in: &Value, ignorenil: bool, ignore_
             Ok(Some(ret))
         }
 
-        let schema_name = self.get_schema_name_from_ref(&schema_name);
+        let schema_name = OpenAPI::get_schema_name_from_ref(&schema_name);
 
         if let Some(schema) = self.get_schema_from_request_bodies(&schema_name) {
             return process(self, schema, &schema_name, field_name, obj);

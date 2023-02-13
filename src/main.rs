@@ -106,7 +106,7 @@ async fn handle_api(mut request: Request<RufsMicroService<'_>>) -> tide::Result 
 
 async fn rufs_tide_new(options: &RufsMicroService<'static>) -> Result<Box<Server<RufsMicroService<'static>>>, Error> {
     let mut rufs = RufsMicroService{..options.clone()};
-    rufs.connect(&format!("postgres://development:123456@localhost:5432/{}", rufs.micro_service_server.app_name)).await.unwrap();
+    rufs.connect(&format!("postgres://development:123456@localhost:5432/{}", rufs.micro_service_server.app_name)).await?;
     let api_path = rufs.micro_service_server.api_path.clone();
     let mut app = Box::new(tide::with_state(rufs));
 
@@ -143,7 +143,7 @@ async fn main() -> Result<(), Error> {
         ..Default::default()
     };
 
-    let app = rufs_tide_new(&options).await.unwrap();
+    let app = rufs_tide_new(&options).await?;
     let rufs = app.state();
     let listen = format!("127.0.0.1:{}", rufs.micro_service_server.port);
     Ok(app.listen(listen).await.unwrap())
@@ -153,6 +153,24 @@ async fn main() -> Result<(), Error> {
 mod tests {
     use tide::http::{Url, Method, Request, Response};
     use crate::{rufs_tide_new, rufs_micro_service::RufsMicroService, micro_service_server::MicroServiceServer};
+
+    #[async_std::test]
+    async fn base() -> tide::Result<()> {
+        let options = RufsMicroService{
+            check_rufs_tables: true,
+            micro_service_server: MicroServiceServer{app_name: "base".to_string(), ..Default::default()}, 
+            ..Default::default()
+        };
+    
+        let app = rufs_tide_new(&options).await.unwrap();
+        let rufs = app.state();
+        let listen = format!("http://127.0.0.1:{}", rufs.micro_service_server.port);
+        let url = Url::parse(&listen).unwrap();
+        let req = Request::new(Method::Get, url);
+        let mut res: Response = app.respond(req).await?;
+        assert_eq!("Hello, world", res.body_string().await?);        
+        Ok(())
+    }
 
     #[async_std::test]
     async fn nfe() -> tide::Result<()> {
@@ -165,11 +183,14 @@ mod tests {
     
         let app = rufs_tide_new(&options).await.unwrap();
         let rufs = app.state();
-        let listen = format!("http://127.0.0.1:{}", rufs.micro_service_server.port);
+        let _listen = format!("http://127.0.0.1:{}", rufs.micro_service_server.port);
+        // TODO : run selenium ide scripts
+        /*
         let url = Url::parse(&listen).unwrap();
         let req = Request::new(Method::Get, url);
         let mut res: Response = app.respond(req).await?;
         assert_eq!("Hello, world", res.body_string().await?);        
+        */
         Ok(())
     }
 

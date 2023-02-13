@@ -440,7 +440,7 @@ const RUFS_MICRO_SERVICE_OPENAPI_STR: &str = r##"{
 			"rufsUser": {
 				"properties": {
 					"id":             {"type": "integer", "x-identityGeneration": "BY DEFAULT"},
-					"rufsGroupOwner": {"type": "integer", "nullable": false, "$ref": "#/components/schemas/rufsGroupOwner"},
+					"rufsGroupOwner": {"type": "integer", "nullable": false, "x-ref": "#/components/schemas/rufsGroupOwner"},
 					"name":           {"type": "string", "maxLength": 32, "nullable": false, "unique": true},
 					"password":       {"type": "string", "nullable": false},
 					"path":           {"type": "string"},
@@ -460,8 +460,8 @@ const RUFS_MICRO_SERVICE_OPENAPI_STR: &str = r##"{
 			},
 			"rufsGroupUser": {
 				"properties": {
-					"rufsUser":  {"type": "integer", "nullable": false, "$ref": "#/components/schemas/rufsUser"},
-					"rufsGroup": {"type": "integer", "nullable": false, "$ref": "#/components/schemas/rufsGroup"}
+					"rufsUser":  {"type": "integer", "nullable": false, "x-ref": "#/components/schemas/rufsUser"},
+					"rufsGroup": {"type": "integer", "nullable": false, "x-ref": "#/components/schemas/rufsGroup"}
 				},
 				"x-primaryKeys": ["rufsUser", "rufsGroup"],
 				"x-uniqueKeys":  {}

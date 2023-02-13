@@ -820,6 +820,7 @@ impl EntityManager for DbAdapterPostgres<'_> {
 				},
 				openapiv3::Type::Integer(_) => {
 					if let Some(identity_generation) = field.schema_data.extensions.get("x-identityGeneration") {
+						let identity_generation = identity_generation.as_str().unwrap();
 						format!("{} {} {}", name, "int", format!("GENERATED {} AS IDENTITY", identity_generation))
 					} else {
 						format!("{} {} {}", name, "int", sql_not_null)
@@ -835,20 +836,30 @@ impl EntityManager for DbAdapterPostgres<'_> {
 				openapiv3::Type::Object(object_type) => &object_type.properties,
 				_ => todo!()
 			},
+			SchemaKind::Any(x) => &x.properties,
 			_ => todo!(),
 		};		
 		// add foreign keys
 		let mut list = vec![];
 
 		for (field_name, field) in properties {
-			let field_description = gen_sql_column_description(field_name, field.as_item().unwrap())?;
-			list.push(field_description);
+			match field {
+				ReferenceOr::Reference { reference } => {
+					println!("[DbAdapterPostgres.create_table] : {}", reference);
+					todo!()
+				},
+				ReferenceOr::Item(field) => {
+					let field_description = gen_sql_column_description(field_name, field)?;
+					list.push(field_description);
+				},
+			}
 		}
 
 		for (field_name, field) in properties {
 			if let Some(reference) = field.as_item().unwrap().schema_data.extensions.get("x-ref") {
 				let reference = reference.as_str().unwrap();
-				let table_out = reference.to_case(convert_case::Case::Snake);
+				let table_out = OpenAPI::get_schema_name_from_ref(reference);
+				let table_out = table_out.to_case(convert_case::Case::Snake);
 				list.push(format!("FOREIGN KEY({}) REFERENCES {}", field_name.to_case(convert_case::Case::Snake), table_out));
 			}
 		}
@@ -865,7 +876,8 @@ impl EntityManager for DbAdapterPostgres<'_> {
 		}
 
 		let table_name = name.to_case(convert_case::Case::Snake);
-		let sql = format!("CREATE TABLE {} ({} PRIMARY KEY({}))", table_name, list.join(", "), list_primary_keys.join(", "));
+		let sql = format!("CREATE TABLE {} ({}, PRIMARY KEY({}))", table_name, list.join(", "), list_primary_keys.join(", "));
+		println!("[DbAdapterPostgres.create_table] : {}", sql);
 		self.exec(&sql).await?;
 		//self.update_open_api(self.openapi, FillOpenApiOptions{request_body_content_type: self.db_config.request_body_content_type})?;
 		Ok(())

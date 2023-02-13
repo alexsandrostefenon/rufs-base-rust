@@ -2,7 +2,7 @@ use std::fs;
 
 use tide::Error;
 
-use crate::rufs_micro_service::LoginResponse;
+use crate::{rufs_micro_service::LoginResponse, openapi::RufsOpenAPI};
 
 use openapiv3::OpenAPI;
 
@@ -47,11 +47,18 @@ impl Default for MicroServiceServer {
 impl MicroServiceServer {
     fn load_open_api(&mut self) -> Result<(), Error> {
         if self.openapi_file_name.is_empty() {
-            self.openapi_file_name = format!("openapi-{}.json", self.app_name);
+            self.openapi_file_name = format!("openapi-{}-rust.json", self.app_name);
         }
 
-        let file = fs::File::open(&self.openapi_file_name)?;
-        self.openapi = serde_json::from_reader(file)?;
+        match fs::File::open(&self.openapi_file_name) {
+            Ok(file) => self.openapi = serde_json::from_reader(file)?,
+            Err(error) => match error.kind() {
+                std::io::ErrorKind::NotFound => self.openapi = OpenAPI::default(),
+                _ => todo!(),
+            }
+        }
+        
+        self.openapi.create("jwt");
         Ok(())
     }
     
