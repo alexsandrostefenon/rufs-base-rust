@@ -429,7 +429,7 @@ impl EntityManager for DbAdapterPostgres<'_> {
 		fn set_ref(properties: &mut IndexMap<String, ReferenceOr<Box<Schema>>>, field_name :&str, table_ref :&str) {
 			if let Some(field) = properties.get_mut(field_name) {
 				if let ReferenceOr::Item(field) = field {
-					field.schema_data.extensions.insert("x-ref".to_string(), Value::String(format!("#/components/schemas/{}", table_ref)));
+					field.schema_data.extensions.insert("x-$ref".to_string(), Value::String(format!("#/components/schemas/{}", table_ref)));
 				}
 			}
 		}
@@ -581,7 +581,7 @@ impl EntityManager for DbAdapterPostgres<'_> {
 
 					for (field_name, _field_ref) in &mut *fields {
 						if let Some(field) = object_type.properties.get(field_name) {
-							if field.as_item().unwrap().schema_data.extensions.contains_key("x-ref") == false {
+							if field.as_item().unwrap().schema_data.extensions.contains_key("x-$ref") == false {
 								candidates.push(field_name.clone());
 							}
 						}
@@ -865,7 +865,7 @@ impl EntityManager for DbAdapterPostgres<'_> {
 		}
 
 		for (field_name, field) in properties {
-			if let Some(reference) = field.as_item().unwrap().schema_data.extensions.get("x-ref") {
+			if let Some(reference) = field.as_item().unwrap().schema_data.extensions.get("x-$ref") {
 				let reference = reference.as_str().unwrap();
 				let table_out = OpenAPI::get_schema_name_from_ref(reference);
 				let table_out = table_out.to_case(convert_case::Case::Snake);
