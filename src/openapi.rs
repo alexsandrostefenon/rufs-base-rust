@@ -28,13 +28,13 @@ pub trait RufsOpenAPI {
     fn copy_fields(&self, schema: &Schema, data_in: &Value, ignorenil: bool, ignore_hiden: bool, only_primary_keys: bool) -> Result<Value, Error>;
     fn fill(&mut self, options: &mut FillOpenAPIOptions) -> Result<(), Error>;
     fn get_schema_from_schemas(&self, reference :&str) -> Option<&Schema>;
-    fn get_schema_from_request_bodies(&self, schema_name: &str) -> Option<&Schema>;
-    fn get_schema_from_responses(&self, schema_name: &str) -> Option<&Schema>;
-    fn get_schema_from_parameters(&self, path: &str, method: &str) -> Result<&Schema, Error>;
-    fn get_schema(&self, path :&str, method :&str, typ :&str) -> Result<&Schema, Error>;
-    fn get_schema_from_ref(&self, reference: &str) -> Result<&Schema, Error>;
+    fn get_schema_from_request_bodies(&self, schema_name: &str, may_be_array: bool) -> Option<&Schema>;
+    fn get_schema_from_responses(&self, schema_name: &str, may_be_array: bool) -> Option<&Schema>;
+    fn get_schema_from_parameters(&self, path: &str, method: &str, may_be_array: bool) -> Result<&Schema, Error>;
+    fn get_schema(&self, path :&str, method :&str, typ :&str, may_be_array: bool) -> Result<&Schema, Error>;
+    fn get_schema_from_ref(&self, reference: &str, may_be_array: bool) -> Result<&Schema, Error>;
     fn get_path_params(&self, uri: &str, params: &Value) -> Result<String, Error>;
-    fn get_schema_name(&self, path: &str, method: &str) -> Result<String, Error>;
+    fn get_schema_name(&self, path: &str, method: &str, may_be_array: bool) -> Result<String, Error>;
     fn get_properties_from_schema_name<'a>(&'a self, schema_name :&str) -> Option<&'a IndexMap<String, ReferenceOr<Box<Schema>>>>;
     fn get_properties_from_schema<'a>(&'a self, schema :&'a Schema) -> Option<&'a IndexMap<String, ReferenceOr<Box<Schema>>>>;
     fn get_property_from_schema<'a>(&'a self, schema :&'a Schema, property_name :&'a str) -> Option<&'a Schema>;
@@ -256,45 +256,36 @@ impl RufsOpenAPI for OpenAPI {
     }
 
     fn create(&mut self, security: &str) {
-    /*
-        if self.Openapi == "" {
-            self.Openapi = "3.0.3";
+        if self.openapi.is_empty() {
+            self.openapi = "3.0.3".to_string();
         }
 
-        if self.Info == nil {
-            self.Info = &InfoObject{Title: "rufs-base-es6 openapi genetator", Version: "0.0.0", Description: "CRUD operations", Contact: ContactObject{Name: "API Support", Url: "http://www.example.com/support", Email: "support@example.com"}}
+        if self.info.title.is_empty() {
+            self.info.title = "rufs-base-es6 openapi genetator".to_string();
         }
 
-        if self.Paths == nil {
-            self.Paths = map[string]PathItemObject{}
+        if self.info.version.is_empty() {
+            self.info.version = "0.0.0".to_string();
         }
-    */
-    if self.components.is_none() {
-        self.components = Some(Components::default());
-    }
-    /*
-    if self.Components.Parameters == nil {
-        self.Components.Parameters = map[string]*ParameterObject{}
-    }
 
-    if self.Components.RequestBodies == nil {
-        self.Components.RequestBodies = map[string]RequestBodyObject{}
-    }
+        if self.info.description.is_none() {
+            self.info.description = Some("CRUD operations".to_string());
+        }
 
-    if self.Components.Responses == nil {
-        self.Components.Responses = map[string]ResponseObject{}
-    }
-    */
-    if self.components.as_ref().unwrap().security_schemes.len() == 0 {
-        self.components.as_mut().unwrap().security_schemes.insert("jwt".to_owned(), ReferenceOr::Item(SecurityScheme::HTTP { scheme: "bearer".to_owned(), bearer_format: Some("JWT".to_owned()), description: None }));
-        self.components.as_mut().unwrap().security_schemes.insert("apiKey".to_owned(),ReferenceOr::Item(SecurityScheme::APIKey { location: APIKeyLocation::Header, name: "X-API-KEY".to_owned(), description: None }));
-        self.components.as_mut().unwrap().security_schemes.insert("basic".to_owned(),ReferenceOr::Item(SecurityScheme::HTTP { scheme: "basic".to_owned(), bearer_format: None, description: None }));
-    }
+        if self.components.is_none() {
+            self.components = Some(Components::default());
+        }
 
-    if self.security.is_none() && security.len() > 0 {
-        self.security = Some(vec![IndexMap::from([(security.to_string(), vec![])])]);
+        if self.components.as_ref().unwrap().security_schemes.len() == 0 {
+            self.components.as_mut().unwrap().security_schemes.insert("jwt".to_owned(), ReferenceOr::Item(SecurityScheme::HTTP { scheme: "bearer".to_owned(), bearer_format: Some("JWT".to_owned()), description: None }));
+            self.components.as_mut().unwrap().security_schemes.insert("apiKey".to_owned(),ReferenceOr::Item(SecurityScheme::APIKey { location: APIKeyLocation::Header, name: "X-API-KEY".to_owned(), description: None }));
+            self.components.as_mut().unwrap().security_schemes.insert("basic".to_owned(),ReferenceOr::Item(SecurityScheme::HTTP { scheme: "basic".to_owned(), bearer_format: None, description: None }));
+        }
+
+        if self.security.is_none() && !security.is_empty() {
+            self.security = Some(vec![IndexMap::from([(security.to_string(), vec![])])]);
+        }
     }
-}
 /*
 func (source *OpenAPI) copy(paths []string) *OpenAPI {
     dest := &OpenAPI{}
@@ -339,165 +330,166 @@ func (self *OpenAPI) convertStandartToRufs() {
 }
 */
 
-fn copy_value(&self, schema: &Schema, field_name:&String, field: &Schema, value :&Value) -> Result<Value, Error> {
-    let essential = match &schema.schema_kind {
-        SchemaKind::Type(typ) => match typ {
-            Type::Object(object_type) => object_type.required.contains(field_name),
-            _ => todo!(),
-        },
-        SchemaKind::Any(any) => any.required.contains(field_name),
-        _ => todo!(),
-    };
-
-    if value.is_null() && essential && !field.schema_data.nullable {
-        match &field.schema_kind {
-            SchemaKind::Type(typ) => {
-                match typ {
-                    Type::String(x) => {
-                        if x.enumeration.len() == 1 {
-                            return Ok(json!(x.enumeration.get(0).as_ref().unwrap().as_ref().unwrap()));
-                        }
-                    },
-                    Type::Number(x) => {
-                        if x.enumeration.len() == 1 {
-                            return Ok(json!(x.enumeration.get(0).unwrap().unwrap()));
-                        }
-                    },
-                    Type::Integer(x) => {
-                        if x.enumeration.len() == 1 {
-                            return Ok(json!(x.enumeration.get(0).unwrap().unwrap()));
-                        }
-                    },
-                    _ => todo!(),
-                }
+    fn copy_value(&self, schema: &Schema, field_name:&String, field: &Schema, value :&Value) -> Result<Value, Error> {
+        let essential = match &schema.schema_kind {
+            SchemaKind::Type(typ) => match typ {
+                Type::Object(object_type) => object_type.required.contains(field_name),
+                _ => todo!(),
             },
+            SchemaKind::Any(any) => any.required.contains(field_name),
             _ => todo!(),
+        };
+
+        if value.is_null() && essential && !field.schema_data.nullable {
+            match &field.schema_kind {
+                SchemaKind::Type(typ) => {
+                    match typ {
+                        Type::String(x) => {
+                            if x.enumeration.len() == 1 {
+                                return Ok(json!(x.enumeration.get(0).as_ref().unwrap().as_ref().unwrap()));
+                            }
+                        },
+                        Type::Number(x) => {
+                            if x.enumeration.len() == 1 {
+                                return Ok(json!(x.enumeration.get(0).unwrap().unwrap()));
+                            }
+                        },
+                        Type::Integer(x) => {
+                            if x.enumeration.len() == 1 {
+                                return Ok(json!(x.enumeration.get(0).unwrap().unwrap()));
+                            }
+                        },
+                        _ => todo!(),
+                    }
+                },
+                _ => todo!(),
+            }
+        
+            if let Some(value) = &field.schema_data.default {
+                return Ok(value.clone());
+            }
         }
-    
-        if let Some(value) = &field.schema_data.default {
+
+        if value.is_string() {
+            match &field.schema_kind {
+                SchemaKind::Type(typ) => {
+                    match typ {
+                        Type::Number(_) => return Ok(json!(value.as_str().unwrap().parse::<f64>().unwrap())),
+                        Type::Integer(_) => return Ok(json!(value.as_str().unwrap().parse::<i64>().unwrap())),
+                        Type::Boolean {  } => return Ok(json!(value.as_str().unwrap().parse::<bool>().unwrap())),
+                        _ => todo!(),
+                    }
+                },
+                _ => todo!(),
+            }
+        } else {
             return Ok(value.clone());
         }
     }
 
-    if value.is_string() {
-        match &field.schema_kind {
-            SchemaKind::Type(typ) => {
-                match typ {
-                    Type::Number(_) => return Ok(json!(value.as_str().unwrap().parse::<f64>().unwrap())),
-                    Type::Integer(_) => return Ok(json!(value.as_str().unwrap().parse::<i64>().unwrap())),
-                    Type::Boolean {  } => return Ok(json!(value.as_str().unwrap().parse::<bool>().unwrap())),
+    fn get_value_from_schema<'a>(&'a self, schema :&Schema, property_name :&str, obj: &'a Value) -> Option<&Value> {
+        fn process<'a>(properties: &IndexMap<String, ReferenceOr<Box<Schema>>>, property_name :&str, obj: &'a Value) -> Option<&'a Value> {
+            if let Some(property) = properties.get(property_name) {
+                if let ReferenceOr::Item(property) = property {
+                    if let Some(value) = obj.get(property_name) {
+                        return Some(value);
+                    }
+                    
+                    if let Some(internal_name) = property.schema_data.extensions.get("x-internalName") {
+                        if let Value::String(internal_name) = internal_name {
+                            if let Some(value) = obj.get(internal_name) {
+                                return Some(value);
+                            }
+                        }
+                    }
+                }
+            }
+
+            for (field_name, property) in properties {
+                if let ReferenceOr::Item(property) = property {
+                    if let Some(internal_name) = property.schema_data.extensions.get("x-internalName") {
+                        if let Value::String(internal_name) = internal_name {
+                            if internal_name == property_name {
+                                return obj.get(field_name);
+                            }
+                        }
+                    }
+                }
+            }
+
+            None
+        }
+
+        match &schema.schema_kind {
+            SchemaKind::Type(tip) => match tip {
+                Type::Object(object_type) => process(&object_type.properties, property_name, obj),
+                _ => todo!(),
+            },
+            SchemaKind::Any(any) => process(&any.properties, property_name, obj),
+            _ => todo!(),
+        }
+    }
+
+    fn copy_fields(&self, schema: &Schema, data_in: &Value, ignorenil: bool, ignore_hiden: bool, only_primary_keys: bool) -> Result<Value, Error> {
+        fn copy_properties(openapi: &OpenAPI, schema: &Schema, properties : &IndexMap<String, ReferenceOr<Box<Schema>>>, extensions: &IndexMap<String, Value>, data_in: &Value, ignorenil: bool, ignore_hiden: bool, only_primary_keys: bool) -> Result<Value, Error> {
+            let mut data_out = json!({});
+
+            for (field_name, field) in properties {
+                if let Some(hiden) = extensions.get("x-hiden") {
+                    if ignore_hiden == true && hiden.as_bool().unwrap() == true {
+                        continue;
+                    }
+                }
+        
+                if data_in.get(field_name).is_none() && ignorenil {
+                    continue
+                }
+        
+                if let Some(primary_keys) = extensions.get("x-primaryKeys") {
+                    let x = primary_keys.as_array().unwrap();
+
+                    if only_primary_keys == true && x.contains(&Value::String(field_name.to_string())) == false {
+                        continue;
+                    }
+                }
+        
+                let value = openapi.get_value_from_schema(schema, field_name, data_in);
+        
+                if value.is_none() {
+                    if let ReferenceOr::Item(schema) = field {
+                        if schema.schema_data.nullable {
+                            data_out[field_name] = Value::Null;
+                        }
+                    }
+                } else {
+                    data_out[field_name] = openapi.copy_value(schema, field_name, field.as_item().as_ref().unwrap().as_ref(), value.unwrap()).unwrap();
+                }
+            }
+
+            Ok(data_out)
+        }
+
+        let openapi = self;
+        let extensions = &schema.schema_data.extensions;
+
+        match &schema.schema_kind {
+            SchemaKind::Type(schema_type) => {
+                match schema_type {
+                    Type::Object(object_type) => copy_properties(openapi, schema, &object_type.properties, extensions, data_in, ignorenil, ignore_hiden, only_primary_keys),
                     _ => todo!(),
+                }
+            },
+            SchemaKind::Any(any) => {
+                if any.properties.is_empty() == false {
+                    copy_properties(openapi, schema, &any.properties, extensions, data_in, ignorenil, ignore_hiden, only_primary_keys)
+                } else {
+                    println!("[RufsOpenAPI.copy_fields] : properties is empty.");
+                    Ok(json!({}))
                 }
             },
             _ => todo!(),
         }
-    } else {
-        return Ok(value.clone());
     }
-}
-
-fn get_value_from_schema<'a>(&'a self, schema :&Schema, property_name :&str, obj: &'a Value) -> Option<&Value> {
-    fn process<'a>(properties: &IndexMap<String, ReferenceOr<Box<Schema>>>, property_name :&str, obj: &'a Value) -> Option<&'a Value> {
-        if let Some(property) = properties.get(property_name) {
-            if let ReferenceOr::Item(property) = property {
-                if let Some(value) = obj.get(property_name) {
-                    return Some(value);
-                }
-                
-                if let Some(internal_name) = property.schema_data.extensions.get("x-internalName") {
-                    if let Value::String(internal_name) = internal_name {
-                        if let Some(value) = obj.get(internal_name) {
-                            return Some(value);
-                        }
-                    }
-                }
-            }
-        }
-
-        for (field_name, property) in properties {
-            if let ReferenceOr::Item(property) = property {
-                if let Some(internal_name) = property.schema_data.extensions.get("x-internalName") {
-                    if let Value::String(internal_name) = internal_name {
-                        if internal_name == property_name {
-                            return obj.get(field_name);
-                        }
-                    }
-                }
-            }
-        }
-
-        None
-    }
-
-    match &schema.schema_kind {
-        SchemaKind::Type(tip) => match tip {
-            Type::Object(object_type) => process(&object_type.properties, property_name, obj),
-            _ => todo!(),
-        },
-        SchemaKind::Any(any) => process(&any.properties, property_name, obj),
-        _ => todo!(),
-    }
-}
-
-fn copy_fields(&self, schema: &Schema, data_in: &Value, ignorenil: bool, ignore_hiden: bool, only_primary_keys: bool) -> Result<Value, Error> {
-    fn copy_properties(openapi: &OpenAPI, schema: &Schema, properties : &IndexMap<String, ReferenceOr<Box<Schema>>>, extensions: &IndexMap<String, Value>, data_in: &Value, ignorenil: bool, ignore_hiden: bool, only_primary_keys: bool) -> Result<Value, Error> {
-        let mut data_out = json!({});
-
-        for (field_name, field) in properties {
-            if let Some(hiden) = extensions.get("x-hiden") {
-                if ignore_hiden == true && hiden.as_bool().unwrap() == true {
-                    continue;
-                }
-            }
-    
-            if data_in.get(field_name).is_none() && ignorenil {
-                continue
-            }
-    
-            if let Some(primary_keys) = extensions.get("x-primaryKeys") {
-                let x = primary_keys.as_array().unwrap();
-
-                if only_primary_keys == true && x.contains(&Value::String(field_name.to_string())) == false {
-                    continue;
-                }
-            }
-    
-            let value = openapi.get_value_from_schema(schema, field_name, data_in);
-    
-            if value.is_none() {
-                if let ReferenceOr::Item(schema) = field {
-                    if schema.schema_data.nullable {
-                        data_out[field_name] = Value::Null;
-                    }
-                }
-            } else {
-                data_out[field_name] = openapi.copy_value(schema, field_name, field.as_item().as_ref().unwrap().as_ref(), value.unwrap()).unwrap();
-            }
-        }
-
-        Ok(data_out)
-    }
-
-    let openapi = self;
-    let extensions = &schema.schema_data.extensions;
-
-    match &schema.schema_kind {
-        SchemaKind::Type(schema_type) => {
-            match schema_type {
-                Type::Object(object_type) => return copy_properties(openapi, schema, &object_type.properties, extensions, data_in, ignorenil, ignore_hiden, only_primary_keys),
-                _ => todo!(),
-            }
-        },
-        SchemaKind::Any(any) => {
-            if any.properties.is_empty() == false {
-                return copy_properties(openapi, schema, &any.properties, extensions, data_in, ignorenil, ignore_hiden, only_primary_keys);
-            }
-        },
-        _ => todo!(),
-    }
-
-    Err(Error::new(std::io::ErrorKind::NotFound, ""))
-}
 
     fn fill(&mut self, options: &mut FillOpenAPIOptions) -> Result<(), Error> {
         self.create("jwt");
@@ -838,7 +830,7 @@ fn copy_fields(&self, schema: &Schema, data_in: &Value, ignorenil: bool, ignore_
         };
     }
 
-    fn get_schema_from_request_bodies(&self, schema_name: &str) -> Option<&Schema> {
+    fn get_schema_from_request_bodies(&self, schema_name: &str, may_be_array: bool) -> Option<&Schema> {
         let schema_name = OpenAPI::get_schema_name_from_ref(schema_name);
         let request_body_object = self.components.as_ref().unwrap().request_bodies.get(&schema_name)?.as_item()?;
 
@@ -849,7 +841,7 @@ fn copy_fields(&self, schema: &Schema, data_in: &Value, ignorenil: bool, ignore_
                         return Some(schema)
 //                    }
                 },
-                ReferenceOr::Reference { reference } => match self.get_schema_from_ref(reference) {
+                ReferenceOr::Reference { reference } => match self.get_schema_from_ref(reference, may_be_array) {
                     Ok(schema) => return Some(schema),
                     Err(_) => return None,
                 },
@@ -859,7 +851,7 @@ fn copy_fields(&self, schema: &Schema, data_in: &Value, ignorenil: bool, ignore_
         None
     }
 
-    fn get_schema_from_responses(&self, schema_name: &str) -> Option<&Schema> {
+    fn get_schema_from_responses(&self, schema_name: &str, may_be_array: bool) -> Option<&Schema> {
         let openapi = self;
         let schema_name = &OpenAPI::get_schema_name_from_ref(schema_name);
         let response_object = match openapi.components.as_ref().unwrap().responses.get(schema_name) {
@@ -869,7 +861,7 @@ fn copy_fields(&self, schema: &Schema, data_in: &Value, ignorenil: bool, ignore_
 
         for (_, media_type_object) in &response_object.content {
             match media_type_object.schema.as_ref().unwrap() {
-                ReferenceOr::Reference { reference } => return Some(openapi.get_schema_from_ref(reference).unwrap()),
+                ReferenceOr::Reference { reference } => return Some(openapi.get_schema_from_ref(reference, may_be_array).unwrap()),
                 ReferenceOr::Item(schema) => {
                     match &schema.schema_kind {
                         SchemaKind::Type(typ) => {
@@ -895,7 +887,7 @@ fn copy_fields(&self, schema: &Schema, data_in: &Value, ignorenil: bool, ignore_
         None
     }
 
-    fn get_schema_from_ref(&self, reference: &str) -> Result<&Schema, Error> {
+    fn get_schema_from_ref(&self, reference: &str, may_be_array: bool) -> Result<&Schema, Error> {
         let openapi = self;
         let schema_name = OpenAPI::get_schema_name_from_ref(reference);
         println!("[OpenAPI.get_schema_from_ref({reference})]");
@@ -939,7 +931,7 @@ fn copy_fields(&self, schema: &Schema, data_in: &Value, ignorenil: bool, ignore_
         };
 
         match schema {
-            ReferenceOr::Reference { reference } => return self.get_schema_from_ref(reference),
+            ReferenceOr::Reference { reference } => return self.get_schema_from_ref(reference, may_be_array),
             ReferenceOr::Item(schema) => match &schema.schema_kind {
                 SchemaKind::Type(typ) => {
                     match typ {
@@ -947,12 +939,18 @@ fn copy_fields(&self, schema: &Schema, data_in: &Value, ignorenil: bool, ignore_
                         Type::String(_) => todo!(),
                         Type::Number(_) => todo!(),
                         Type::Integer(_) => todo!(),
-                        Type::Array(array) => match &array.items {
-                            Some(schema) => match schema {
-                                ReferenceOr::Reference { reference } => self.get_schema_from_ref(reference),
-                                ReferenceOr::Item(schema) => Ok(schema),
-                            },
-                            None => todo!(),
+                        Type::Array(array) => {
+                            if may_be_array {
+                                return Ok(schema);
+                            }
+
+                            match &array.items {
+                                Some(schema) => match schema {
+                                    ReferenceOr::Reference { reference } => self.get_schema_from_ref(reference, may_be_array),
+                                    ReferenceOr::Item(schema) => Ok(schema),
+                                },
+                                None => todo!(),
+                            }
                         },
                         Type::Boolean {  } => todo!(),
                     }
@@ -995,7 +993,7 @@ fn copy_fields(&self, schema: &Schema, data_in: &Value, ignorenil: bool, ignore_
         Err(Error::new(std::io::ErrorKind::NotFound, ""))
     }
 
-    fn get_schema_from_parameters(&self, path: &str, method: &str) -> Result<&Schema, Error> {
+    fn get_schema_from_parameters(&self, path: &str, method: &str, may_be_array: bool) -> Result<&Schema, Error> {
         let openapi = self;
 
         for (pattern, path_item_object) in &openapi.paths.paths {
@@ -1003,7 +1001,7 @@ fn copy_fields(&self, schema: &Schema, data_in: &Value, ignorenil: bool, ignore_
                 if let Some(operation_object) = path_item_object.as_item().unwrap().iter().find(|x| x.0 == method) {
                     for parameter_object in &operation_object.1.parameters {
                         match &parameter_object {
-                            ReferenceOr::Reference { reference } => return openapi.get_schema_from_ref(reference),
+                            ReferenceOr::Reference { reference } => return openapi.get_schema_from_ref(reference, may_be_array),
                             ReferenceOr::Item(parameter_object) => {
                                 match &parameter_object.parameter_data_ref().format {
                                     ParameterSchemaOrContent::Schema(schema) => {
@@ -1036,12 +1034,12 @@ fn copy_fields(&self, schema: &Schema, data_in: &Value, ignorenil: bool, ignore_
         Err(Error::new(std::io::ErrorKind::NotFound, format!("[OpenAPI.get_schema_from_parameters] don't find schema parameter from {}", path)))
     }
 
-    fn get_schema(&self, path :&str, method :&str, typ :&str) -> Result<&Schema, Error> {
-        fn get_schema_from_content<'a>(openapi: &'a OpenAPI, content :&'a Content) -> Result<&'a Schema, Error> {
+    fn get_schema(&self, path :&str, method :&str, typ :&str, may_be_array: bool) -> Result<&Schema, Error> {
+        fn get_schema_from_content<'a>(openapi: &'a OpenAPI, content :&'a Content, may_be_array: bool) -> Result<&'a Schema, Error> {
             for (_, media_type_object) in content {
                 match media_type_object.schema.as_ref().unwrap() {
                     ReferenceOr::Reference { reference } => {
-                        return openapi.get_schema_from_ref(reference);
+                        return openapi.get_schema_from_ref(reference, may_be_array);
                     },
                     ReferenceOr::Item(schema) => {
                         let schema = match &schema.schema_kind {
@@ -1071,9 +1069,9 @@ fn copy_fields(&self, schema: &Schema, data_in: &Value, ignorenil: bool, ignore_
                 if typ == "responseObject" {
                     if let Some(response_object) = operation_object.responses.responses.get(&StatusCode::Code(200)) {
                         match response_object {
-                            ReferenceOr::Item(response_object) => return get_schema_from_content(self, &response_object.content),
+                            ReferenceOr::Item(response_object) => return get_schema_from_content(self, &response_object.content, may_be_array),
                             ReferenceOr::Reference { reference } => {
-                                if let Some(schema) = self.get_schema_from_responses(reference) {
+                                if let Some(schema) = self.get_schema_from_responses(reference, may_be_array) {
                                     return Ok(schema);
                                 } else {
                                     return Err(Error::new(std::io::ErrorKind::NotFound, ""));
@@ -1094,7 +1092,7 @@ fn copy_fields(&self, schema: &Schema, data_in: &Value, ignorenil: bool, ignore_
         }
     }
 
-    fn get_schema_name(&self, path: &str, method: &str) -> Result<String, Error> {
+    fn get_schema_name(&self, path: &str, method: &str, may_be_array: bool) -> Result<String, Error> {
         let path_item_object = self.paths.paths.get(path).unwrap().as_item().unwrap();
         let method = method.to_lowercase();
         let operation_object = path_item_object.iter().find(|item| item.0 == method).unwrap().1;
@@ -1109,7 +1107,7 @@ fn copy_fields(&self, schema: &Schema, data_in: &Value, ignorenil: bool, ignore_
 
             if response_object.is_some() {
                 let schema = match &response_object.unwrap() {
-                    ReferenceOr::Reference { reference } => self.get_schema_from_ref(reference).unwrap(),
+                    ReferenceOr::Reference { reference } => self.get_schema_from_ref(reference, may_be_array).unwrap(),
                     ReferenceOr::Item(response) => match &response.content.first().as_ref().unwrap().1.schema.as_ref().unwrap() {
                         ReferenceOr::Reference { reference } => {
                             return Ok(OpenAPI::get_schema_name_from_ref(&reference))
@@ -1128,6 +1126,10 @@ fn copy_fields(&self, schema: &Schema, data_in: &Value, ignorenil: bool, ignore_
                                 },
                                 ReferenceOr::Item(_) => todo!(),
                             }
+                        },
+                        Type::Object(_) => {
+                            let schema_name = path[1..].to_string().to_case(Case::Camel);
+                            return Ok(schema_name)
                         },
                         _ => todo!(),
                     },
@@ -1165,7 +1167,7 @@ fn copy_fields(&self, schema: &Schema, data_in: &Value, ignorenil: bool, ignore_
         if let Some(value) = properties.get(property_name) {
             match value {
                 ReferenceOr::Item(item) => return Some(item),
-                ReferenceOr::Reference { reference } => match self.get_schema_from_ref(reference) {
+                ReferenceOr::Reference { reference } => match self.get_schema_from_ref(reference, false) {
                     Ok(schema) => return Some(schema),
                     Err(_) => todo!(),
                 },
@@ -1194,7 +1196,7 @@ fn copy_fields(&self, schema: &Schema, data_in: &Value, ignorenil: bool, ignore_
     }
 
     fn get_property_from_request_bodies<'a>(&'a self, schema_name :&str, property_name :&'a str) -> Option<&Schema> {
-        let schema = self.get_schema_from_request_bodies(schema_name)?;
+        let schema = self.get_schema_from_request_bodies(schema_name, false)?;
         let field = self.get_property_from_schema(schema, property_name);
         field
     }
@@ -1373,7 +1375,7 @@ fn copy_fields(&self, schema: &Schema, data_in: &Value, ignorenil: bool, ignore_
 
         let schema_name = OpenAPI::get_schema_name_from_ref(&schema_name);
 
-        if let Some(schema) = self.get_schema_from_request_bodies(&schema_name) {
+        if let Some(schema) = self.get_schema_from_request_bodies(&schema_name, false) {
             return process(self, schema, &schema_name, field_name, obj);
         }
 

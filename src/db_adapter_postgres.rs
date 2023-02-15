@@ -68,7 +68,7 @@ impl DbAdapterPostgres<'_> {
             let typ = column.type_();
 
             let value : Value = match *typ {
-                tokio_postgres::types::Type::VARCHAR => {
+                tokio_postgres::types::Type::VARCHAR | tokio_postgres::types::Type::TEXT => {
 					if let Some(value) = row.get(idx) {
 						Value::String(value)
 					} else {
@@ -212,7 +212,16 @@ impl DbAdapterPostgres<'_> {
     }
 
 	async fn query(&self, sql: &str, params: &[&(dyn ToSql + Sync)]) -> Vec<Value> {
-		let list = self.client.as_ref().unwrap().query(sql, params).await.unwrap();
+		println!("[DbAdapterPostgres.query] {}", sql.replace("\n", " "));
+		
+		let list = match self.client.as_ref().unwrap().query(sql, params).await {
+			Ok(list) => list,
+			Err(err) => {
+				println!("[DbAdapterPostgres.query] : {}", err);
+				vec![]
+			},
+		};
+
 		self.get_json_list(&list)
 	}
 
@@ -426,9 +435,9 @@ impl EntityManager for DbAdapterPostgres<'_> {
 		}
 
 		async fn process_constraints(adapter :&mut DbAdapterPostgres<'_>, schemas :&mut IndexMap<String, ReferenceOr<Schema>>) -> Result<(), Error> {
-			let sql_info_constraints = "SELECT table_name,constraint_name,constraint_type FROM information_schema.table_constraints ORDER BY table_name,constraint_name";
-			let sql_info_constraints_fields = "SELECT constraint_name,column_name,ordinal_position FROM information_schema.key_column_usage ORDER BY constraint_name,ordinal_position";
-			let sql_info_constraints_fields_ref = "SELECT constraint_name,table_name,column_name FROM information_schema.constraint_column_usage";
+			let sql_info_constraints = "SELECT table_name::text,constraint_name::text,constraint_type::text FROM information_schema.table_constraints ORDER BY table_name,constraint_name";
+			let sql_info_constraints_fields = "SELECT constraint_name::text,column_name::text,ordinal_position FROM information_schema.key_column_usage ORDER BY constraint_name,ordinal_position";
+			let sql_info_constraints_fields_ref = "SELECT constraint_name::text,table_name::text,column_name::text FROM information_schema.constraint_column_usage";
 			let result = &adapter.query(sql_info_constraints, &[]).await;
 			let result_fields = &adapter.query(sql_info_constraints_fields, &[]).await;
 			let result_fields_ref = &adapter.query(sql_info_constraints_fields_ref, &[]).await;
@@ -553,15 +562,10 @@ impl EntityManager for DbAdapterPostgres<'_> {
 						for item in list {
 							let field_name = &get_field_name(adapter, item["columnName"].as_str().unwrap(), None);
 							let value = &Value::String(field_name.clone());
+							let list = primary_keys.as_array_mut().unwrap();
 
-							if let Some(list) = schema.schema_data.extensions.get_mut("x-primaryKeys") {
-								let list = list.as_array_mut().unwrap();
-
-								if list.contains(&value) == false {
-									list.push(value.clone());
-								}
-							} else {
-								schema.schema_data.extensions.insert("x-primaryKeys".to_string(), json!([value]));
+							if list.contains(&value) == false {
+								list.push(value.clone());
 							}
 
 							if object_type.required.contains(&field_name) == false {
@@ -585,7 +589,11 @@ impl EntityManager for DbAdapterPostgres<'_> {
 
 					if candidates.len() == 1 {
 						fields.remove(name);
-						set_ref(&mut object_type.properties, &candidates[0], foreign_key.get("tableRef").unwrap().as_str().unwrap());
+
+						match foreign_key.get("tableRef") {
+							Some(table_ref) => set_ref(&mut object_type.properties, &candidates[0], table_ref.as_str().unwrap()),
+							None => println!("[DbAdapterPostgres.update_open_api.process_constraints] : missing table_ref from {}.", name),													
+						}
 					}
 				}
 
@@ -615,15 +623,16 @@ impl EntityManager for DbAdapterPostgres<'_> {
 					println!("[process_columns()] : missing required fields of table {schema_name}");
 				}
 
-				schema.schema_data.extensions.insert("x-primaryKeys".to_string(), primary_keys.clone());
-				schema.schema_data.extensions.insert("x-uniqueKeys".to_string(), unique_keys.clone());
-				schema.schema_data.extensions.insert("x-foreignKeys".to_string(), foreign_keys.clone());
+				schema.schema_data.extensions.insert("x-primaryKeys".to_string(), primary_keys);
+				schema.schema_data.extensions.insert("x-uniqueKeys".to_string(), unique_keys);
+				schema.schema_data.extensions.insert("x-foreignKeys".to_string(), foreign_keys);
 			}
 
 			Ok(())
 		}
 
 		#[derive(Deserialize,Debug)]
+		#[serde(rename_all = "camelCase")]
 		struct SqlInfoTables {
 			data_type :String,
 			udt_name :String,
@@ -876,7 +885,7 @@ impl EntityManager for DbAdapterPostgres<'_> {
 		}
 
 		let table_name = name.to_case(convert_case::Case::Snake);
-		let sql = format!("CREATE TABLE {} ({}, PRIMARY KEY({}))", table_name, list.join(", "), list_primary_keys.join(", "));
+		let sql = format!("CREATE TABLE IF NOT EXISTS {} ({}, PRIMARY KEY({}))", table_name, list.join(", "), list_primary_keys.join(", "));
 		println!("[DbAdapterPostgres.create_table] : {}", sql);
 		self.exec(&sql).await?;
 		//self.update_open_api(self.openapi, FillOpenApiOptions{request_body_content_type: self.db_config.request_body_content_type})?;

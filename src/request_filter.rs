@@ -28,12 +28,12 @@ pub struct RequestFilter<'a> {
     schema_name: String,
     parameters: Value,
     obj_in: Value,
-    is_array_out: bool
+    may_be_array: bool
 }
 
 impl<'a> RequestFilter<'a> {
     pub fn new<'b,  State>(req: &'b Request<State>, rms: &'b RufsMicroService<'b>, method: &'b str, obj_in: Value) -> Result<RequestFilter<'a>, tide::Error> where 'b: 'a {
-        let mut rf = Self { micro_service: &rms, entity_manager: Default::default(), token_payload: Default::default(), path: Default::default(), method: Default::default(), schema_name: Default::default(), parameters: Default::default(), obj_in: Default::default(), is_array_out: false };
+        let mut rf = Self { micro_service: &rms, entity_manager: Default::default(), token_payload: Default::default(), path: Default::default(), method: Default::default(), schema_name: Default::default(), parameters: Default::default(), obj_in: Default::default(), may_be_array: false };
         rf.method = method.to_string();
         rf.obj_in = obj_in;
 
@@ -51,12 +51,12 @@ impl<'a> RequestFilter<'a> {
 
         rf.path = rms.micro_service_server.openapi.get_path_params(uri_path, &rf.parameters).unwrap();
 
-        rf.schema_name = rms.micro_service_server.openapi.get_schema_name(&rf.path, &rf.method).unwrap();
+        rf.may_be_array = match &rf.parameters {
+            Value::Object(obj) => !(obj.contains_key("id") || obj.contains_key("primaryKey")),
+            _ => true,
+        };
 
-        if rf.schema_name.ends_with("List") {
-            rf.schema_name = rf.schema_name[0..rf.schema_name.len()-4].to_string();
-            rf.is_array_out = true;
-        }
+        rf.schema_name = rms.micro_service_server.openapi.get_schema_name(&rf.path, &rf.method, false).unwrap();
 
         if rms.db_adapter_file.have_table(&rf.schema_name) {
             rf.entity_manager = Some(Box::new(&rms.db_adapter_file));
@@ -196,7 +196,7 @@ impl<'a> RequestFilter<'a> {
     }
 */
     fn parse_query_parameters(&self) -> Result<Value, Error> {
-        let schema = self.micro_service.micro_service_server.openapi.get_schema_from_parameters(&self.path, &self.method).unwrap();
+        let schema = self.micro_service.micro_service_server.openapi.get_schema_from_parameters(&self.path, &self.method, true).unwrap();
         let obj = self.micro_service.micro_service_server.openapi.copy_fields(schema, &self.parameters, false, false, false).unwrap();
         println!("[openapi.parse_query_parameters()] : {}", obj.to_string());
         Ok(obj)
@@ -232,7 +232,7 @@ impl<'a> RequestFilter<'a> {
             order_by
         }
 
-        let schema = self.micro_service.micro_service_server.openapi.get_schema_from_parameters(&self.path, &self.method).unwrap();
+        let schema = self.micro_service.micro_service_server.openapi.get_schema_from_parameters(&self.path, &self.method, true).unwrap();
         let fields = self.parse_query_parameters().unwrap();
 
         let order_by = match &schema.schema_kind {
@@ -345,7 +345,7 @@ impl<'a> RequestFilter<'a> {
         println!("[RequestFilter.process_request] : {} {}", self.path, self.method);
 
         if self.method == "get" {
-            if self.is_array_out {
+            if self.may_be_array {
                 return self.process_query().await
             } else {
                 return self.process_read().await
