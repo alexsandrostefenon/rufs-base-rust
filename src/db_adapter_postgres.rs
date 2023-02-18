@@ -68,7 +68,7 @@ impl DbAdapterPostgres<'_> {
             let typ = column.type_();
 
             let value : Value = match *typ {
-                tokio_postgres::types::Type::VARCHAR | tokio_postgres::types::Type::TEXT => {
+                tokio_postgres::types::Type::VARCHAR | tokio_postgres::types::Type::TEXT | tokio_postgres::types::Type::BPCHAR => {
 					if let Some(value) = row.get(idx) {
 						Value::String(value)
 					} else {
@@ -277,6 +277,7 @@ impl EntityManager for DbAdapterPostgres<'_> {
 		}
 
 		let sql = format!("INSERT INTO {} ({}) VALUES ({}) RETURNING *", table_name, str_fields.join(","), str_values.join(","));
+		println!("[DbAdapterPostgres.insert] : {}", sql);
 		let params = params.as_slice();
 		let list = self.client.as_ref().unwrap().query(&sql, params).await.unwrap();
 		return Ok(self.get_json_list(&list).get(0).unwrap().clone());

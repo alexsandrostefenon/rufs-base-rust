@@ -358,7 +358,8 @@ impl RufsMicroService<'_> {
 
 #[tide::utils::async_trait]
 impl IMicroServiceServer for RufsMicroService<'_> {
-    async fn authenticate_user(&self, user_name: String, user_password: String, remote_addr: String) -> Result<LoginResponse, Error> {
+
+    async fn authenticate_user(&self, user_name: &str, user_password: String, remote_addr: String) -> Result<LoginResponse, Error> {
         let entity_manager = if self.db_adapter_file.have_table("rufsUser") {
             &self.db_adapter_file as &(dyn EntityManager + Sync + Send)
         } else {
@@ -376,7 +377,7 @@ impl IMicroServiceServer for RufsMicroService<'_> {
         };
 
         if user.password.len() > 0 && user.password != user_password {
-            return Err(Error::from_str(StatusCode::InternalServerError, "Don't match user and password."));
+            return Err(Error::from_str(StatusCode::Unauthorized, "Don't match user and password."));
         }
 
         let list_in = entity_manager.find(&self.micro_service_server.openapi, "rufsGroupUser", &json!({"rufsUser": user.id}), &vec![]).await;
@@ -419,6 +420,7 @@ impl IMicroServiceServer for RufsMicroService<'_> {
         };
         Ok(login_response)
     }
+
 }
 
 const RUFS_MICRO_SERVICE_OPENAPI_STR: &str = r##"{

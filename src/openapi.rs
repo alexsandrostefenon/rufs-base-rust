@@ -52,9 +52,9 @@ pub struct FillOpenAPIOptions {
     pub request_body_content_type: String,
     response_content_type: String,
     methods: Vec<String>,
-    parameter_schemas: HashMap<String, AnySchema>,
-    request_schemas: HashMap<String, AnySchema>,
-    response_schemas: HashMap<String, AnySchema>,
+    parameter_schemas: HashMap<String, ObjectType>,
+    request_schemas: HashMap<String, ObjectType>,
+    response_schemas: HashMap<String, ObjectType>,
     disable_response_list: HashMap<String, bool>,
     pub schemas: IndexMap<String, ReferenceOr<Schema>>,
     pub security: SecurityRequirement,
@@ -508,8 +508,7 @@ func (self *OpenAPI) convertStandartToRufs() {
         }
 
         if options.request_schemas.contains_key("login") == false {
-            let request_schema: AnySchema =
-                serde_json::from_str(r#"{"type": "object", "properties": {"user": {"type": "string"}, "password": {"type": "string"}}, "required": ["user", "password"]}"#).unwrap();
+            let request_schema: ObjectType = serde_json::from_str(r#"{"type": "object", "properties": {"user": {"type": "string"}, "password": {"type": "string"}}, "required": ["user", "password"]}"#).unwrap();
             let response_schema: Schema = serde_json::from_str(r#"{"type": "object", "properties": {"tokenPayload": {"type": "string"}}, "required": ["tokenPayload"]}"#).unwrap();
             let request_schemas = HashMap::from([("login".to_string(), request_schema)]);
             let schemas = IndexMap::from([("login".to_string(), ReferenceOr::Item(response_schema))]);
@@ -555,51 +554,34 @@ func (self *OpenAPI) convertStandartToRufs() {
             let request_schema = options.request_schemas.get(&schema_name);
 
             if !options.force_generate_schemas && !force_generate_path && request_schema.is_none() && parameter_schema.is_some() {
+                println!("[RufsOpenAPI.fill({})] 1", schema_name);
                 continue;
             }
 
             if self.tags.iter().find(|&item| item.name == schema_name).is_none() {
-                self.tags.push(Tag {
-                    name: schema_name.clone(),
-                    ..Tag::default()
-                });
+                self.tags.push(Tag {name: schema_name.clone(), ..Tag::default()});
             }
 
-            let reference_to_schema = ReferenceOr::Reference::<Schema> {
-                reference: format!("#/components/schemas/{}", schema_name),
-            };
+            let reference_to_schema = ReferenceOr::Reference::<Schema> {reference: format!("#/components/schemas/{}", schema_name)};
             // fill components/requestBody with schemas
             {
-                let mut request_body = RequestBody {
-                    required: true,
-                    ..RequestBody::default()
-                };
+                let mut request_body = RequestBody {required: true, ..RequestBody::default()};
 
-                if request_schema.is_some() && request_schema.unwrap().typ.is_some() {
-                    let schema = Schema {
-                        schema_data: SchemaData::default(),
-                        schema_kind: SchemaKind::Any(request_schema.unwrap().clone()),
-                    };
+                if request_schema.is_some() {
+                    let object_type = request_schema.unwrap().clone();
+                    let schema = Schema {schema_data: SchemaData::default(), schema_kind: SchemaKind::Type(Type::Object(object_type))};
                     request_body.content.insert(
                         options.request_body_content_type.clone(),
-                        MediaType {
-                            schema: Some(ReferenceOr::Item(schema)),
-                            ..MediaType::default()
-                        },
+                        MediaType {schema: Some(ReferenceOr::Item(schema)), ..MediaType::default()},
                     );
+                    components.request_bodies.insert(schema_name.clone(), ReferenceOr::Item(request_body));
                 } else if components.request_bodies.get(&schema_name).is_none() {
                     request_body.content.insert(
                         options.request_body_content_type.clone(),
-                        MediaType {
-                            schema: Some(reference_to_schema.clone()),
-                            ..MediaType::default()
-                        },
+                        MediaType {schema: Some(reference_to_schema.clone()), ..MediaType::default()},
                     );
-                } else {
-                    continue;
+                    components.request_bodies.insert(schema_name.clone(), ReferenceOr::Item(request_body));
                 }
-
-                components.request_bodies.insert(schema_name.clone(), ReferenceOr::Item(request_body));
             }
             // fill components/responses with schemas
             let disable_response_list = options.disable_response_list.get(&schema_name).unwrap_or(&false);
@@ -613,7 +595,7 @@ func (self *OpenAPI) convertStandartToRufs() {
                 } else {
                     let response_schema = Schema {
                         schema_data: SchemaData::default(),
-                        schema_kind: SchemaKind::Any(options.response_schemas.get(&schema_name).unwrap().clone()),
+                        schema_kind: SchemaKind::Type(Type::Object(options.response_schemas.get(&schema_name).unwrap().clone())),
                     };
                     MediaType {
                         schema: Some(ReferenceOr::Item(response_schema)),
@@ -635,14 +617,10 @@ func (self *OpenAPI) convertStandartToRufs() {
                         reference: format!("#/components/schemas/{}", schema_name),
                     };
                     let items = Some(reference_to_schema);
-                    let schema: AnySchema = AnySchema {
-                        typ: Some("array".to_string()),
-                        items,
-                        ..AnySchema::default()
-                    };
+                    let schema = ArrayType {items, min_items: None, max_items: None, unique_items: false};
                     let schema = Schema {
                         schema_data: SchemaData::default(),
-                        schema_kind: SchemaKind::Any(schema),
+                        schema_kind: SchemaKind::Type(Type::Array(schema)),
                     };
                     let mut content: IndexMap<String, MediaType> = IndexMap::new();
                     content.insert(
@@ -665,7 +643,7 @@ func (self *OpenAPI) convertStandartToRufs() {
             // fill components/parameters with primaryKeys
             if parameter_schema.is_some() {
                 let schema = ReferenceOr::Item(Schema {
-                    schema_kind: SchemaKind::Any(parameter_schema.unwrap().clone()),
+                    schema_kind: SchemaKind::Type(Type::Object(parameter_schema.unwrap().clone())),
                     schema_data: SchemaData::default(),
                 });
                 let examples: IndexMap<String, ReferenceOr<Example>> = IndexMap::new();
@@ -691,27 +669,21 @@ func (self *OpenAPI) convertStandartToRufs() {
                     }),
                 );
             } else {
-                if schema.as_item().unwrap().schema_data.extensions.get("x-primaryKeys").is_some() {
-                    let required = schema
-                        .as_item()
-                        .unwrap()
-                        .schema_data
-                        .extensions
-                        .get("x-primaryKeys")
-                        .unwrap()
+                let schema = schema.as_item().unwrap();
+                let extensions = &schema.schema_data.extensions;
+                let primary_keys = extensions.get("x-primaryKeys");
+
+                if let Some(primary_keys) = primary_keys {
+                    let required = primary_keys
                         .as_array()
                         .unwrap()
                         .iter()
                         .map(|x| x.as_str().unwrap().to_string())
                         .collect();
-                    let mut schema_primary_key = AnySchema {
-                        typ: Some("object".to_string()),
-                        required,
-                        ..Default::default()
-                    };
+                    let mut schema_primary_key = ObjectType {required, ..Default::default()};
 
                     for key in &schema_primary_key.required {
-                        if let SchemaKind::Any(schema) = schema.as_item().unwrap().schema_kind.clone() {
+                        if let SchemaKind::Type(Type::Object(schema)) = schema.schema_kind.clone() {
                             schema_primary_key.properties.insert(key.clone(), schema.properties.get(key).unwrap().clone());
                         }
                     }
@@ -723,7 +695,7 @@ func (self *OpenAPI) convertStandartToRufs() {
                             name: "primaryKey".to_string(),
                             required: true,
                             format: ParameterSchemaOrContent::Schema(ReferenceOr::Item(Schema {
-                                schema_kind: SchemaKind::Any(schema_primary_key),
+                                schema_kind: SchemaKind::Type(Type::Object(schema_primary_key)),
                                 schema_data: SchemaData::default(),
                             })),
                             description: None,

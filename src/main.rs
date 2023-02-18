@@ -22,6 +22,7 @@ struct TideRufsMicroService {
 
 #[tide::utils::async_trait]
 impl<State: Clone + Send + Sync + 'static> Middleware<State> for TideRufsMicroService {
+
     async fn handle(&self, request: Request<State>, next: Next<'_, State>) -> tide::Result {
         if request.method() == tide::http::Method::Options {
             let acess_control_request_headers = match request.header("Access-Control-Request-Headers") {
@@ -59,21 +60,24 @@ impl<State: Clone + Send + Sync + 'static> Middleware<State> for TideRufsMicroSe
 
         return Ok(next.run(request).await);
     }
+
 }
 
 async fn handle_login(mut request: Request<RufsMicroService<'_>>) -> tide::Result {
-    let login_request = request.body_json::<LoginRequest>().await?;
+    let obj_in = request.body_json::<Value>().await?;
+    println!("\n\ncurl -X '{}' {} -d '{}'", request.method(), request.url(), obj_in);
+    let login_request = serde_json::from_value::<LoginRequest>(obj_in).unwrap();//request.body_json::<LoginRequest>().await?;
     let rufs = request.state();
 
     if login_request.user.is_empty() || login_request.password.is_empty() {
         println!("Login request is empty");
     }
 
-    let login_response = match rufs.authenticate_user(login_request.user.clone(), login_request.password.clone(), request.remote().unwrap().to_string().clone()).await {
+    let login_response = match rufs.authenticate_user(&login_request.user, login_request.password.clone(), request.remote().unwrap().to_string().clone()).await {
         Ok(login_response) => login_response,
         Err(error) => {
             println!("[RufsMicroService.handle.login.authenticate_user] : {}", error);
-            return Err(error.into());
+            return Err(error);
         }
     };
 
@@ -81,12 +85,16 @@ async fn handle_login(mut request: Request<RufsMicroService<'_>>) -> tide::Resul
 }
 
 async fn handle_api(mut request: Request<RufsMicroService<'_>>) -> tide::Result {
-    println!("\n\n[handle_api] {} : {}", request.method(), request.url());
     let method = request.method().to_string().to_lowercase();
+    let auth = request.header("Authorization").unwrap().as_str();
+    print!("\n\ncurl -X '{}' {} -H 'Authorization: {}'", method, request.url(), auth);
 
     let obj_in = if method == "post" || method == "put" || method == "patch" {
-        request.body_json::<Value>().await?
+        let obj_in = request.body_json::<Value>().await?;
+        println!(" -d '{}'", obj_in);
+        obj_in
     } else {
+        println!();
         Value::Null
     };
 

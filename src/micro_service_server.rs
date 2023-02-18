@@ -14,7 +14,7 @@ pub struct LoginRequest {
 
 #[tide::utils::async_trait]
 pub trait IMicroServiceServer {
-    async fn authenticate_user(&self, user_name: String, user_password: String, remote_addr: String) -> Result<LoginResponse, Error>;
+    async fn authenticate_user(&self, user_name: &str, user_password: String, remote_addr: String) -> Result<LoginResponse, Error>;
 }
 
 #[derive(Clone)]
@@ -82,7 +82,7 @@ impl MicroServiceServer {
 
 #[tide::utils::async_trait]
 impl IMicroServiceServer for MicroServiceServer {
-    async fn authenticate_user(&self, user_name: String, user_password: String, remote_addr: String) -> Result<LoginResponse, Error> {
+    async fn authenticate_user(&self, user_name: &str, user_password: String, remote_addr: String) -> Result<LoginResponse, Error> {
         println!("[MicroServiceServer.authenticate_user({}, {}, {})]", user_name, user_password, remote_addr);
         todo!()
     }
