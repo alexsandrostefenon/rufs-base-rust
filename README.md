@@ -54,11 +54,6 @@ git clone https://github.com/alexsandrostefenon/rufs-base-es6;
 git clone https://github.com/alexsandrostefenon/rufs-crud-es6;`
 `
 
-#Execute rufs-proxy to load and start microservices :
-`
-cd ./rufs-base-rust &&
-PGHOST=localhost PGPORT=5432 PGUSER=development PGPASSWORD=123456 PGDATABASE=rufs_base cargo test -timeout 3600s -run ^TestExternal$ -v -args --webapp ../rufs-base-es6/webapp ../rufs-crud-es6/webapp
-`
 ## NFE test :
 `
 cd ./rufs-base-rust;
@@ -66,6 +61,7 @@ rm openapi-rufs_nfe-*.json; \
 PGHOST=localhost PGPORT=5432 PGUSER=development PGPASSWORD=123456 psql rufs_nfe_development -c "DROP DATABASE IF EXISTS rufs_nfe" &&
 PGHOST=localhost PGPORT=5432 PGUSER=development PGPASSWORD=123456 psql rufs_nfe_development -c "CREATE DATABASE rufs_nfe" &&
 PGHOST=localhost PGPORT=5432 PGUSER=development PGPASSWORD=123456 PGDATABASE=rufs_nfe RUST_BACKTRACE=1 cargo test nfe;
+cargo build && cargo test;
 `
 
 ## Web application
