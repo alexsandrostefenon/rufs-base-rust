@@ -18,21 +18,23 @@ use crate::{
 };
 
 #[derive(Deserialize, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
 struct RufsGroupOwner {
     id: u64,
     name: String,
 }
 
 #[derive(Deserialize, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
 struct Route {
     path: String,
     controller: String,
-    #[serde(rename = "templateUrl")]
     #[serde(default)]
     template_url: String,
 }
 
 #[derive(Deserialize, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
 struct MenuItem {
     menu: String,
     label: String,
@@ -40,12 +42,14 @@ struct MenuItem {
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct Role {
     pub path: String,
     pub mask: u64,
 }
 
 #[derive(Deserialize, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
 struct RufsUserPublic {
     routes: Box<[Route]>,
     menu: HashMap<String, MenuItem>,
@@ -54,11 +58,12 @@ struct RufsUserPublic {
 
 #[derive(Deserialize, Serialize, Default)]
 #[serde(default)]
+#[serde(rename_all = "camelCase")]
 struct RufsUser {
     //user_proteced: RufsUserProteced,
     id: u64,
     name: String,
-    group_owner: u64,
+    rufs_group_owner: u64,
     //groups:         Box<[u64]>,
     roles: Box<[Role]>,
     //user_public: RufsUserPublic,
@@ -71,13 +76,13 @@ struct RufsUser {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LoginResponse<'a> {
     //token_payload : TokenPayload,
     //user_proteced: RufsUserProteced,
     id: u64,
     name: String,
-    #[serde(rename = "groupOwner")]
-    group_owner: u64,
+    rufs_group_owner: u64,
     groups: Box<[u64]>,
     roles: Box<[Role]>,
     ip: String,
@@ -85,20 +90,19 @@ pub struct LoginResponse<'a> {
     routes: Box<[Route]>,
     menu: HashMap<String, MenuItem>,
     path: String,
-    #[serde(rename = "jwtHeader")]
     jwt_header: String,
     title: String,
     openapi: &'a OpenAPI,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct Claims {
     sub: String,
     exp: usize,
     id: u64,
     pub name: String,
-    #[serde(rename = "groupOwner")]
-    pub group_owner: u64,
+    pub rufs_group_owner: u64,
     pub groups: Box<[u64]>,
     pub roles: Box<[Role]>,
     ip: String,
@@ -359,7 +363,7 @@ impl RufsMicroService<'_> {
 #[tide::utils::async_trait]
 impl IMicroServiceServer for RufsMicroService<'_> {
 
-    async fn authenticate_user(&self, user_name: &str, user_password: String, remote_addr: String) -> Result<LoginResponse, Error> {
+    async fn authenticate_user(&self, user_name: &str, user_password: &str, remote_addr: &str) -> Result<LoginResponse, Error> {
         let entity_manager = if self.db_adapter_file.have_table("rufsUser") {
             &self.db_adapter_file as &(dyn EntityManager + Sync + Send)
         } else {
@@ -397,17 +401,17 @@ impl IMicroServiceServer for RufsMicroService<'_> {
             exp: 10000000000,
             id: user.id,
             name: user.name,
-            group_owner: user.group_owner,
+            rufs_group_owner: user.rufs_group_owner,
             groups,
             roles: user.roles,
-            ip: remote_addr,
+            ip: remote_addr.to_string(),
         };
         let secret = std::env::var("RUFS_JWT_SECRET").unwrap_or("123456".to_string());
         let jwt_header = encode(&Header::default(), &claims, &EncodingKey::from_secret(secret.as_ref()))?;
         let login_response = LoginResponse {
             id: user.id,
             name: claims.name.clone(),
-            group_owner: user.group_owner,
+            rufs_group_owner: user.rufs_group_owner,
             groups: claims.groups,
             roles: claims.roles,
             ip: claims.ip.clone(),
@@ -500,7 +504,7 @@ const DEFAULT_USER_ADMIN_STR: &str = r#"{
 		],
 		"routes": [
 			{
-				"controller": "OpenAPIOperationObjectController",
+				"controller": "OpenApiOperationObjectController",
 				"path": "/app/rufs_service/:action"
 			},
 			{

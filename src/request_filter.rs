@@ -70,7 +70,7 @@ impl<'a> RequestFilter<'a> {
     // private to create,update,delete,read
     fn check_object_access(&mut self) -> Result<(), Error> {
         let openapi = &self.micro_service.micro_service_server.openapi;
-        let user_rufs_group_owner = self.token_payload.as_ref().unwrap().group_owner;
+        let user_rufs_group_owner = self.token_payload.as_ref().unwrap().rufs_group_owner;
         //let rufs_group_owner_entries = openapi.get_properties_with_ref(&self.schema_name, "#/components/schemas/rufsGroupOwner");
 
         if user_rufs_group_owner == 0 /*|| rufs_group_owner_entries.len() == 0*/ {
@@ -91,11 +91,12 @@ impl<'a> RequestFilter<'a> {
         }
 
         if obj_rufs_group_owner.primary_key.get("id").unwrap().as_u64().unwrap() == user_rufs_group_owner {
-            if let Some(rufs_group) = openapi.get_primary_key_foreign(&self.schema_name, "rufsGroup", obj).or(Err(Error::from_str(500, "unknow")))? {
+            if let Some(rufs_group) = openapi.get_primary_key_foreign(&self.schema_name, "rufsGroup", obj)? {
+                let rufs_group_id = rufs_group.primary_key.get("id").unwrap().as_u64().unwrap();
                 let mut found = false;
 
                 for group in self.token_payload.as_ref().unwrap().groups.as_ref().iter().as_ref() {
-                    if *group == rufs_group.primary_key.get("id").unwrap().as_u64().unwrap() {
+                    if *group == rufs_group_id {
                         found = true;
                         break;
                     }
@@ -104,6 +105,8 @@ impl<'a> RequestFilter<'a> {
                 if !found {
                     return Err(Error::from_str(404, "unauthorized object rufsGroup"));
                 }
+            } else {
+                return Ok(());
             }
         } else {
             return Err(Error::from_str(404, "unauthorized object rufsGroupOwner"));
@@ -389,7 +392,7 @@ impl<'a> RequestFilter<'a> {
 
             if check_rufs_group_owner == false {
                 if let Some(id) = obj_rufs_group_owner.as_ref().unwrap().primary_key.get("id") {
-                    if id.as_u64().unwrap() == token_data.group_owner {
+                    if id.as_u64().unwrap() == token_data.rufs_group_owner {
                         check_rufs_group_owner = true;
                     }
                 }
@@ -405,7 +408,7 @@ impl<'a> RequestFilter<'a> {
                 }
             }
             // restrição de rufsGroup
-            if token_data.group_owner == 1 || (check_rufs_group_owner && check_rufs_group) {
+            if token_data.rufs_group_owner == 1 || (check_rufs_group_owner && check_rufs_group) {
                 for role in token_data.roles.iter() {
                     if role.path == self.path {
                         if (role.mask & 0x01) != 0 {

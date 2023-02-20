@@ -2,7 +2,7 @@ use jsonwebtoken::{decode, DecodingKey, Validation};
 use micro_service_server::{LoginRequest, MicroServiceServer};
 use request_filter::RequestFilter;
 use serde_json::Value;
-use tide::{Request, Response, Next, StatusCode, Body, Middleware, Error, Server};
+use tide::{Request, Response, Next, StatusCode, Body, Middleware, Error, Server, http::{mime}};
 
 use crate::{micro_service_server::IMicroServiceServer, rufs_micro_service::{RufsMicroService, Claims}};
 
@@ -73,11 +73,15 @@ async fn handle_login(mut request: Request<RufsMicroService<'_>>) -> tide::Resul
         println!("Login request is empty");
     }
 
-    let login_response = match rufs.authenticate_user(&login_request.user, login_request.password.clone(), request.remote().unwrap().to_string().clone()).await {
+    let login_response = match rufs.authenticate_user(&login_request.user, &login_request.password, request.remote().unwrap()).await {
         Ok(login_response) => login_response,
         Err(error) => {
             println!("[RufsMicroService.handle.login.authenticate_user] : {}", error);
-            return Err(error);
+            let msg = error.to_string();
+            let mut response = Response::from(error);
+            response.set_content_type(mime::PLAIN);
+            response.set_body(msg);
+            return Ok(response);
         }
     };
 

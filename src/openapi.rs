@@ -160,6 +160,7 @@ type OperationObject struct {
 }
 */
 #[derive(Serialize,Deserialize, Clone,Default)]
+#[serde(rename_all = "camelCase")]
 pub struct ForeignKey {
     pub table_ref :String,
     pub fields    :HashMap<String, String>,
@@ -377,6 +378,7 @@ func (self *OpenAPI) convertStandartToRufs() {
                         Type::Number(_) => return Ok(json!(value.as_str().unwrap().parse::<f64>().unwrap())),
                         Type::Integer(_) => return Ok(json!(value.as_str().unwrap().parse::<i64>().unwrap())),
                         Type::Boolean {  } => return Ok(json!(value.as_str().unwrap().parse::<bool>().unwrap())),
+                        Type::String(_) => return Ok(value.clone()),
                         _ => todo!(),
                     }
                 },
@@ -1246,10 +1248,10 @@ func (self *OpenAPI) convertStandartToRufs() {
             return Ok(None);
         }
 
-        let reference = field.unwrap().schema_data.extensions.get("$ref");
+        let reference = field.unwrap().schema_data.extensions.get("x-$ref");
 
         if reference.is_none() {
-            println!("[openapi.get_foreign_key_description({}, {})] : trace : missing $ref \n{:?}", schema, field_name, field);
+            println!("[openapi.get_foreign_key_description({}, {})] : trace : missing x-$ref \n{:?}", schema, field_name, field);
             return Ok(None);
         }
 
@@ -1263,8 +1265,8 @@ func (self *OpenAPI) convertStandartToRufs() {
         let mut fields_ref  = json!({});
 
         if let Some(primary_keys) = service_ref.unwrap().schema_data.extensions.get("x-primaryKeys") {
-            for (primary_key, _) in primary_keys.as_object().unwrap() {
-                fields_ref[primary_key] = Value::Null;
+            for primary_key in primary_keys.as_array().unwrap() {
+                fields_ref[primary_key.as_str().unwrap()] = Value::Null;
             }
         }
 

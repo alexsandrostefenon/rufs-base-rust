@@ -1,11 +1,13 @@
 use std::{io::{Error}, sync::{Arc}, collections::HashMap};
 
+use chrono::NaiveDateTime;
 use convert_case::Casing;
 use indexmap::IndexMap;
 use openapiv3::{OpenAPI, Schema, ReferenceOr, ObjectType, SchemaData, SchemaKind, VariantOrUnknownOrEmpty, StringFormat};
 use serde::Deserialize;
 use serde_json::{Value, Number, json};
 use tokio_postgres::{NoTls, Client, Row, types::{ToSql}};
+use rust_decimal::{Decimal, prelude::ToPrimitive};
 
 use crate::{entity_manager::EntityManager, openapi::{RufsOpenAPI, FillOpenAPIOptions, ForeignKey}};
 
@@ -89,8 +91,34 @@ impl DbAdapterPostgres<'_> {
 						Value::Null
 					}
 				},
-                tokio_postgres::types::Type::JSONB => 
-				{
+                tokio_postgres::types::Type::TIMESTAMP => {
+					if let Some(value) = row.get::<usize, Option<NaiveDateTime>>(idx) {
+						//let fmt = value.format("%Y-%m-%dT%H:%M:%S%.f%:z");
+						//let str = fmt.to_string();
+						let str = format!("{}.000Z", value);
+						Value::String(str)
+					} else {
+						Value::Null
+					}
+				},
+                tokio_postgres::types::Type::NUMERIC => {
+					let value : Decimal = row.get(idx);
+
+					if value.scale() == 0 {
+						if let Some(value) = value.to_i64() {
+							Value::Number(Number::from(value))
+						} else {
+							Value::Null
+						}
+					} else {
+						if let Some(value) = value.to_f64() {
+							Value::Number(Number::from_f64(value).unwrap())
+						} else {
+							Value::Null
+						}
+					}
+				},
+                tokio_postgres::types::Type::JSONB => {
 					row.get(idx)
 				},
                 tokio_postgres::types::Type::JSONB_ARRAY => {
@@ -237,18 +265,51 @@ impl EntityManager for DbAdapterPostgres<'_> {
 		}
 	}
 
-    async fn insert(&self, _openapi: &OpenAPI, schema_name :&str, obj :&Value) -> Result<Value, Error> {
+    async fn insert(&self, openapi: &OpenAPI, schema_name :&str, obj :&Value) -> Result<Value, Error> {
         println!("[DbAdapterPostgres.find({}, {})]", schema_name, obj.to_string());
 		let table_name = schema_name.to_case(convert_case::Case::Snake);
 		let mut params: Vec<&(dyn ToSql + Sync)> = vec![];
 		let mut str_fields = vec![];
 		let mut str_values = vec![];
 		let mut count = 1;
+		let schema = openapi.get_schema_from_schemas(schema_name).unwrap();
+		let properties = match &schema.schema_kind {
+			SchemaKind::Type(typ) => match typ {
+				openapiv3::Type::Object(object_type) => &object_type.properties,
+				_ => todo!()				
+			},
+			SchemaKind::Any(typ) => &typ.properties,
+			_ => todo!()
+		};
 
-		for (field_name, field) in obj.as_object().unwrap() {
-			str_fields.push(field_name.to_case(convert_case::Case::Snake));
+		for (field_name, field) in properties {
+			let field = field.as_item().unwrap();
+			let value = obj.as_object().unwrap().get(field_name);
+			let value = match value {
+				Some(value) => value,
+				None => match &field.schema_data.default {
+					Some(default) => default,
+					None => &Value::Null,
+				},
+			};
 
-			match field {
+			if value.is_null() && field.schema_data.extensions.get("x-identityGeneration").is_some() {
+				continue;
+			}
+/*
+			match field.schema_kind {
+				SchemaKind::Type(typ) => match typ {
+					openapiv3::Type::String(_) => todo!(),
+					openapiv3::Type::Number(_) => todo!(),
+					openapiv3::Type::Integer(_) => todo!(),
+					openapiv3::Type::Object(_) => todo!(),
+					openapiv3::Type::Array(_) => todo!(),
+					openapiv3::Type::Boolean {  } => todo!(),
+				},
+				_ => todo!()
+			}
+*/
+			match value {
 				Value::Null => str_values.push("NULL".to_string()),
 				Value::Bool(value) => str_values.push(value.to_string()),
 				Value::Number(value) => if value.is_i64() {
@@ -259,9 +320,30 @@ impl EntityManager for DbAdapterPostgres<'_> {
 					str_values.push(value.as_f64().unwrap().to_string());
 				},
 				Value::String(value) => {
-					str_values.push(format!("${}", count));
-					params.push(value);
-					count += 1;
+
+					match &field.schema_kind {
+						SchemaKind::Type(typ) => match typ {
+							openapiv3::Type::String(string_type) => {
+								match &string_type.format {
+									VariantOrUnknownOrEmpty::Item(string_format) => match string_format {
+										StringFormat::DateTime => {
+											let _t = NaiveDateTime::parse_from_str(value, "%+").unwrap();
+											str_values.push(format!("'{}'", value));
+										},
+										_ => todo!(),
+									},
+									_ => {
+										str_values.push(format!("${}", count));
+										params.push(value);
+										count += 1;
+									},
+								}
+							},
+							_ => todo!()
+						},
+						_ => todo!()
+					}
+
 				},
 				Value::Array(value) => {
 					str_values.push(format!("${}", count));
@@ -270,10 +352,12 @@ impl EntityManager for DbAdapterPostgres<'_> {
 				},
 				Value::Object(_) => {
 					str_values.push(format!("${}", count));
-					params.push(field);
+					params.push(value);
 					count += 1;
 				},
 			}
+
+			str_fields.push(field_name.to_case(convert_case::Case::Snake));
 		}
 
 		let sql = format!("INSERT INTO {} ({}) VALUES ({}) RETURNING *", table_name, str_fields.join(","), str_values.join(","));
@@ -393,8 +477,9 @@ impl EntityManager for DbAdapterPostgres<'_> {
 		let table_name = schema_name.to_case(convert_case::Case::Snake);
 		let mut params: Vec<&(dyn ToSql + Sync)> = vec![];
 		let sql_query = self.build_query(query_params, &mut params, &vec![]);
-		let sql = format!("DELETE FROM {} WHERE {}", table_name, sql_query);
+		let sql = format!("DELETE FROM {} {}", table_name, sql_query);
 		let params = params.as_slice();
+		println!("[DbAdapterPostgres.delete_one({})] : {} , {:?}", query_params, sql, params);
 		let _count = self.client.as_ref().unwrap().execute(&sql, params).await.unwrap();
 		Ok(())
 	}
