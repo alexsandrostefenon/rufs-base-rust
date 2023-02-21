@@ -51,6 +51,8 @@ impl MicroServiceServer {
             self.openapi_file_name = format!("openapi-{}-rust.json", self.app_name);
         }
 
+        println!("[MicroServiceServer.load_open_api({}/{})]", std::env::current_dir().unwrap().to_string_lossy(), self.openapi_file_name);
+
         match fs::File::open(&self.openapi_file_name) {
             Ok(file) => self.openapi = serde_json::from_reader(file)?,
             Err(error) => match error.kind() {

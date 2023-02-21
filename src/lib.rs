@@ -1,5 +1,5 @@
 use jsonwebtoken::{decode, DecodingKey, Validation};
-use micro_service_server::{LoginRequest, MicroServiceServer};
+use micro_service_server::{LoginRequest};
 use request_filter::RequestFilter;
 use serde_json::Value;
 use tide::{Request, Response, Next, StatusCode, Body, Middleware, Error, Server, http::{mime}};
@@ -116,7 +116,7 @@ async fn handle_api(mut request: Request<RufsMicroService<'_>>) -> tide::Result 
     Ok(response)
 }
 
-async fn rufs_tide_new(options: &RufsMicroService<'static>) -> Result<Box<Server<RufsMicroService<'static>>>, Error> {
+pub async fn rufs_tide_new(options: &RufsMicroService<'static>, base_dir: &str) -> Result<Box<Server<RufsMicroService<'static>>>, Error> {
     let mut rufs = RufsMicroService{..options.clone()};
     rufs.connect(&format!("postgres://development:123456@localhost:5432/{}", rufs.micro_service_server.app_name)).await?;
     let api_path = rufs.micro_service_server.api_path.clone();
@@ -138,64 +138,33 @@ async fn rufs_tide_new(options: &RufsMicroService<'static>) -> Result<Box<Server
     app.at(&format!("/{}/login", &api_path)).post(handle_login);
     app.at(&format!("/{}/*", &api_path)).all(handle_api);
     let serve_static_paths = vec![
-        std::path::Path::new("rufs-nfe-es6/webapp").to_path_buf(),
-        std::path::Path::new("rufs-crud-es6/webapp").to_path_buf(),
-        std::path::Path::new("rufs-base-es6/webapp").to_path_buf(),
+        std::path::Path::new(base_dir).join("rufs-nfe-es6/webapp").to_path_buf(),
+        std::path::Path::new(base_dir).join("rufs-crud-es6/webapp").to_path_buf(),
+        std::path::Path::new(base_dir).join("rufs-base-es6/webapp").to_path_buf(),
     ];
     app.with(TideRufsMicroService{serve_static_paths});
     Ok(app)
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Error> {
-    let options = RufsMicroService{
-        check_rufs_tables: true,
-        migration_path: "./rufs-nfe-es6/sql".to_string(),
-        micro_service_server: MicroServiceServer{app_name: "rufs_nfe".to_string(), ..Default::default()}, 
-        ..Default::default()
-    };
-
-    let app = rufs_tide_new(&options).await?;
-    let rufs = app.state();
-    let listen = format!("127.0.0.1:{}", rufs.micro_service_server.port);
-    Ok(app.listen(listen).await.unwrap())
-}
-
 #[cfg(test)]
 mod tests {
-    use tide::http::{Url, Method, Request, Response};
     use crate::{rufs_tide_new, rufs_micro_service::RufsMicroService, micro_service_server::MicroServiceServer};
 
-    #[async_std::test]
-    async fn base() -> tide::Result<()> {
+    async fn nfe(base_dir: &str) -> tide::Result<()> {
         let options = RufsMicroService{
             check_rufs_tables: true,
-            micro_service_server: MicroServiceServer{app_name: "base".to_string(), ..Default::default()}, 
-            ..Default::default()
-        };
-    
-        let app = rufs_tide_new(&options).await.unwrap();
-        let rufs = app.state();
-        let listen = format!("http://127.0.0.1:{}", rufs.micro_service_server.port);
-        let url = Url::parse(&listen).unwrap();
-        let req = Request::new(Method::Get, url);
-        let mut res: Response = app.respond(req).await?;
-        assert_eq!("Hello, world", res.body_string().await?);        
-        Ok(())
-    }
-
-    #[async_std::test]
-    async fn nfe() -> tide::Result<()> {
-        let options = RufsMicroService{
-            check_rufs_tables: true,
-            migration_path: "./rufs-nfe-es6/sql".to_string(),
+            migration_path: format!("{}rufs-nfe-es6/sql", base_dir),
             micro_service_server: MicroServiceServer{app_name: "rufs_nfe".to_string(), ..Default::default()}, 
             ..Default::default()
         };
     
-        let app = rufs_tide_new(&options).await.unwrap();
+        let app = rufs_tide_new(&options, base_dir).await?;
         let rufs = app.state();
-        let _listen = format!("http://127.0.0.1:{}", rufs.micro_service_server.port);
+        let listen = format!("127.0.0.1:{}", rufs.micro_service_server.port);
+        println!("listening of {}", listen);
+        app.listen(listen).await.unwrap();
+    
+        //sleep(Duration::from_millis(60000)).await;
         // TODO : run selenium ide scripts
         /*
         let url = Url::parse(&listen).unwrap();
@@ -204,6 +173,16 @@ mod tests {
         assert_eq!("Hello, world", res.body_string().await?);        
         */
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn nfe_local() -> tide::Result<()> {
+        nfe("../").await
+    }
+
+    #[tokio::test]
+    async fn nfe_workspace() -> tide::Result<()> {
+        nfe("./").await
     }
 
 }

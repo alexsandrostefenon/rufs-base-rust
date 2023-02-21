@@ -57,11 +57,11 @@ git clone https://github.com/alexsandrostefenon/rufs-crud-es6;`
 ## NFE test :
 `
 cd ./rufs-base-rust;
-rm openapi-rufs_nfe-*.json; \
+find ./ | grep -F 'openapi-rufs_nfe-rust.json' | xargs rm ;\
 PGHOST=localhost PGPORT=5432 PGUSER=development PGPASSWORD=123456 psql rufs_nfe_development -c "DROP DATABASE IF EXISTS rufs_nfe" &&
 PGHOST=localhost PGPORT=5432 PGUSER=development PGPASSWORD=123456 psql rufs_nfe_development -c "CREATE DATABASE rufs_nfe" &&
-PGHOST=localhost PGPORT=5432 PGUSER=development PGPASSWORD=123456 PGDATABASE=rufs_nfe RUST_BACKTRACE=1 cargo test nfe;
-cargo build && cargo test;
+cargo build &&
+cargo test nfe_local -- --nocapture;
 `
 
 ## Web application
@@ -72,7 +72,6 @@ check if rest is active
 curl -X 'GET' http://localhost:9090/rest/login -d '{"user": "admin", "password": "21232f297a57a5a743894a0e4a801fc3"}' -H 'Connection: close' -H 'content-type: application/json';
 `
 
-In EcmaScript2017 compliance browser open url http://localhost:9090
+In EcmaScript2017 compliance browser open url http://localhost:8080
 
 For custom service configuration or user edition, use user 'admin' with password 'admin'.
-rufs-base-es6/README.
