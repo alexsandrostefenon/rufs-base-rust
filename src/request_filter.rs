@@ -3,11 +3,13 @@ use jsonwebtoken::{decode, DecodingKey, Validation};
 use openapiv3::{ReferenceOr, Schema};
 use serde::{Serialize, Deserialize};
 use serde_json::{json, Value, Number};
+
+#[cfg(feature = "tide")]
 use tide::{Request, Error, StatusCode};
 
 use crate::{
     entity_manager::{EntityManager},
-    openapi::{RufsOpenAPI},
+    openapi::{RufsOpenAPI, SchemaPlace},
     rufs_micro_service::{Claims, RufsMicroService},
 };
 
@@ -19,6 +21,7 @@ struct NotifyMessage {
     primary_key :Value
 }
 
+#[cfg(feature = "tide")]
 pub struct RequestFilter<'a> {
     micro_service: &'a RufsMicroService<'a>,
     entity_manager: Option<Box<&'a (dyn EntityManager + Send + Sync)>>,
@@ -31,6 +34,7 @@ pub struct RequestFilter<'a> {
     may_be_array: bool
 }
 
+#[cfg(feature = "tide")]
 impl<'a> RequestFilter<'a> {
     pub fn new<'b,  State>(req: &'b Request<State>, rms: &'b RufsMicroService<'b>, method: &'b str, obj_in: Value) -> Result<RequestFilter<'a>, tide::Error> where 'b: 'a {
         let mut rf = Self { micro_service: &rms, entity_manager: Default::default(), token_payload: Default::default(), path: Default::default(), method: Default::default(), schema_name: Default::default(), parameters: Default::default(), obj_in: Default::default(), may_be_array: false };
@@ -90,7 +94,9 @@ impl<'a> RequestFilter<'a> {
             obj_rufs_group_owner.primary_key["id"] = Value::Number(Number::from(user_rufs_group_owner));
         }
 
-        if obj_rufs_group_owner.primary_key.get("id").unwrap().as_u64().unwrap() == user_rufs_group_owner {
+        let obj_rufs_group_owner_id = obj_rufs_group_owner.primary_key.get("id").unwrap().as_u64().unwrap();
+
+        if obj_rufs_group_owner_id == user_rufs_group_owner || user_rufs_group_owner == 1 {
             if let Some(rufs_group) = openapi.get_primary_key_foreign(&self.schema_name, "rufsGroup", obj)? {
                 let rufs_group_id = rufs_group.primary_key.get("id").unwrap().as_u64().unwrap();
                 let mut found = false;
@@ -164,6 +170,7 @@ impl<'a> RequestFilter<'a> {
         }
 
         let primary_key = &self.parse_query_parameters().unwrap();
+        println!("[RequestFilter.process_update({})] : {}", self.schema_name, primary_key);
         let entity_manager = self.entity_manager.as_ref().unwrap();
         let new_obj = entity_manager.update(&self.micro_service.micro_service_server.openapi, &self.schema_name, primary_key, &self.obj_in).await;
 
@@ -199,9 +206,8 @@ impl<'a> RequestFilter<'a> {
     }
 */
     fn parse_query_parameters(&self) -> Result<Value, Error> {
-        let schema = self.micro_service.micro_service_server.openapi.get_schema_from_parameters(&self.path, &self.method, true).unwrap();
-        let obj = self.micro_service.micro_service_server.openapi.copy_fields(schema, &self.parameters, false, false, false).unwrap();
-        println!("[openapi.parse_query_parameters()] : {}", obj.to_string());
+        let obj = self.micro_service.micro_service_server.openapi.copy_fields(&self.path, &self.method, &SchemaPlace::Parameter, true, &self.parameters, false, false, false).unwrap();
+        println!("[openapi.parse_query_parameters({})] : {}", self.parameters, obj.to_string());
         Ok(obj)
     }
 
@@ -369,8 +375,7 @@ impl<'a> RequestFilter<'a> {
     fn notify(&self, obj :&Value, is_remove :bool) {
         let micro_service = self.micro_service;
         let openapi = &micro_service.micro_service_server.openapi;
-        let schema = openapi.get_schema_from_schemas(&self.schema_name).ok_or(Error::from_str(500, "unknow")).unwrap();
-        let parameters = openapi.copy_fields(schema, obj, false, false, true).unwrap();
+        let parameters = openapi.copy_fields(&self.path, &self.method, &SchemaPlace::Schemas, false, obj, false, false, true).unwrap();
         let mut msg = NotifyMessage{service: self.schema_name.to_string(), action: "notify".to_string(), primary_key: parameters};
 
         if is_remove {

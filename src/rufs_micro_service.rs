@@ -1,12 +1,17 @@
 use std::{collections::HashMap, fs, path::Path, sync::{RwLock, Arc}};
 
+#[cfg(feature = "http_server")]
 use async_std::path::PathBuf;
 use jsonwebtoken::{encode, EncodingKey, Header};
 use openapiv3::{OpenAPI, SecurityRequirement};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+
+#[cfg(feature = "tide")]
 use tide::{Error, StatusCode};
+
+#[cfg(feature = "tide")]
 use tide_websockets::WebSocketConnection;
 
 use crate::{
@@ -36,7 +41,7 @@ struct Route {
 #[derive(Deserialize, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 struct MenuItem {
-    menu: String,
+    group: String,
     label: String,
     path: String,
 }
@@ -52,7 +57,7 @@ pub struct Role {
 #[serde(rename_all = "camelCase")]
 struct RufsUserPublic {
     routes: Box<[Route]>,
-    menu: HashMap<String, MenuItem>,
+    menu: Box<[MenuItem]>,
     path: String,
 }
 
@@ -68,7 +73,7 @@ struct RufsUser {
     roles: Box<[Role]>,
     //user_public: RufsUserPublic,
     routes: Box<[Route]>,
-    menu: HashMap<String, MenuItem>,
+    menu: Box<[MenuItem]>,
     path: String,
     //other
     full_name: String,
@@ -88,7 +93,7 @@ pub struct LoginResponse<'a> {
     ip: String,
     //user_public: RufsUserPublic,
     routes: Box<[Route]>,
-    menu: HashMap<String, MenuItem>,
+    menu: Box<[MenuItem]>,
     path: String,
     jwt_header: String,
     title: String,
@@ -114,6 +119,7 @@ type IRufsMicroService interface {
     LoadFileTables() error
 }
 */
+#[cfg(feature = "tide")]
 #[derive(Default, Clone)]
 pub struct RufsMicroService<'a> {
     pub micro_service_server: MicroServiceServer,
@@ -215,6 +221,7 @@ func (rms *RufsMicroService) OnWsMessageFromClient(connection *websocket.Conn, t
     }
 }
 */
+#[cfg(feature = "tide")]
 impl RufsMicroService<'_> {
     pub async fn connect(&mut self, db_uri: &str) -> Result<(), Error> {
         fn load_file_tables(rms :&mut RufsMicroService) -> Result<(), Error> {
@@ -340,16 +347,17 @@ impl RufsMicroService<'_> {
         };
 
         create_rufs_tables(self, &openapi_rufs).await.unwrap();
+        exec_migrations(self).await?;
+        //rms.db_adapter_file.openapi = Some(&rms.micro_service_server.openapi);
+        let mut options = FillOpenAPIOptions::default();
+        options.request_body_content_type = self.micro_service_server.request_body_content_type.clone();
+        //self.micro_service_server.store_open_api("")?;
+        self.entity_manager.update_open_api(&mut self.micro_service_server.openapi, &mut options).await?;
         let mut options = FillOpenAPIOptions::default();
         options.security = SecurityRequirement::from([("jwt".to_string(), vec![])]);
         options.schemas = openapi_rufs.components.unwrap().schemas.clone();
         options.request_body_content_type = self.micro_service_server.request_body_content_type.clone();
         self.micro_service_server.openapi.fill(&mut options)?;
-        exec_migrations(self).await?;
-        //rms.db_adapter_file.openapi = Some(&rms.micro_service_server.openapi);
-        let mut options = FillOpenAPIOptions::default();
-        options.request_body_content_type = self.micro_service_server.request_body_content_type.clone();
-        self.entity_manager.update_open_api(&mut self.micro_service_server.openapi, &mut options).await?;
         self.micro_service_server.store_open_api("")?;
 
         if self.check_rufs_tables == false {
@@ -360,6 +368,7 @@ impl RufsMicroService<'_> {
     }
 }
 
+#[cfg(feature = "tide")]
 #[tide::utils::async_trait]
 impl IMicroServiceServer for RufsMicroService<'_> {
 
@@ -450,9 +459,9 @@ const RUFS_MICRO_SERVICE_OPENAPI_STR: &str = r##"{
 					"name":           {"type": "string", "maxLength": 32, "nullable": false, "unique": true},
 					"password":       {"type": "string", "nullable": false},
 					"path":           {"type": "string"},
-					"roles":          {"type": "array", "items": {"properties": {"name": {"type": "string"}, "mask": {"type": "integer"}}}},
+					"roles":          {"type": "array", "items": {"properties": {"path": {"type": "string"}, "mask": {"type": "integer", "x-flags": "get,post,put,delete"}}}},
 					"routes":         {"type": "array", "items": {"properties": {"path": {"type": "string"}, "controller": {"type": "string"}, "templateUrl": {"type": "string"}}}},
-					"menu":           {"type": "object", "properties": {"menu": {"type": "string"}, "label": {"type": "string"}, "path": {"type": "string"}}}
+					"menu":           {"type": "array", "items": {"properties": {"group": {"type": "string", "default": "action"}, "label": {"type": "string"}, "path": {"type": "string", "default": "service/action?filter={}&aggregate={}"}}}}
 				},
 				"x-primaryKeys": ["id"],
 				"x-uniqueKeys":  {}
@@ -483,7 +492,7 @@ const DEFAULT_USER_ADMIN_STR: &str = r#"{
 		"rufsGroupOwner": 1,
 		"password": "21232f297a57a5a743894a0e4a801fc3",
 		"path": "rufs_user/search",
-		"menu": {},
+		"menu": [],
 		"roles": [
 			{
 				"mask": 31,

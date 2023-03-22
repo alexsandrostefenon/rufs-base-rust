@@ -371,7 +371,7 @@ impl EntityManager for DbAdapterPostgres<'_> {
 		let table_name = schema_name.to_case(convert_case::Case::Snake);
 		let mut params = vec![];
 		let sql_query = self.build_query(query_params, &mut params, order_by);
-		let properties = openapi.get_properties_from_schema_name(schema_name).unwrap();
+		let properties = openapi.get_properties_from_schema_name(schema_name, &crate::openapi::SchemaPlace::Schemas).unwrap();
 		let mut count = 0;
 		let mut names = vec![];
 
@@ -437,6 +437,8 @@ impl EntityManager for DbAdapterPostgres<'_> {
 		let mut count = 1;
 
 		for (field_name, field) in obj.as_object().unwrap() {
+			let field_name = field_name.to_case(convert_case::Case::Snake);
+
 			match field {
 				Value::Null => str_values.push(format!("{}=NULL", field_name)),
 				Value::Bool(value) => str_values.push(format!("{}={}", field_name, value)),
@@ -468,6 +470,7 @@ impl EntityManager for DbAdapterPostgres<'_> {
 		let sql_query = self.build_query(query_params, &mut params, &vec![]);
 		let sql = format!("UPDATE {} SET {} {} RETURNING *", table_name, str_values.join(","), sql_query);
 		let params = params.as_slice();
+		println!("[DbAdapterPostgres.update()] : {}", sql);
 		let list = self.client.as_ref().unwrap().query(&sql, params).await.unwrap();
 		return Ok(self.get_json_list(&list).get(0).unwrap().clone());
 	}
@@ -868,7 +871,7 @@ impl EntityManager for DbAdapterPostgres<'_> {
 		process_constraints(self, &mut schemas).await?;
 		options.schemas = schemas;
 		//self.openapi = openapi;
-		openapi.fill(options)?;
+		openapi.fill(options).unwrap();
 		Ok(())
 	}
 

@@ -51,7 +51,7 @@ psql rufs_base_development -c "CREATE DATABASE rufs_base";
 Download browser webapp with :
 `
 git clone https://github.com/alexsandrostefenon/rufs-base-es6;
-git clone https://github.com/alexsandrostefenon/rufs-crud-es6;`
+git clone https://github.com/alexsandrostefenon/rufs-crud-rust;`
 `
 
 ## NFE test :

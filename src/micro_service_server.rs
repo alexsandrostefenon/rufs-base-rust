@@ -1,5 +1,6 @@
 use std::fs;
 
+#[cfg(feature = "tide")]
 use tide::Error;
 
 use crate::{rufs_micro_service::LoginResponse, openapi::RufsOpenAPI};
@@ -13,6 +14,7 @@ pub struct LoginRequest {
     pub password: String,
 }
 
+#[cfg(feature = "tide")]
 #[tide::utils::async_trait]
 pub trait IMicroServiceServer {
     async fn authenticate_user(&self, user_name: &str, user_password: &str, remote_addr: &str) -> Result<LoginResponse, Error>;
@@ -45,6 +47,7 @@ impl Default for MicroServiceServer {
     }
 }
 
+#[cfg(feature = "tide")]
 impl MicroServiceServer {
     fn load_open_api(&mut self) -> Result<(), Error> {
         if self.openapi_file_name.is_empty() {
@@ -83,6 +86,7 @@ impl MicroServiceServer {
     }
 }
 
+#[cfg(feature = "tide")]
 #[tide::utils::async_trait]
 impl IMicroServiceServer for MicroServiceServer {
     async fn authenticate_user(&self, user_name: &str, user_password: &str, remote_addr: &str) -> Result<LoginResponse, Error> {
