@@ -55,6 +55,7 @@ pub struct Filter;
 
 impl Filter {
     fn check_match_exact(item: &Value, key: &Value) -> bool {
+        //println!("[Filter.check_match_exact] item : {}, key : {}", item, key);
         let mut _match = true;
 
         for (field_name, expected) in key.as_object().unwrap() {
@@ -80,7 +81,10 @@ impl Filter {
                             value = strings.TrimRight(value.(string), " ")
                         }
             */
-            if item[field_name].to_string() != expected.to_string() {
+            let item_value = item[field_name].to_string();
+            let expected_value = expected.to_string();
+            
+            if item_value != expected_value {
                 _match = false;
                 break;
             }

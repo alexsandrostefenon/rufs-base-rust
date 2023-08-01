@@ -1,8 +1,10 @@
+#[cfg(feature = "tide")]
 use std::fs;
 
 #[cfg(feature = "tide")]
 use tide::Error;
 
+#[cfg(feature = "tide")]
 use crate::{rufs_micro_service::LoginResponse, openapi::RufsOpenAPI};
 
 use openapiv3::OpenAPI;

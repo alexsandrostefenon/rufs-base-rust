@@ -41,8 +41,7 @@ impl<'a> RequestFilter<'a> {
         rf.method = method.to_string();
         rf.obj_in = obj_in;
 
-        if req.url().query().is_some() {
-            let query = req.url().query().unwrap();
+        if let Some(query) = req.url().query() {
             rf.parameters = queryst::parse(query).unwrap();
             println!("[RequestFilter.new()] rf.parameters = {}", rf.parameters.to_string());
         }

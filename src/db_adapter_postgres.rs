@@ -44,7 +44,7 @@ struct DbConfig {
 
 impl Default for DbConfig {
     fn default() -> Self {
-        Self { driver_name: Default::default(), limit_query: 1000, limit_query_exceptions: Default::default() }
+        Self { driver_name: Default::default(), limit_query: 10000, limit_query_exceptions: Default::default() }
     }
 }
 
@@ -240,7 +240,7 @@ impl DbAdapterPostgres<'_> {
     }
 
 	async fn query(&self, sql: &str, params: &[&(dyn ToSql + Sync)]) -> Vec<Value> {
-		println!("[DbAdapterPostgres.query] {}", sql.replace("\n", " "));
+		println!("[DbAdapterPostgres.query] {} - {:?}", sql.replace("\n", " "), params);
 		
 		let list = match self.client.as_ref().unwrap().query(sql, params).await {
 			Ok(list) => list,
@@ -327,7 +327,7 @@ impl EntityManager for DbAdapterPostgres<'_> {
 								match &string_type.format {
 									VariantOrUnknownOrEmpty::Item(string_format) => match string_format {
 										StringFormat::DateTime => {
-											let _t = NaiveDateTime::parse_from_str(value, "%+").unwrap();
+											//let _t = NaiveDateTime::parse_from_str(value, "%+").unwrap();
 											str_values.push(format!("'{}'", value));
 										},
 										_ => todo!(),
@@ -363,7 +363,13 @@ impl EntityManager for DbAdapterPostgres<'_> {
 		let sql = format!("INSERT INTO {} ({}) VALUES ({}) RETURNING *", table_name, str_fields.join(","), str_values.join(","));
 		println!("[DbAdapterPostgres.insert] : {}", sql);
 		let params = params.as_slice();
-		let list = self.client.as_ref().unwrap().query(&sql, params).await.unwrap();
+
+		let list = match self.client.as_ref().unwrap().query(&sql, params).await {
+			Ok(list) => list,
+			Err(err) => return Err(std::io::Error::new(std::io::ErrorKind::Other, err)),
+		};
+
+		println!("[DbAdapterPostgres.insert] : returning* = {:?}", list);
 		return Ok(self.get_json_list(&list).get(0).unwrap().clone());
 	}
 

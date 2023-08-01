@@ -16,7 +16,7 @@ pub struct Error {
 impl Error {
 
     pub fn new(msg: String) -> Self {
-        Error {msg}
+        Self {msg}
     }
 
 }
@@ -31,10 +31,26 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Debug, Clone)]
 pub enum SchemaPlace {Request, Response, Parameter, Schemas}
 
+impl Default for SchemaPlace {
+    fn default() -> Self { SchemaPlace::Schemas }
+}
+
+impl std::fmt::Display for SchemaPlace {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SchemaPlace::Request => write!(f, "{:?}", SchemaPlace::Request),
+            SchemaPlace::Response => write!(f, "{:?}", SchemaPlace::Response),
+            SchemaPlace::Parameter => write!(f, "{:?}", SchemaPlace::Parameter),
+            SchemaPlace::Schemas => write!(f, "{:?}", SchemaPlace::Schemas),
+        }
+    }
+}
+
 impl SchemaPlace {
+
     pub fn from_str(name :&str) -> SchemaPlace {
         match name {
             "request" => SchemaPlace::Request,
@@ -43,6 +59,7 @@ impl SchemaPlace {
             _ => SchemaPlace::Schemas
         }
     }
+
 }
 #[derive(Serialize)]
 pub struct Dependent {
@@ -59,7 +76,7 @@ pub struct ForeignKeyDescription {
 
 #[derive(Serialize,Debug)]
 pub struct PrimaryKeyForeign {
-    schema:       String,
+    pub schema:       String,
     pub primary_key:  Value,
     pub valid:       bool,
     //is_unique_key: bool
@@ -488,8 +505,89 @@ func (self *OpenAPI) convertStandartToRufs() {
         if options.schemas.is_empty() {
             options.schemas = components.schemas.clone();
         } else {
-            for (schema_name, schema) in &options.schemas {
-                components.schemas.insert(schema_name.clone(), schema.clone());
+            let schema_extensions_to_preserve = ["x-title"];
+            let field_extensions_to_preserve = ["x-title"];
+            
+            for (schema_name, schema_new) in &options.schemas {
+                if let Some(schema_old) = components.schemas.insert(schema_name.clone(), schema_new.clone()) {
+                    let schema_new = if let Some(schema_new) = components.schemas.get_mut(schema_name) {
+                        match schema_new {
+                            ReferenceOr::Reference { reference } => todo!(),
+                            ReferenceOr::Item(schema_new) => schema_new,
+                        }
+                    } else {
+                        todo!()
+                    };
+
+                    match &schema_old {
+                        ReferenceOr::Reference { reference } => todo!(),
+                        ReferenceOr::Item(schema_old) => {
+                            for name in schema_extensions_to_preserve {
+                                if let Some(value) = schema_old.schema_data.extensions.get(name) {
+                                    schema_new.schema_data.extensions.insert(name.to_string(), value.clone());
+                                }
+                            }
+
+                            let properties_old = match &schema_old.schema_kind {
+                                SchemaKind::Type(schema_old) => {
+                                    match &schema_old {
+                                        Type::String(_) => todo!(),
+                                        Type::Number(_) => todo!(),
+                                        Type::Integer(_) => todo!(),
+                                        Type::Object(schema_old) => Some(&schema_old.properties),
+                                        Type::Array(_) => todo!(),
+                                        Type::Boolean {  } => todo!(),
+                                    }
+                                },
+                                SchemaKind::OneOf { one_of } => todo!(),
+                                SchemaKind::AllOf { all_of } => todo!(),
+                                SchemaKind::AnyOf { any_of } => todo!(),
+                                SchemaKind::Not { not } => todo!(),
+                                SchemaKind::Any(_) => None,
+                            };
+
+                            if let Some(properties_old) = properties_old {
+                                for (property_name, property_old) in properties_old {
+                                    match property_old {
+                                        ReferenceOr::Reference { reference } => todo!(),
+                                        ReferenceOr::Item(property_old) => {
+                                            for name in field_extensions_to_preserve {
+                                                if let Some(value) = property_old.schema_data.extensions.get(name) {
+                                                    match &mut schema_new.schema_kind {
+                                                        SchemaKind::Type(schema_new) => {
+                                                            match schema_new {
+                                                                Type::String(_) => todo!(),
+                                                                Type::Number(_) => todo!(),
+                                                                Type::Integer(_) => todo!(),
+                                                                Type::Object(schema_new) => {
+                                                                    if let Some(property_new) = schema_new.properties.get_mut(property_name) {
+                                                                        match property_new {
+                                                                            ReferenceOr::Reference { reference } => todo!(),
+                                                                            ReferenceOr::Item(property_new) => {
+                                                                                property_new.schema_data.extensions.insert(name.to_string(), value.clone());
+                                                                            },
+                                                                        }
+                                                                    }
+                                                                },
+                                                                Type::Array(_) => todo!(),
+                                                                Type::Boolean {  } => todo!(),
+                                                            }
+                                                        },
+                                                        SchemaKind::OneOf { one_of } => todo!(),
+                                                        SchemaKind::AllOf { all_of } => todo!(),
+                                                        SchemaKind::AnyOf { any_of } => todo!(),
+                                                        SchemaKind::Not { not } => todo!(),
+                                                        SchemaKind::Any(_) => todo!(),
+                                                    }
+                                                }
+                                            }
+                                        },
+                                    }
+                                }
+                            }
+                        },
+                    }
+                }
             }
         }
         // add components/responses with error schema
@@ -511,16 +609,16 @@ func (self *OpenAPI) convertStandartToRufs() {
             }),
         );
 
-        for (schema_name, schema) in options.schemas.clone() {
-            let parameter_schema = options.parameter_schemas.get(&schema_name);
-            let request_schema = options.request_schemas.get(&schema_name);
+        for (schema_name, schema) in &options.schemas {
+            let parameter_schema = options.parameter_schemas.get(schema_name);
+            let request_schema = options.request_schemas.get(schema_name);
 
             if !options.force_generate_schemas && !force_generate_path && request_schema.is_none() && parameter_schema.is_some() {
                 println!("[RufsOpenAPI.fill({})] 1", schema_name);
                 continue;
             }
 
-            if self.tags.iter().find(|&item| item.name == schema_name).is_none() {
+            if self.tags.iter().find(|&item| &item.name == schema_name).is_none() {
                 self.tags.push(Tag {name: schema_name.clone(), ..Tag::default()});
             }
 
@@ -537,7 +635,7 @@ func (self *OpenAPI) convertStandartToRufs() {
                         MediaType {schema: Some(ReferenceOr::Item(schema)), ..MediaType::default()},
                     );
                     components.request_bodies.insert(schema_name.clone(), ReferenceOr::Item(request_body));
-                } else if components.request_bodies.get(&schema_name).is_none() {
+                } else if components.request_bodies.get(schema_name).is_none() {
                     request_body.content.insert(
                         options.request_body_content_type.clone(),
                         MediaType {schema: Some(reference_to_schema.clone()), ..MediaType::default()},
@@ -546,10 +644,10 @@ func (self *OpenAPI) convertStandartToRufs() {
                 }
             }
             // fill components/responses with schemas
-            let disable_response_list = options.disable_response_list.get(&schema_name).unwrap_or(&false);
+            let disable_response_list = options.disable_response_list.get(schema_name).unwrap_or(&false);
 
             {
-                let value = if options.response_schemas.get(&schema_name).is_none() {
+                let value = if options.response_schemas.get(schema_name).is_none() {
                     MediaType {
                         schema: Some(reference_to_schema.clone()),
                         ..MediaType::default()
@@ -557,7 +655,7 @@ func (self *OpenAPI) convertStandartToRufs() {
                 } else {
                     let response_schema = Schema {
                         schema_data: SchemaData::default(),
-                        schema_kind: SchemaKind::Type(Type::Object(options.response_schemas.get(&schema_name).unwrap().clone())),
+                        schema_kind: SchemaKind::Type(Type::Object(options.response_schemas.get(schema_name).unwrap().clone())),
                     };
                     MediaType {
                         schema: Some(ReferenceOr::Item(response_schema)),
@@ -724,7 +822,7 @@ func (self *OpenAPI) convertStandartToRufs() {
                     operation_object.operation_id = Some(schema_name.clone());
                 }
 
-                if methods_have_parameters[i] && components.parameters.get(&schema_name).is_some() {
+                if methods_have_parameters[i] && components.parameters.get(schema_name).is_some() {
                     operation_object.parameters.push(parameters_ref.clone());
                 }
 
@@ -766,7 +864,7 @@ func (self *OpenAPI) convertStandartToRufs() {
 
     fn get_schema_from_schemas(&self, reference :&str) -> Option<&Schema> {
         let schema_name = OpenAPI::get_schema_name_from_ref(reference);
-        println!("[OpenAPI.get_schema_from_schemas({reference})] : {}", schema_name);
+        //println!("[OpenAPI.get_schema_from_schemas({reference})] : {}", schema_name);
         let schema = self.components.as_ref().unwrap().schemas.get(&schema_name)?;
 
         return match schema {
@@ -800,7 +898,7 @@ func (self *OpenAPI) convertStandartToRufs() {
         let openapi = self;
         let schema_name = &OpenAPI::get_schema_name_from_ref(schema_name);
         let responses = &openapi.components.as_ref().unwrap().responses;
-        println!("[OpenAPI.get_schema_from_responses({}, {})] : {:?}", schema_name, may_be_array, responses);
+        //println!("[OpenAPI.get_schema_from_responses({}, {})] : {:?}", schema_name, may_be_array, responses);
 
         let response_object = match responses.get(schema_name) {
             Some(response_object) => response_object.as_item().unwrap(),
@@ -859,7 +957,7 @@ func (self *OpenAPI) convertStandartToRufs() {
     fn get_schema_from_ref(&self, reference: &str, may_be_array: bool) -> Result<&Schema, Error> {
         let openapi = self;
         let schema_name = OpenAPI::get_schema_name_from_ref(reference);
-        println!("[OpenAPI.get_schema_from_ref({reference})]");
+        //println!("[OpenAPI.get_schema_from_ref({reference})]");
 
         let schema = if reference.starts_with("#/components/parameters/") {
             if let Some(parameter_object) = openapi.components.as_ref().unwrap().parameters.get(&schema_name) {
@@ -1156,6 +1254,19 @@ func (self *OpenAPI) convertStandartToRufs() {
         match &schema.schema_kind {
             SchemaKind::Type(typ) => match typ {
                 Type::Object(object) => Some(&object.properties),
+                Type::Array(array) => {
+                    if let Some(schema) = &array.items {
+                        match schema {
+                            ReferenceOr::Reference { reference } => {
+                                let schema = self.get_schema_from_ref(reference, false).unwrap();
+                                self.get_properties_from_schema(schema)
+                            },
+                            ReferenceOr::Item(schema) => self.get_properties_from_schema(schema),
+                        }
+                    } else {
+                        None
+                    }
+                },
                 _ => None,
             },
             SchemaKind::Any(any) => Some(&any.properties),
@@ -1480,4 +1591,5 @@ func (self *OpenAPI) convertStandartToRufs() {
 
         Err(Error::new(format!("[OpenAPI.get_primary_key_foreign({}, {})] : don't find schema.", schema_name, field_name)))
     }
+
 }

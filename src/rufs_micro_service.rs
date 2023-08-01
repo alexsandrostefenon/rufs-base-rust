@@ -1,11 +1,18 @@
+#[cfg(feature = "http_server")]
 use std::{collections::HashMap, fs, path::Path, sync::{RwLock, Arc}};
 
 #[cfg(feature = "http_server")]
 use async_std::path::PathBuf;
+#[cfg(feature = "http_server")]
 use jsonwebtoken::{encode, EncodingKey, Header};
-use openapiv3::{OpenAPI, SecurityRequirement};
+
+use openapiv3::{OpenAPI};
+//#[cfg(feature = "http_server")]
+use openapiv3::{SecurityRequirement};
+#[cfg(feature = "http_server")]
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "http_server")]
 use serde_json::json;
 
 #[cfg(feature = "tide")]
@@ -14,6 +21,7 @@ use tide::{Error, StatusCode};
 #[cfg(feature = "tide")]
 use tide_websockets::WebSocketConnection;
 
+#[cfg(feature = "http_server")]
 use crate::{
     db_adapter_file::DbAdapterFile,
     db_adapter_postgres::DbAdapterPostgres,
@@ -31,7 +39,7 @@ struct RufsGroupOwner {
 
 #[derive(Deserialize, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
-struct Route {
+pub struct Route {
     path: String,
     controller: String,
     #[serde(default)]
@@ -40,12 +48,13 @@ struct Route {
 
 #[derive(Deserialize, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
-struct MenuItem {
+pub struct MenuItem {
     group: String,
     label: String,
     path: String,
 }
 
+#[derive(Clone)]
 #[derive(Debug, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Role {
@@ -85,19 +94,19 @@ struct RufsUser {
 pub struct LoginResponse<'a> {
     //token_payload : TokenPayload,
     //user_proteced: RufsUserProteced,
-    id: u64,
-    name: String,
-    rufs_group_owner: u64,
-    groups: Box<[u64]>,
-    roles: Box<[Role]>,
-    ip: String,
+    pub id: u64,
+    pub name: String,
+    pub rufs_group_owner: u64,
+    pub groups: Box<[u64]>,
+    pub roles: Box<[Role]>,
+    pub ip: String,
     //user_public: RufsUserPublic,
     routes: Box<[Route]>,
     menu: Box<[MenuItem]>,
-    path: String,
-    jwt_header: String,
-    title: String,
-    openapi: &'a OpenAPI,
+    pub path: String,
+    pub jwt_header: String,
+    pub title: String,
+    pub openapi: &'a OpenAPI,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -253,6 +262,7 @@ impl RufsMicroService<'_> {
 
             for name in ["rufsGroupOwner", "rufsUser", "rufsGroup", "rufsGroupUser"] {
                 if rms.micro_service_server.openapi.components.as_ref().unwrap().schemas.get(name).is_none() {
+                    println!("don't matched schema {}, existents :\n{:?}", name, rms.micro_service_server.openapi.components.as_ref().unwrap().schemas.keys());
                     let schema = openapi_rufs.components.as_ref().unwrap().schemas.get(name).unwrap().as_item().unwrap();
                     rms.entity_manager.create_table(name, schema).await?;
                 }
@@ -261,7 +271,7 @@ impl RufsMicroService<'_> {
             let default_group_owner_admin: serde_json::Value = serde_json::from_str(DEFAULT_GROUP_OWNER_ADMIN_STR).unwrap();
             let default_user_admin: serde_json::Value = serde_json::from_str(DEFAULT_USER_ADMIN_STR).unwrap();
 
-            if rms.entity_manager.find_one(openapi_rufs, "rufsGroupOwner", &json!({"name": "ADMIN"})).await.is_none() {
+            if rms.entity_manager.find_one(openapi_rufs, "rufsGroupOwner", &json!({"name": "admin"})).await.is_none() {
                 rms.entity_manager.insert(openapi_rufs, "rufsGroupOwner", &default_group_owner_admin).await?;
             }
 
@@ -293,6 +303,7 @@ impl RufsMicroService<'_> {
             }
 
             async fn migrate(rms: &mut RufsMicroService<'_>, file_name: &str) -> Result<(), Error> {
+                println!("Migrating to version {}...", file_name);
                 let text = fs::read_to_string(PathBuf::from(rms.migration_path.clone()).join(file_name))?;
 
                 for sql in text.split("--split") {
@@ -303,6 +314,7 @@ impl RufsMicroService<'_> {
 
                 let new_version = get_version(file_name)?;
                 rms.micro_service_server.openapi.info.version = format!("{}.{}.{}", ((new_version / 1000) / 1000) % 1000, (new_version / 1000) % 1000, new_version % 1000);
+                println!("... Migrated version {}", file_name);
                 Ok(())
             }
 

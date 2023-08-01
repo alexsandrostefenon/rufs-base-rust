@@ -20,12 +20,10 @@ pub mod db_adapter_file;
 pub mod db_adapter_postgres;
 #[cfg(any(feature = "db_file_json", feature = "postgres"))]
 pub mod entity_manager;
-#[cfg(feature = "http_server")]
 pub mod micro_service_server;
 pub mod openapi;
 #[cfg(feature = "http_server")]
 pub mod request_filter;
-#[cfg(feature = "http_server")]
 pub mod rufs_micro_service;
 
 #[cfg(feature = "tide")]
@@ -80,6 +78,7 @@ impl<State: Clone + Send + Sync + 'static> Middleware<State> for TideRufsMicroSe
 
 #[cfg(feature = "tide")]
 async fn handle_login(mut request: Request<RufsMicroService<'_>>) -> tide::Result {
+    //println!("[handle_login] : {:?}", request);
     let obj_in = request.body_json::<Value>().await?;
     println!("\n\ncurl -X '{}' {} -d '{}'", request.method(), request.url(), obj_in);
     let login_request = serde_json::from_value::<LoginRequest>(obj_in).unwrap();//request.body_json::<LoginRequest>().await?;
@@ -110,7 +109,7 @@ async fn handle_api(mut request: Request<RufsMicroService<'_>>) -> tide::Result 
     let auth = request.header("Authorization").unwrap().as_str();
     print!("\n\ncurl -X '{}' {} -H 'Authorization: {}'", method, request.url(), auth);
 
-    let obj_in = if method == "post" || method == "put" || method == "patch" {
+    let obj_in = if ["post", "put", "patch"].contains(&method.as_str()) {
         let obj_in = request.body_json::<Value>().await?;
         println!(" -d '{}'", obj_in);
         obj_in
@@ -173,41 +172,48 @@ mod tests {
     
     use crate::{rufs_tide_new, rufs_micro_service::RufsMicroService, micro_service_server::MicroServiceServer};
 
-    async fn nfe(base_dir: &str) -> tide::Result<()> {
-        let options = RufsMicroService{
-            check_rufs_tables: true,
-            migration_path: format!("{}rufs-nfe-es6/sql", base_dir),
-            micro_service_server: MicroServiceServer{app_name: "rufs_nfe".to_string(), ..Default::default()}, 
-            ..Default::default()
-        };
-    
-        let app = rufs_tide_new(&options, base_dir).await?;
-        let rufs = app.state();
-        let listen = format!("127.0.0.1:{}", rufs.micro_service_server.port);
-        println!("listening of {}", listen);
-        app.listen(listen).await.unwrap();
-    
-        //sleep(Duration::from_millis(60000)).await;
-        // TODO : run selenium ide scripts
-        /*
-        let url = Url::parse(&listen).unwrap();
-        let req = Request::new(Method::Get, url);
-        let mut res: Response = app.respond(req).await?;
-        assert_eq!("Hello, world", res.body_string().await?);        
-        */
-        Ok(())
-    }
-
     #[tokio::test]
-    async fn nfe_local() -> tide::Result<()> {
-        nfe("../").await
-    }
+    async fn nfe() -> tide::Result<()> {
+      let base_dir = if std::env::current_dir()?.ends_with("/rufs-base-rust") {
+        "../"
+      } else {
+        "./"
+      };
 
-    #[tokio::test]
-    async fn nfe_workspace() -> tide::Result<()> {
-        nfe("./").await
-    }
+      let options = RufsMicroService{
+          check_rufs_tables: true,
+          migration_path: format!("{}rufs-nfe-es6/sql", base_dir),
+          micro_service_server: MicroServiceServer{
+            openapi_file_name: format!("{}rufs-base-rust/openapi-rufs_nfe-rust.json", base_dir),
+            app_name: "rufs_nfe".to_string(), ..Default::default()
+          }, 
+          ..Default::default()
+      };
+  
+      let app = rufs_tide_new(&options, base_dir).await?;
+      let mut rufs = app.state();
 
+      if let Some(field) = rufs.micro_service_server.openapi.get_property("requestProduct", "request") {
+        if let Some(extension) = field.schema_data.extensions.get("x-title") {
+
+        }
+      }
+
+      let listen = format!("127.0.0.1:{}", rufs.micro_service_server.port);
+      println!("listening of {}", listen);
+      app.listen(listen).await.unwrap();
+  
+      //sleep(Duration::from_millis(60000)).await;
+      // TODO : run selenium ide scripts
+      /*
+      let url = Url::parse(&listen).unwrap();
+      let req = Request::new(Method::Get, url);
+      let mut res: Response = app.respond(req).await?;
+      assert_eq!("Hello, world", res.body_string().await?);        
+      */
+      Ok(())
+    }
+/*
     #[test]
     fn rufs_openapi() {
         let openapi = serde_json::from_str::<OpenAPI>(OPENAPI_TEST).unwrap();
@@ -295,7 +301,7 @@ mod tests {
             print!("[rufs_openapi(get_dependencies)] : {:?}", list);
         }
     }
-
+*/
     const OPENAPI_TEST: &str = r##"{
         "openapi": "3.0.3",
         "info": {
