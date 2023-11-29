@@ -39,7 +39,7 @@ impl DbAdapterFile<'_> {
 
 #[tide::utils::async_trait]
 impl EntityManager for DbAdapterFile<'_> {
-    async fn insert(&self, openapi: &OpenAPI, table_name :&str, obj: &Value) -> Result<Value, Error> {
+    async fn insert(&self, openapi: &OpenAPI, table_name :&str, obj: &Value) -> Result<Value, Box<dyn std::error::Error>> {
         let mut obj = obj.clone();
         let tables: LockResult<RwLockWriteGuard<HashMap<String, Value>>> = self.tables.write();
         let mut tables: RwLockWriteGuard<HashMap<String, Value>> = tables.unwrap();
@@ -72,7 +72,7 @@ impl EntityManager for DbAdapterFile<'_> {
         let tables: LockResult<RwLockReadGuard<HashMap<String, Value>>> = self.tables.read();
         let tables: RwLockReadGuard<HashMap<String, Value>> = tables.unwrap();
         let list = tables.get(table).unwrap().as_array().unwrap();
-        let list = crate::data_store::Filter::find(list, key);
+        let list = crate::data_store::Filter::find(list, key).unwrap();
         let mut list_out = vec![];
 
         for item in list {
@@ -86,16 +86,16 @@ impl EntityManager for DbAdapterFile<'_> {
         let tables: LockResult<RwLockReadGuard<HashMap<String, Value>>> = self.tables.read();
         let tables: RwLockReadGuard<HashMap<String, Value>> = tables.unwrap();
         let list = tables.get(table).unwrap().as_array().unwrap();
-        let obj = crate::data_store::Filter::find_one(list, key)?;
+        let obj = crate::data_store::Filter::find_one(list, key).unwrap().unwrap();
         Some(Box::new(obj.clone()))
     }
 
-    async fn update(&self, _openapi: &OpenAPI, table_name :&str, key :&Value, obj :&Value) -> Result<Value, Error> {
+    async fn update(&self, _openapi: &OpenAPI, table_name :&str, key :&Value, obj :&Value) -> Result<Value, Box<dyn std::error::Error>> {
         let tables: LockResult<RwLockWriteGuard<HashMap<String, Value>>> = self.tables.write();
         let mut tables: RwLockWriteGuard<HashMap<String, Value>> = tables.unwrap();
         let list = tables.get(table_name).unwrap().as_array().unwrap();
 
-        if let Some(pos) = crate::data_store::Filter::find_index(list, key) {
+        if let Some(pos) = crate::data_store::Filter::find_index(list, key).unwrap() {
             let json_array = tables.get_mut(table_name).unwrap();
             let list = json_array.as_array_mut().unwrap();
             list.insert(pos, obj.clone());
@@ -103,7 +103,7 @@ impl EntityManager for DbAdapterFile<'_> {
             return Ok(obj.clone());
         }
 
-        Err(Error::new(std::io::ErrorKind::NotFound, format!("[FileDbAdapter.Update(name = {}, key = {})] : don't find table", table_name, key)))
+        Err(Error::new(std::io::ErrorKind::NotFound, format!("[FileDbAdapter.Update(name = {}, key = {})] : don't find table", table_name, key)))?
     }
 
     async fn delete_one(&self, _openapi: &OpenAPI, table_name: &str, key: &Value) -> Result<(), Error> {
@@ -111,7 +111,7 @@ impl EntityManager for DbAdapterFile<'_> {
         let mut tables: RwLockWriteGuard<HashMap<String, Value>> = tables.unwrap();
         let list = tables.get(table_name).unwrap().as_array().unwrap();
 
-        if let Some(pos) = crate::data_store::Filter::find_index(list, key) {
+        if let Some(pos) = crate::data_store::Filter::find_index(list, key).unwrap() {
             let json_array = tables.get_mut(table_name).unwrap();
             let list = json_array.as_array_mut().unwrap();
             list.remove(pos);

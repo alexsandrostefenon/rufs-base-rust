@@ -1,4 +1,5 @@
 use serde_json::Value;
+use anyhow::{Context};
 
 /*
 struct DataStore  {
@@ -54,11 +55,11 @@ impl DataStoreManager {
 pub struct Filter;
 
 impl Filter {
-    fn check_match_exact(item: &Value, key: &Value) -> bool {
+    fn check_match_exact(item: &Value, key: &Value) -> Result<bool, Box<dyn std::error::Error>> {
         //println!("[Filter.check_match_exact] item : {}, key : {}", item, key);
-        let mut _match = true;
+        let mut _match = Ok(true);
 
-        for (field_name, expected) in key.as_object().unwrap() {
+        for (field_name, expected_value) in key.as_object().unwrap() {
             /*
                         let value = item[fieldName].clone();
 
@@ -81,11 +82,23 @@ impl Filter {
                             value = strings.TrimRight(value.(string), " ")
                         }
             */
-            let item_value = item[field_name].to_string();
-            let expected_value = expected.to_string();
+
+            let item_value = item.get(field_name).context(format!("[check_match_exact] Missing field {} in {}", field_name, item))?;
+
+            let item_value = if let Some(str) = item_value.as_str() {
+                str.to_string()
+            } else {
+                item_value.to_string()
+            };
+
+            let expected_value = if let Some(str) = expected_value.as_str() {
+                str.to_string()
+            } else {
+                expected_value.to_string()
+            };
             
             if item_value != expected_value {
-                _match = false;
+                _match = Ok(false);
                 break;
             }
         }
@@ -93,16 +106,16 @@ impl Filter {
         _match
     }
 
-    pub fn find<'a>(list: &'a Vec<Value>, filter: &'a Value) -> Vec<&'a Value> {
-        let list_out = list.into_iter().filter(|item| Self::check_match_exact(*item, filter)).collect();
-        list_out
+    pub fn find<'a>(list: &'a Vec<Value>, filter: &'a Value) -> Result<Vec<&'a Value>, Box<dyn std::error::Error>> {
+        let list_out = list.into_iter().filter(|item| Self::check_match_exact(*item, filter).unwrap()).collect();
+        Ok(list_out)
     }
 
-    pub fn find_index(list: &Vec<Value>, key: &Value) -> Option<usize> {
-        list.iter().position(|item| Self::check_match_exact(item, key))
+    pub fn find_index(list: &Vec<Value>, key: &Value) -> Result<Option<usize>, Box<dyn std::error::Error>> {
+        Ok(list.iter().position(|item| Self::check_match_exact(item, key).unwrap()))
     }
 
-    pub fn find_one<'a>(list: &'a Vec<Value>, key: &Value) -> Option<&'a Value> {
-        list.iter().find(|item| Self::check_match_exact(*item, key))
+    pub fn find_one<'a>(list: &'a Vec<Value>, key: &Value) -> Result<Option<&'a Value>, Box<dyn std::error::Error>> {
+        Ok(list.iter().find(|item| Self::check_match_exact(*item, key).unwrap()))
     }
 }

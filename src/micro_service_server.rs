@@ -72,9 +72,9 @@ impl MicroServiceServer {
     
     pub fn store_open_api(&self, file_name :&str) -> Result<(), Error> {
         let file_name = if file_name.is_empty() {
-            format!("openapi-{}-rust.json", self.app_name)
+            &self.openapi_file_name
         } else {
-            file_name.to_string()
+            file_name
         };
 
         let contents = serde_json::to_string_pretty(&self.openapi)?;

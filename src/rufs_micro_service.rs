@@ -1,6 +1,7 @@
 #[cfg(feature = "http_server")]
 use std::{collections::HashMap, fs, path::Path, sync::{RwLock, Arc}};
 
+use anyhow::Context;
 #[cfg(feature = "http_server")]
 use async_std::path::PathBuf;
 #[cfg(feature = "http_server")]
@@ -232,7 +233,7 @@ func (rms *RufsMicroService) OnWsMessageFromClient(connection *websocket.Conn, t
 */
 #[cfg(feature = "tide")]
 impl RufsMicroService<'_> {
-    pub async fn connect(&mut self, db_uri: &str) -> Result<(), Error> {
+    pub async fn connect(&mut self, db_uri: &str) -> Result<(), Box<dyn std::error::Error>> {
         fn load_file_tables(rms :&mut RufsMicroService) -> Result<(), Error> {
             fn load_table(rms: &mut RufsMicroService, name: &str, default_rows: &serde_json::Value) -> Result<(), Error> {
                 if rms.db_adapter_file.have_table(&name) {
@@ -255,7 +256,7 @@ impl RufsMicroService<'_> {
             Ok(())
         }
     
-        async fn create_rufs_tables(rms: &RufsMicroService<'_>, openapi_rufs: &OpenAPI) -> Result<(), Error> {
+        async fn create_rufs_tables(rms: &RufsMicroService<'_>, openapi_rufs: &OpenAPI) -> Result<(), Box<dyn std::error::Error>> {
             if !rms.check_rufs_tables {
                 return Ok(());
             }
@@ -350,15 +351,10 @@ impl RufsMicroService<'_> {
         }
 
         self.micro_service_server.connect()?;
-        self.entity_manager.connect(db_uri).await.unwrap();
+        self.entity_manager.connect(db_uri).await?;
         //self.entity_manager.UpdateOpenAPI(self.openapi, FillOpenAPIOptions{requestBodyContentType: self.requestBodyContentType};
-
-        let openapi_rufs = match serde_json::from_str::<OpenAPI>(RUFS_MICRO_SERVICE_OPENAPI_STR) {
-            Ok(openapi) => openapi,
-            Err(err) => return Err(tide::Error::from_str(500, format!("{}", err))),
-        };
-
-        create_rufs_tables(self, &openapi_rufs).await.unwrap();
+        let openapi_rufs = serde_json::from_str::<OpenAPI>(RUFS_MICRO_SERVICE_OPENAPI_STR)?;
+        create_rufs_tables(self, &openapi_rufs).await?;
         exec_migrations(self).await?;
         //rms.db_adapter_file.openapi = Some(&rms.micro_service_server.openapi);
         let mut options = FillOpenAPIOptions::default();
@@ -367,7 +363,7 @@ impl RufsMicroService<'_> {
         self.entity_manager.update_open_api(&mut self.micro_service_server.openapi, &mut options).await?;
         let mut options = FillOpenAPIOptions::default();
         options.security = SecurityRequirement::from([("jwt".to_string(), vec![])]);
-        options.schemas = openapi_rufs.components.unwrap().schemas.clone();
+        options.schemas = openapi_rufs.components.context("missing section components")?.schemas.clone();
         options.request_body_content_type = self.micro_service_server.request_body_content_type.clone();
         self.micro_service_server.openapi.fill(&mut options)?;
         self.micro_service_server.store_open_api("")?;
@@ -471,7 +467,7 @@ const RUFS_MICRO_SERVICE_OPENAPI_STR: &str = r##"{
 					"name":           {"type": "string", "maxLength": 32, "nullable": false, "unique": true},
 					"password":       {"type": "string", "nullable": false},
 					"path":           {"type": "string"},
-					"roles":          {"type": "array", "items": {"properties": {"path": {"type": "string"}, "mask": {"type": "integer", "x-flags": "get,post,put,delete"}}}},
+					"roles":          {"type": "array", "items": {"properties": {"path": {"type": "string"}, "mask": {"type": "integer", "x-flags": ["get","post","put","delete"]}}}},
 					"routes":         {"type": "array", "items": {"properties": {"path": {"type": "string"}, "controller": {"type": "string"}, "templateUrl": {"type": "string"}}}},
 					"menu":           {"type": "array", "items": {"properties": {"group": {"type": "string", "default": "action"}, "label": {"type": "string"}, "path": {"type": "string", "default": "service/action?filter={}&aggregate={}"}}}}
 				},

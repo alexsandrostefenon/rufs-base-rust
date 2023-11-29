@@ -56,6 +56,7 @@ git clone https://github.com/alexsandrostefenon/rufs-crud-rust;`
 
 ## NFE test :
 `
+clear;\
 find ./ | grep -F 'openapi-rufs_nfe-rust.json' | xargs rm ;\
 PGHOST=localhost PGPORT=5432 PGUSER=development PGPASSWORD=123456 psql rufs_nfe_development -c "DROP DATABASE IF EXISTS rufs_nfe" &&
 PGHOST=localhost PGPORT=5432 PGUSER=development PGPASSWORD=123456 psql rufs_nfe_development -c "CREATE DATABASE rufs_nfe" &&

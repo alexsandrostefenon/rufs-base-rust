@@ -61,7 +61,7 @@ impl SchemaPlace {
     }
 
 }
-#[derive(Serialize)]
+#[derive(Serialize,Debug)]
 pub struct Dependent {
     pub schema:       String,
     pub field:       String,
@@ -85,9 +85,12 @@ pub struct PrimaryKeyForeign {
 pub trait RufsOpenAPI {
     fn get_schema_name_from_ref(reference: &str) -> String;
     fn create(&mut self, security: &str);
+    fn copy_value_field(&self, field: &Schema, essential: bool, value :&Value) -> Result<Value, Error>;
     fn copy_value(&self, path :&str, method :&str, schema_place :&SchemaPlace, may_be_array: bool, property_name :&str, value :&Value) -> Result<Value, Error>;
+    fn get_value_from_properties<'a>(&'a self, properties: &IndexMap<String, ReferenceOr<Box<Schema>>>, property_name :&str, obj: &'a Value) -> Option<&'a Value>;    
     fn get_value_from_schema<'a>(&'a self, schema :&Schema, property_name :&str, obj: &'a Value) -> Option<&Value>;
-    fn copy_fields(&self, path :&str, method :&str, schema_place :&SchemaPlace, may_be_array: bool, data_in: &Value, ignorenil: bool, ignore_hiden: bool, only_primary_keys: bool) -> Result<Value, Error>;
+    fn copy_fields_using_properties(&self, properties: &IndexMap<String, ReferenceOr<Box<Schema>>>, extensions: &IndexMap<String, Value>, may_be_array: bool, data_in: &Value, ignore_null: bool, ignore_hidden: bool, only_primary_keys: bool) -> Result<Value, Error>;    
+    fn copy_fields(&self, path :&str, method :&str, schema_place :&SchemaPlace, may_be_array: bool, data_in: &Value, ignorenil: bool, ignore_hidden: bool, only_primary_keys: bool) -> Result<Value, Error>;
     fn fill(&mut self, options: &mut FillOpenAPIOptions) -> Result<(), Error>;
     fn get_schema_from_schemas(&self, reference :&str) -> Option<&Schema>;
     fn get_schema_from_request_bodies(&self, schema_name: &str, may_be_array: bool) -> Option<&Schema>;
@@ -98,12 +101,13 @@ pub trait RufsOpenAPI {
     fn get_schema_from_ref(&self, reference: &str, may_be_array: bool) -> Result<&Schema, Error>;
     fn get_path_params(&self, uri: &str, params: &Value) -> Result<String, Error>;
     fn get_schema_name(&self, path: &str, method: &str, may_be_array: bool) -> Result<String, Error>;
-    fn get_properties_from_schema_name<'a>(&'a self, schema_name :&str, schema_place :&SchemaPlace) -> Option<&'a IndexMap<String, ReferenceOr<Box<Schema>>>>;
+    fn get_properties_from_schema_name<'a>(&'a self, parent_name: &Option<String>, schema_name :&str, schema_place :&SchemaPlace) -> Option<&'a IndexMap<String, ReferenceOr<Box<Schema>>>>;
     fn get_properties_from_schema<'a>(&'a self, schema :&'a Schema) -> Option<&'a IndexMap<String, ReferenceOr<Box<Schema>>>>;
     fn get_property_from_schema<'a>(&'a self, schema :&'a Schema, property_name :&str) -> Option<&'a Schema>;
     fn get_property_from_schemas<'a>(&'a self, schema_name: &str, property_name :&'a str) -> Option<&Schema>;
     fn get_property_from_request_bodies<'a>(&'a self, schema_name :&str, property_name :&'a str) -> Option<&Schema>;
     fn get_property<'a>(&'a self, schema_name :&str, property_name :&'a str) -> Option<&Schema>;
+    fn get_property_mut<'a>(&'a mut self, schema_name: &'a str, field_name: &'a str) -> Option<&'a mut Box<Schema>>;
     fn get_property_from(&self, path :&str, method :&str, schema_place :&SchemaPlace, may_be_array: bool, property_name :&str) -> Option<&Schema>;
     //fn get_properties_with_ref(&self, schema_name :&str, reference :&str) -> Vec<PropertiesWithRef>;
     fn get_dependencies(&self, schema_name: &str, list: &mut Vec<String>);
@@ -321,21 +325,7 @@ func (self *OpenAPI) convertStandartToRufs() {
     }
 }
 */
-
-    fn copy_value(&self, path :&str, method :&str, schema_place :&SchemaPlace, may_be_array: bool, property_name :&str, value :&Value) -> Result<Value, Error> {
-        let schema = self.get_schema(path, method, schema_place, may_be_array).unwrap();
-        let field = self.get_property_from(path, method, schema_place, may_be_array, property_name).unwrap();
-        let property_name = &property_name.to_string();
-
-        let essential = match &schema.schema_kind {
-            SchemaKind::Type(typ) => match typ {
-                Type::Object(object_type) => object_type.required.contains(property_name),
-                _ => todo!(),
-            },
-            SchemaKind::Any(any) => any.required.contains(property_name),
-            _ => todo!(),
-        };
-
+    fn copy_value_field(&self, field: &Schema, essential: bool, value :&Value) -> Result<Value, Error> {
         if value.is_null() && essential && !field.schema_data.nullable {
             match &field.schema_kind {
                 SchemaKind::Type(typ) => {
@@ -385,89 +375,117 @@ func (self *OpenAPI) convertStandartToRufs() {
         }
     }
 
-    fn get_value_from_schema<'a>(&'a self, schema :&Schema, property_name :&str, obj: &'a Value) -> Option<&Value> {
-        fn process<'a>(properties: &IndexMap<String, ReferenceOr<Box<Schema>>>, property_name :&str, obj: &'a Value) -> Option<&'a Value> {
-            if let Some(property) = properties.get(property_name) {
-                if let ReferenceOr::Item(property) = property {
-                    if let Some(value) = obj.get(property_name) {
-                        return Some(value);
-                    }
-                    
-                    if let Some(internal_name) = property.schema_data.extensions.get("x-internalName") {
-                        if let Value::String(internal_name) = internal_name {
-                            if let Some(value) = obj.get(internal_name) {
-                                return Some(value);
-                            }
-                        }
-                    }
-                }
-            }
+    fn copy_value(&self, path :&str, method :&str, schema_place :&SchemaPlace, may_be_array: bool, property_name :&str, value :&Value) -> Result<Value, Error> {
+        let schema = self.get_schema(path, method, schema_place, may_be_array).unwrap();
+        let field = self.get_property_from(path, method, schema_place, may_be_array, property_name).unwrap();
+        let property_name = &property_name.to_string();
 
-            for (field_name, property) in properties {
-                if let ReferenceOr::Item(property) = property {
-                    if let Some(internal_name) = property.schema_data.extensions.get("x-internalName") {
-                        if let Value::String(internal_name) = internal_name {
-                            if internal_name == property_name {
-                                return obj.get(field_name);
-                            }
-                        }
-                    }
-                }
-            }
-
-            None
-        }
-
-        match &schema.schema_kind {
-            SchemaKind::Type(tip) => match tip {
-                Type::Object(object_type) => process(&object_type.properties, property_name, obj),
+        let essential = match &schema.schema_kind {
+            SchemaKind::Type(typ) => match typ {
+                Type::Object(object_type) => object_type.required.contains(property_name),
                 _ => todo!(),
             },
-            SchemaKind::Any(any) => process(&any.properties, property_name, obj),
+            SchemaKind::Any(any) => any.required.contains(property_name),
+            _ => todo!(),
+        };
+
+        self.copy_value_field(field, essential, value)
+    }
+
+    fn get_value_from_properties<'a>(&'a self, properties: &IndexMap<String, ReferenceOr<Box<Schema>>>, property_name :&str, obj: &'a Value) -> Option<&'a Value> {
+        if let Some(property) = properties.get(property_name) {
+            if let ReferenceOr::Item(property) = property {
+                if let Some(value) = obj.get(property_name) {
+                    return Some(value);
+                }
+                
+                if let Some(internal_name) = property.schema_data.extensions.get("x-internalName") {
+                    if let Value::String(internal_name) = internal_name {
+                        if let Some(value) = obj.get(internal_name) {
+                            return Some(value);
+                        }
+                    }
+                }
+            }
+        }
+
+        for (field_name, property) in properties {
+            if let ReferenceOr::Item(property) = property {
+                if let Some(internal_name) = property.schema_data.extensions.get("x-internalName") {
+                    if let Value::String(internal_name) = internal_name {
+                        if internal_name == property_name {
+                            return obj.get(field_name);
+                        }
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    fn get_value_from_schema<'a>(&'a self, schema :&Schema, property_name :&str, obj: &'a Value) -> Option<&Value> {
+        match &schema.schema_kind {
+            SchemaKind::Type(tip) => match tip {
+                Type::Object(object_type) => self.get_value_from_properties(&object_type.properties, property_name, obj),
+                _ => todo!(),
+            },
+            SchemaKind::Any(any) => self.get_value_from_properties(&any.properties, property_name, obj),
             _ => todo!(),
         }
     }
 
-    fn copy_fields(&self, path :&str, method :&str, schema_place :&SchemaPlace, may_be_array: bool, data_in: &Value, ignorenil: bool, ignore_hiden: bool, only_primary_keys: bool) -> Result<Value, Error> {
-        println!("[copy_fields({}, {}, {:?}, {}, {:?}, {}, {}, {})]", path, method, schema_place, may_be_array, data_in, ignorenil, ignore_hiden, only_primary_keys);
-        let schema = self.get_schema(path, method, schema_place, may_be_array).unwrap();
-        let extensions = &schema.schema_data.extensions;
-        let properties = self.get_properties_from_schema(schema).unwrap();
+    fn copy_fields_using_properties(&self, properties: &IndexMap<String, ReferenceOr<Box<Schema>>>, extensions: &IndexMap<String, Value>, _may_be_array: bool, data_in: &Value, ignore_null: bool, ignore_hidden: bool, only_primary_keys: bool) -> Result<Value, Error> {
         let mut data_out = json!({});
 
         for (field_name, field) in properties {
-            if let Some(hiden) = extensions.get("x-hiden") {
-                if ignore_hiden == true && hiden.as_bool().unwrap() == true {
+            if let Some(hidden) = extensions.get("x-hidden") {
+                if ignore_hidden == true && hidden.as_bool().unwrap() == true {
                     continue;
                 }
-            }
-    
-            if data_in.get(field_name).is_none() && ignorenil {
-                continue
             }
     
             if let Some(primary_keys) = extensions.get("x-primaryKeys") {
-                let x = primary_keys.as_array().unwrap();
+                let primary_keys = primary_keys.as_array().unwrap();
 
-                if only_primary_keys == true && x.contains(&Value::String(field_name.to_string())) == false {
+                if only_primary_keys == true && primary_keys.contains(&Value::String(field_name.to_string())) == false {
                     continue;
                 }
             }
     
-            let value = self.get_value_from_schema(schema, field_name, data_in);
-    
-            if value.is_none() {
+            if let Some(value) = self.get_value_from_properties(properties, field_name, data_in) {
+                match field {
+                    ReferenceOr::Reference { reference: _ } => todo!(),
+                    ReferenceOr::Item(field) => data_out[field_name] = self.copy_value_field(field, !ignore_null, value)?,
+                }                
+            } else {
+                if ignore_null {
+                    continue;
+                }
+
                 if let ReferenceOr::Item(schema) = field {
                     if schema.schema_data.nullable {
-                        data_out[field_name] = Value::Null;
+                        continue;
+                    }
+
+                    if schema.schema_data.extensions.contains_key("x-identityGeneration") {
+                        continue;
                     }
                 }
-            } else {
-                data_out[field_name] = self.copy_value(path, method, schema_place, may_be_array, field_name, value.unwrap()).unwrap();
+
+                return Err(Error::new(format!("[RufsOpenAPI.copy_fields] field {} is null", field_name)));
             }
         }
 
         Ok(data_out)
+    }
+
+    fn copy_fields(&self, path :&str, method :&str, schema_place :&SchemaPlace, may_be_array: bool, data_in: &Value, ignore_null: bool, ignore_hidden: bool, only_primary_keys: bool) -> Result<Value, Error> {
+        println!("[copy_fields({}, {}, {:?}, {}, {:?}, {}, {}, {})]", path, method, schema_place, may_be_array, data_in, ignore_null, ignore_hidden, only_primary_keys);
+        let schema = self.get_schema(path, method, schema_place, may_be_array).unwrap();
+        let extensions = &schema.schema_data.extensions;
+        let properties = self.get_properties_from_schema(schema).unwrap();
+        self.copy_fields_using_properties(properties, extensions, may_be_array, data_in, ignore_null, ignore_hidden, only_primary_keys)
     }
 
     fn fill(&mut self, options: &mut FillOpenAPIOptions) -> Result<(), Error> {
@@ -512,7 +530,7 @@ func (self *OpenAPI) convertStandartToRufs() {
                 if let Some(schema_old) = components.schemas.insert(schema_name.clone(), schema_new.clone()) {
                     let schema_new = if let Some(schema_new) = components.schemas.get_mut(schema_name) {
                         match schema_new {
-                            ReferenceOr::Reference { reference } => todo!(),
+                            ReferenceOr::Reference { reference: _ } => todo!(),
                             ReferenceOr::Item(schema_new) => schema_new,
                         }
                     } else {
@@ -520,7 +538,7 @@ func (self *OpenAPI) convertStandartToRufs() {
                     };
 
                     match &schema_old {
-                        ReferenceOr::Reference { reference } => todo!(),
+                        ReferenceOr::Reference { reference: _ } => todo!(),
                         ReferenceOr::Item(schema_old) => {
                             for name in schema_extensions_to_preserve {
                                 if let Some(value) = schema_old.schema_data.extensions.get(name) {
@@ -539,17 +557,17 @@ func (self *OpenAPI) convertStandartToRufs() {
                                         Type::Boolean {  } => todo!(),
                                     }
                                 },
-                                SchemaKind::OneOf { one_of } => todo!(),
-                                SchemaKind::AllOf { all_of } => todo!(),
-                                SchemaKind::AnyOf { any_of } => todo!(),
-                                SchemaKind::Not { not } => todo!(),
+                                SchemaKind::OneOf { one_of: _ } => todo!(),
+                                SchemaKind::AllOf { all_of: _ } => todo!(),
+                                SchemaKind::AnyOf { any_of: _ } => todo!(),
+                                SchemaKind::Not { not: _ } => todo!(),
                                 SchemaKind::Any(_) => None,
                             };
 
                             if let Some(properties_old) = properties_old {
                                 for (property_name, property_old) in properties_old {
                                     match property_old {
-                                        ReferenceOr::Reference { reference } => todo!(),
+                                        ReferenceOr::Reference { reference: _ } => todo!(),
                                         ReferenceOr::Item(property_old) => {
                                             for name in field_extensions_to_preserve {
                                                 if let Some(value) = property_old.schema_data.extensions.get(name) {
@@ -562,7 +580,7 @@ func (self *OpenAPI) convertStandartToRufs() {
                                                                 Type::Object(schema_new) => {
                                                                     if let Some(property_new) = schema_new.properties.get_mut(property_name) {
                                                                         match property_new {
-                                                                            ReferenceOr::Reference { reference } => todo!(),
+                                                                            ReferenceOr::Reference { reference: _ } => todo!(),
                                                                             ReferenceOr::Item(property_new) => {
                                                                                 property_new.schema_data.extensions.insert(name.to_string(), value.clone());
                                                                             },
@@ -573,10 +591,10 @@ func (self *OpenAPI) convertStandartToRufs() {
                                                                 Type::Boolean {  } => todo!(),
                                                             }
                                                         },
-                                                        SchemaKind::OneOf { one_of } => todo!(),
-                                                        SchemaKind::AllOf { all_of } => todo!(),
-                                                        SchemaKind::AnyOf { any_of } => todo!(),
-                                                        SchemaKind::Not { not } => todo!(),
+                                                        SchemaKind::OneOf { one_of: _ } => todo!(),
+                                                        SchemaKind::AllOf { all_of: _ } => todo!(),
+                                                        SchemaKind::AnyOf { any_of: _ } => todo!(),
+                                                        SchemaKind::Not { not: _ } => todo!(),
                                                         SchemaKind::Any(_) => todo!(),
                                                     }
                                                 }
@@ -1274,12 +1292,28 @@ func (self *OpenAPI) convertStandartToRufs() {
         }
     }
 
-    fn get_properties_from_schema_name<'a>(&'a self, schema_name :&str, schema_place :&SchemaPlace) -> Option<&'a IndexMap<String, ReferenceOr<Box<Schema>>>> {
+    fn get_properties_from_schema_name<'a>(&'a self, parent_name: &Option<String>, schema_name :&str, schema_place :&SchemaPlace) -> Option<&'a IndexMap<String, ReferenceOr<Box<Schema>>>> {
+        let main_schema_name = if let Some(parent_name) = parent_name {
+            parent_name
+        } else {
+            schema_name
+        };
+
         let schema = match schema_place {
-            SchemaPlace::Request => self.get_schema_from_request_bodies(schema_name, false)?,
-            SchemaPlace::Response => self.get_schema_from_responses(schema_name, false)?,
-            SchemaPlace::Schemas => self.get_schema_from_schemas(schema_name)?,
+            SchemaPlace::Request => self.get_schema_from_request_bodies(main_schema_name, false)?,
+            SchemaPlace::Response => self.get_schema_from_responses(main_schema_name, false)?,
+            SchemaPlace::Schemas => self.get_schema_from_schemas(main_schema_name)?,
             SchemaPlace::Parameter => todo!(),
+        };
+
+        let schema = if parent_name.is_some() {
+            let Some(schema) = self.get_property_from_schema(schema, schema_name) else {
+                return None;
+            };
+            
+            schema
+        } else {
+            schema
         };
 
         self.get_properties_from_schema(schema)
@@ -1334,6 +1368,48 @@ func (self *OpenAPI) convertStandartToRufs() {
         }
 
         field
+    }
+
+    fn get_property_mut<'a>(&'a mut self, schema_name: &'a str, field_name: &'a str) -> Option<&'a mut Box<Schema>> {
+        if let Some(components) = self.components.as_mut() {
+          if let Some(schema)  = components.schemas.get_mut(schema_name) {
+            match schema {
+              ReferenceOr::Reference { reference: _ } => todo!(),
+              ReferenceOr::Item(schema) => {
+                match &mut schema.schema_kind {
+                  SchemaKind::Type(schema) => {
+                    match schema {
+                        Type::String(_) => todo!(),
+                        Type::Number(_) => todo!(),
+                        Type::Integer(_) => todo!(),
+                        Type::Object(schema) => {
+                          if let Some(field) = schema.properties.get_mut(field_name) {
+                            match field {
+                              ReferenceOr::Reference { reference: _ } => todo!(),
+                              ReferenceOr::Item(field) => Some(field),
+                            }
+                          } else {
+                            None
+                          }
+                        },
+                        Type::Array(_) => todo!(),
+                        Type::Boolean {  } => todo!(),
+                    }
+                  },
+                  SchemaKind::OneOf { one_of: _ } => todo!(),
+                  SchemaKind::AllOf { all_of: _ } => todo!(),
+                  SchemaKind::AnyOf { any_of: _ } => todo!(),
+                  SchemaKind::Not { not: _ } => todo!(),
+                  SchemaKind::Any(_) => todo!(),
+                }
+              },
+            }
+          } else {
+            None
+          }
+        } else {
+          None
+        }
     }
 
     fn get_property_from(&self, path :&str, method :&str, schema_place :&SchemaPlace, may_be_array: bool, property_name :&str) -> Option<&Schema> {
@@ -1425,11 +1501,11 @@ func (self *OpenAPI) convertStandartToRufs() {
             }
         }
 
-        if let Some(properties) = self.get_properties_from_schema_name(schema_name_or_ref, &SchemaPlace::Request) {
+        if let Some(properties) = self.get_properties_from_schema_name(&None, schema_name_or_ref, &SchemaPlace::Request) {
             process_dependencies(self, properties, list);
         }
 
-        if let Some(properties) = self.get_properties_from_schema_name(schema_name_or_ref, &SchemaPlace::Response) {
+        if let Some(properties) = self.get_properties_from_schema_name(&None, schema_name_or_ref, &SchemaPlace::Response) {
             process_dependencies(self, properties, list);
         }
     }
@@ -1463,8 +1539,10 @@ func (self *OpenAPI) convertStandartToRufs() {
         let components = &self.components.as_ref().unwrap();
 
 		for (schema_name, _) in &components.request_bodies {
-            if let Some(properties) = self.get_properties_from_schema_name(schema_name, &SchemaPlace::Request) {
-				process_properties(self, properties, schema_name, schema_name_target, only_in_document, &mut list);
+            //let schema_name = schema_name.to_case(Case::Snake);
+
+            if let Some(properties) = self.get_properties_from_schema_name(&None, &schema_name, &SchemaPlace::Request) {
+				process_properties(self, properties, &schema_name, schema_name_target, only_in_document, &mut list);
             }
 		}
 
@@ -1574,7 +1652,7 @@ func (self *OpenAPI) convertStandartToRufs() {
                         ret.valid = false
                     }
                 }
-    }
+            }
 
             Ok(Some(ret))
         }

@@ -1,3 +1,4 @@
+use anyhow::Context;
 use indexmap::IndexMap;
 use jsonwebtoken::{decode, DecodingKey, Validation};
 use openapiv3::{ReferenceOr, Schema};
@@ -27,8 +28,8 @@ pub struct RequestFilter<'a> {
     entity_manager: Option<Box<&'a (dyn EntityManager + Send + Sync)>>,
     token_payload: Option<Claims>,
     path: String,
-    method: String,
-    schema_name: String,
+    pub method: String,
+    pub schema_name: String,
     parameters: Value,
     obj_in: Value,
     may_be_array: bool
@@ -139,9 +140,11 @@ impl<'a> RequestFilter<'a> {
     }
 
     async fn get_object(&self, use_document :bool) -> Result<Box<Value>, Error> {
-        let key = self.parse_query_parameters()?;
+        let key = self.parse_query_parameters(false)?;
         println!("[RequestFilter.get_object({})] : {}", self.schema_name, key);
-        let obj = self.entity_manager.as_ref().unwrap().find_one(&self.micro_service.micro_service_server.openapi, &self.schema_name, &key).await.unwrap();
+        let entity_manager = self.entity_manager.as_ref().unwrap();
+        let openapi = &self.micro_service.micro_service_server.openapi;
+        let obj = entity_manager.find_one(openapi, &self.schema_name, &key).await.context(format!("Missing data in {} for key {}", self.schema_name, key))?;
 
         if use_document != true {
             return Ok(obj);
@@ -168,7 +171,7 @@ impl<'a> RequestFilter<'a> {
             return tide::Response::builder(error.status()).body(error.to_string()).build();
         }
 
-        let primary_key = &self.parse_query_parameters().unwrap();
+        let primary_key = &self.parse_query_parameters(false).unwrap();
         println!("[RequestFilter.process_update({})] : {}", self.schema_name, primary_key);
         let entity_manager = self.entity_manager.as_ref().unwrap();
         let new_obj = entity_manager.update(&self.micro_service.micro_service_server.openapi, &self.schema_name, primary_key, &self.obj_in).await;
@@ -188,7 +191,7 @@ impl<'a> RequestFilter<'a> {
             Err(error) => return tide::Response::builder(error.status()).body(error.to_string()).build(),
         };
 
-        let primary_key = &self.parse_query_parameters().unwrap();
+        let primary_key = &self.parse_query_parameters(false).unwrap();
         let entity_manager = self.entity_manager.as_ref().unwrap();
         let res = entity_manager.delete_one(&self.micro_service.micro_service_server.openapi, &self.schema_name, primary_key).await;
 
@@ -204,8 +207,8 @@ impl<'a> RequestFilter<'a> {
         return ResponseInternalServerError("TODO")
     }
 */
-    fn parse_query_parameters(&self) -> Result<Value, Error> {
-        let obj = self.micro_service.micro_service_server.openapi.copy_fields(&self.path, &self.method, &SchemaPlace::Parameter, true, &self.parameters, false, false, false).unwrap();
+    fn parse_query_parameters(&self, ignore_null: bool) -> Result<Value, Error> {
+        let obj = self.micro_service.micro_service_server.openapi.copy_fields(&self.path, &self.method, &SchemaPlace::Parameter, true, &self.parameters, ignore_null, false, false).unwrap();
         println!("[openapi.parse_query_parameters({})] : {}", self.parameters, obj.to_string());
         Ok(obj)
     }
@@ -241,7 +244,7 @@ impl<'a> RequestFilter<'a> {
         }
 
         let schema = self.micro_service.micro_service_server.openapi.get_schema_from_parameters(&self.path, &self.method, true).unwrap();
-        let fields = self.parse_query_parameters().unwrap();
+        let fields = self.parse_query_parameters(true).unwrap();
 
         let order_by = match &schema.schema_kind {
             openapiv3::SchemaKind::Type(typ) => match typ {
@@ -259,7 +262,7 @@ impl<'a> RequestFilter<'a> {
 
     pub async fn check_authorization<State>(&mut self, req: &Request<State>) -> Result<bool, Error> {
         fn check_mask(mask: u64, method: &str) -> bool {
-            let list = vec!["get", "post", "patch", "put", "delete", "query"];
+            let list = vec!["get", "post", "put", "patch", "delete", "query"];
 
             if let Some(idx) = list.iter().position(|&x| x == method) {
                 (mask & (1 << idx)) != 0
