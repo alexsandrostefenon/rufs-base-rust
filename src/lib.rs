@@ -1,25 +1,38 @@
+#[cfg(feature = "http_server")]
 use jsonwebtoken::{decode, DecodingKey, Validation};
+#[cfg(feature = "http_server")]
 use micro_service_server::{LoginRequest};
+#[cfg(feature = "http_server")]
 use request_filter::RequestFilter;
+#[cfg(feature = "http_server")]
 use serde_json::Value;
+
+#[cfg(feature = "tide")]
 use tide::{Request, Response, Next, StatusCode, Body, Middleware, Error, Server, http::{mime}};
 
+#[cfg(feature = "http_server")]
 use crate::{micro_service_server::IMicroServiceServer, rufs_micro_service::{RufsMicroService, Claims}};
 
 pub mod data_store;
+#[cfg(feature = "db_file_json")]
 pub mod db_adapter_file;
+#[cfg(feature = "postgres")]
 pub mod db_adapter_postgres;
+#[cfg(any(feature = "db_file_json", feature = "postgres"))]
 pub mod entity_manager;
 pub mod micro_service_server;
 pub mod openapi;
+#[cfg(feature = "http_server")]
 pub mod request_filter;
 pub mod rufs_micro_service;
 
+#[cfg(feature = "tide")]
 #[derive(Default)]
 struct TideRufsMicroService {
     serve_static_paths: Vec<std::path::PathBuf>
 }
 
+#[cfg(feature = "tide")]
 #[tide::utils::async_trait]
 impl<State: Clone + Send + Sync + 'static> Middleware<State> for TideRufsMicroService {
 
@@ -63,7 +76,9 @@ impl<State: Clone + Send + Sync + 'static> Middleware<State> for TideRufsMicroSe
 
 }
 
+#[cfg(feature = "tide")]
 async fn handle_login(mut request: Request<RufsMicroService<'_>>) -> tide::Result {
+    //println!("[handle_login] : {:?}", request);
     let obj_in = request.body_json::<Value>().await?;
     println!("\n\ncurl -X '{}' {} -d '{}'", request.method(), request.url(), obj_in);
     let login_request = serde_json::from_value::<LoginRequest>(obj_in).unwrap();//request.body_json::<LoginRequest>().await?;
@@ -88,12 +103,13 @@ async fn handle_login(mut request: Request<RufsMicroService<'_>>) -> tide::Resul
     Ok(Response::builder(StatusCode::Ok).body(Body::from_json(&login_response)?).build())
 }
 
+#[cfg(feature = "tide")]
 async fn handle_api(mut request: Request<RufsMicroService<'_>>) -> tide::Result {
     let method = request.method().to_string().to_lowercase();
     let auth = request.header("Authorization").unwrap().as_str();
     print!("\n\ncurl -X '{}' {} -H 'Authorization: {}'", method, request.url(), auth);
 
-    let obj_in = if method == "post" || method == "put" || method == "patch" {
+    let obj_in = if ["post", "put", "patch"].contains(&method.as_str()) {
         let obj_in = request.body_json::<Value>().await?;
         println!(" -d '{}'", obj_in);
         obj_in
@@ -104,6 +120,10 @@ async fn handle_api(mut request: Request<RufsMicroService<'_>>) -> tide::Result 
 
     let rufs = request.state();
     let mut rf = RequestFilter::new(&request, rufs, &method, obj_in).unwrap();
+
+    if rf.schema_name == "request" && rf.method == "put" {
+      println!("handle_api = {}", rf.schema_name);
+    }
 
     let response = match rf.check_authorization(&request).await {
         Ok(true) => rf.process_request().await,
@@ -116,9 +136,8 @@ async fn handle_api(mut request: Request<RufsMicroService<'_>>) -> tide::Result 
     Ok(response)
 }
 
-pub async fn rufs_tide_new(options: &RufsMicroService<'static>, base_dir: &str) -> Result<Box<Server<RufsMicroService<'static>>>, Error> {
-    let mut rufs = RufsMicroService{..options.clone()};
-    rufs.connect(&format!("postgres://development:123456@localhost:5432/{}", rufs.micro_service_server.app_name)).await?;
+#[cfg(feature = "tide")]
+pub async fn rufs_tide_new(rufs: RufsMicroService<'static>, base_dir: &str) -> Result<Box<Server<RufsMicroService<'static>>>, Error> {
     let api_path = rufs.micro_service_server.api_path.clone();
     let mut app = Box::new(tide::with_state(rufs));
 
@@ -138,51 +157,73 @@ pub async fn rufs_tide_new(options: &RufsMicroService<'static>, base_dir: &str) 
     app.at(&format!("/{}/login", &api_path)).post(handle_login);
     app.at(&format!("/{}/*", &api_path)).all(handle_api);
     let serve_static_paths = vec![
-        std::path::Path::new(base_dir).join("rufs-nfe-es6/webapp").to_path_buf(),
-        std::path::Path::new(base_dir).join("rufs-crud-es6/webapp").to_path_buf(),
-        std::path::Path::new(base_dir).join("rufs-base-es6/webapp").to_path_buf(),
+        //std::path::Path::new(base_dir).join("rufs-nfe-es6/webapp").to_path_buf(),
+        std::path::Path::new(base_dir).join("rufs-crud-rust/pkg").to_path_buf(),
+        std::path::Path::new(base_dir).join("rufs-crud-rust/webapp").to_path_buf(),
     ];
     app.with(TideRufsMicroService{serve_static_paths});
     Ok(app)
 }
 
+#[cfg(feature = "tide")]
 #[cfg(test)]
 mod tests {
+    use serde_json::Value;
+    use crate::openapi::*;
+    
     use crate::{rufs_tide_new, rufs_micro_service::RufsMicroService, micro_service_server::MicroServiceServer};
 
-    async fn nfe(base_dir: &str) -> tide::Result<()> {
-        let options = RufsMicroService{
-            check_rufs_tables: true,
-            migration_path: format!("{}rufs-nfe-es6/sql", base_dir),
-            micro_service_server: MicroServiceServer{app_name: "rufs_nfe".to_string(), ..Default::default()}, 
-            ..Default::default()
-        };
-    
-        let app = rufs_tide_new(&options, base_dir).await?;
-        let rufs = app.state();
-        let listen = format!("127.0.0.1:{}", rufs.micro_service_server.port);
-        println!("listening of {}", listen);
-        app.listen(listen).await.unwrap();
-    
-        //sleep(Duration::from_millis(60000)).await;
-        // TODO : run selenium ide scripts
-        /*
-        let url = Url::parse(&listen).unwrap();
-        let req = Request::new(Method::Get, url);
-        let mut res: Response = app.respond(req).await?;
-        assert_eq!("Hello, world", res.body_string().await?);        
-        */
-        Ok(())
-    }
-
     #[tokio::test]
-    async fn nfe_local() -> tide::Result<()> {
-        nfe("../").await
-    }
+    async fn nfe() -> Result<(),Box<dyn std::error::Error>> {
+      let base_dir = if std::env::current_dir()?.to_string_lossy().ends_with("/rufs-base-rust") {
+        "../"
+      } else {
+        "./"
+      };
 
-    #[tokio::test]
-    async fn nfe_workspace() -> tide::Result<()> {
-        nfe("./").await
+      let mut rufs = RufsMicroService{
+        check_rufs_tables: true,
+        migration_path: format!("{}rufs-nfe-es6/sql", base_dir),
+        micro_service_server: MicroServiceServer{
+          //openapi_file_name: format!("{}rufs-base-rust/openapi-rufs_nfe-rust.json", base_dir),
+          app_name: "rufs_nfe".to_string(), ..Default::default()
+        }, 
+        ..Default::default()
+      };
+
+      rufs.connect(&format!("postgres://development:123456@localhost:5432/{}", rufs.micro_service_server.app_name)).await?;
+
+      if let Some(field) = rufs.micro_service_server.openapi.get_property_mut("requestProduct", "request") {
+        field.schema_data.extensions.insert("x-title".to_string(), Value::String("Lista de produtos/componentes".to_string()));
+      }
+
+      if let Some(field) = rufs.micro_service_server.openapi.get_property_mut("requestPayment", "request") {
+        field.schema_data.extensions.insert("x-title".to_string(), Value::String("Lista de pagamentos".to_string()));
+      }
+
+      if let Some(field) = rufs.micro_service_server.openapi.get_property_mut("person", "cnpjCpf") {
+        field.schema_data.extensions.insert("x-shortDescription".to_string(), Value::Bool(true));
+      }
+
+      if let Some(field) = rufs.micro_service_server.openapi.get_property_mut("person", "name") {
+        field.schema_data.extensions.insert("x-shortDescription".to_string(), Value::Bool(true));
+      }
+
+      if let Some(field) = rufs.micro_service_server.openapi.get_property_mut("account", "person") {
+        field.schema_data.extensions.insert("x-shortDescription".to_string(), Value::Bool(true));
+      }
+
+      if let Some(field) = rufs.micro_service_server.openapi.get_property_mut("account", "description") {
+        field.schema_data.extensions.insert("x-shortDescription".to_string(), Value::Bool(true));
+      }
+
+      rufs.micro_service_server.store_open_api("")?;
+      let app = rufs_tide_new(rufs, base_dir).await?;
+      let rufs = app.state();
+      let listen = format!("127.0.0.1:{}", rufs.micro_service_server.port);
+      println!("listening of {}", listen);
+      app.listen(listen).await.unwrap();
+      Ok(())
     }
 
 }

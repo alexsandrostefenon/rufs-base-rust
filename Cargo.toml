@@ -1,26 +1,51 @@
 [package]
 name = "rufs-base-rust"
-version = "1.0.2"
+version = "1.0.3"
 authors = ["Alexsandro Stefenon <alexsandrostefenon@gmail.com>"]
-edition = "2018"
+edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[patch.crates-io]
+# js-sys = { git = "https://github.com/71/wasm-bindgen", package = "js-sys" }
+# wasm-bindgen = { git = "https://github.com/71/wasm-bindgen" }
+
 [dependencies]
-tokio = { version = "1.24", features = ["full"] }
-tokio-postgres = {version = "0.7.7", features=[ "with-serde_json-1", "with-chrono-0_4" ]}
-chrono = { version="0.4.23" }
-rust_decimal = { version = "1.23.1", features = [ "db-tokio-postgres" ] }
+anyhow = "1.0.69"
+tokio = { version = "1.24", features = ["full"], optional = true }
+tokio-postgres = {version = "0.7.7", features=[ "with-serde_json-1", "with-chrono-0_4" ], optional = true}
+chrono = { version="0.4.26", features = [ "alloc" ], optional = true }
+rust_decimal = { version = "1.23.1", features = [ "db-tokio-postgres" ], optional = true }
 serde = { version = "1.0.147", features = ["derive"] }
 serde_json = "1.0.87"
 serde_yaml = "0.8.26"
-async-std = { version = "1.12.0", features = ["attributes"] }
+wasm-bindgen = { version = "0.2", optional = true }
+web-sys = { version = "0.3", optional = true, features = ["console"] }
+wasm-bindgen-test = "0.3"
+async-std = { version = "1.12.0", features = ["attributes"], optional = true }
 base64 = "0.13.0"
 jsonwebtoken = "8.2.0"
 regex = "1.7.0"
 indexmap = "1.9.2"
 openapiv3 = "1.0"
-tide = "0.16"
-tide-websockets = "0.4"
+tide = { version = "0.16", optional = true }
+tide-websockets = { version = "0.4", optional = true }
 convert_case = "0.6"
 queryst = "2.1"
+
+[features]
+default = ["tide", "http_server", "postgres", "db_file_json"]
+http_server = ["dep:tokio", "dep:async-std"]
+tide = ["dep:tide", "dep:tide-websockets"]
+postgres = ["dep:tokio-postgres", "dep:chrono", "dep:rust_decimal"]
+db_file_json = []
+openapi = []
+wasm = ["dep:wasm-bindgen", "dep:web-sys"]
+
+[package.metadata.wasm-pack.profile.dev]
+# wasm-opt = false
+
+[package.metadata.wasm-pack.profile.dev.wasm-bindgen]
+# debug-js-glue = true
+# demangle-name-section = true
+dwarf-debug-info = true
