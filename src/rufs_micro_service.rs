@@ -1,27 +1,34 @@
+#[cfg(not(target_arch = "wasm32"))]
 #[cfg(feature = "http_server")]
 use std::{collections::HashMap, fs, path::Path, sync::{RwLock, Arc}};
 
+#[cfg(not(target_arch = "wasm32"))]
 use anyhow::Context;
+#[cfg(not(target_arch = "wasm32"))]
 #[cfg(feature = "http_server")]
 use async_std::path::PathBuf;
+#[cfg(not(target_arch = "wasm32"))]
 #[cfg(feature = "http_server")]
 use jsonwebtoken::{encode, EncodingKey, Header};
 
 use openapiv3::{OpenAPI};
-//#[cfg(feature = "http_server")]
+#[cfg(not(target_arch = "wasm32"))]
 use openapiv3::{SecurityRequirement};
-#[cfg(feature = "http_server")]
+#[cfg(not(target_arch = "wasm32"))]
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "http_server")]
+#[cfg(not(target_arch = "wasm32"))]
 use serde_json::json;
 
+#[cfg(not(target_arch = "wasm32"))]
 #[cfg(feature = "tide")]
 use tide::{Error, StatusCode};
 
+#[cfg(not(target_arch = "wasm32"))]
 #[cfg(feature = "tide")]
 use tide_websockets::WebSocketConnection;
 
+#[cfg(not(target_arch = "wasm32"))]
 #[cfg(feature = "http_server")]
 use crate::{
     db_adapter_file::DbAdapterFile,
@@ -129,6 +136,7 @@ type IRufsMicroService interface {
     LoadFileTables() error
 }
 */
+#[cfg(not(target_arch = "wasm32"))]
 #[cfg(feature = "tide")]
 #[derive(Default, Clone)]
 pub struct RufsMicroService<'a> {
@@ -231,6 +239,7 @@ func (rms *RufsMicroService) OnWsMessageFromClient(connection *websocket.Conn, t
     }
 }
 */
+#[cfg(not(target_arch = "wasm32"))]
 #[cfg(feature = "tide")]
 impl RufsMicroService<'_> {
     pub async fn connect(&mut self, db_uri: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -376,6 +385,7 @@ impl RufsMicroService<'_> {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[cfg(feature = "tide")]
 #[tide::utils::async_trait]
 impl IMicroServiceServer for RufsMicroService<'_> {
@@ -444,6 +454,7 @@ impl IMicroServiceServer for RufsMicroService<'_> {
 
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 const RUFS_MICRO_SERVICE_OPENAPI_STR: &str = r##"{
     "openapi": "3.0.3",
 	"info": {
@@ -493,40 +504,42 @@ const RUFS_MICRO_SERVICE_OPENAPI_STR: &str = r##"{
 	}
 }"##;
 
+#[cfg(not(target_arch = "wasm32"))]
 const DEFAULT_GROUP_OWNER_ADMIN_STR: &str = r#"{"name": "admin"}"#;
 
+#[cfg(not(target_arch = "wasm32"))]
 const DEFAULT_USER_ADMIN_STR: &str = r#"{
-		"name": "admin",
-		"rufsGroupOwner": 1,
-		"password": "21232f297a57a5a743894a0e4a801fc3",
-		"path": "rufs_user/search",
-		"menu": [],
-		"roles": [
-			{
-				"mask": 31,
-				"path": "/rufs_group_owner"
-			},
-			{
-				"mask": 31,
-				"path": "/rufs_user"
-			},
-			{
-				"mask": 31,
-				"path": "/rufs_group"
-			},
-			{
-				"mask": 31,
-				"path": "/rufs_group_user"
-			}
-		],
-		"routes": [
-			{
-				"controller": "OpenApiOperationObjectController",
-				"path": "/app/rufs_service/:action"
-			},
-			{
-				"controller": "UserController",
-				"path": "/app/rufs_user/:action"
-			}
-		]
-	}"#;
+    "name": "admin",
+    "rufsGroupOwner": 1,
+    "password": "21232f297a57a5a743894a0e4a801fc3",
+    "path": "rufs_user/search",
+    "menu": [],
+    "roles": [
+        {
+            "mask": 31,
+            "path": "/rufs_group_owner"
+        },
+        {
+            "mask": 31,
+            "path": "/rufs_user"
+        },
+        {
+            "mask": 31,
+            "path": "/rufs_group"
+        },
+        {
+            "mask": 31,
+            "path": "/rufs_group_user"
+        }
+    ],
+    "routes": [
+        {
+            "controller": "OpenApiOperationObjectController",
+            "path": "/app/rufs_service/:action"
+        },
+        {
+            "controller": "UserController",
+            "path": "/app/rufs_user/:action"
+        }
+    ]
+}"#;

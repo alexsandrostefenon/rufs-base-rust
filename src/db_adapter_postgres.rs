@@ -6,11 +6,16 @@ use indexmap::IndexMap;
 use openapiv3::{OpenAPI, Schema, ReferenceOr, ObjectType, SchemaData, SchemaKind, VariantOrUnknownOrEmpty, StringFormat};
 use serde::Deserialize;
 use serde_json::{Value, Number, json};
-use tokio_postgres::{NoTls, Client, Row, types::{ToSql}};
+#[cfg(not(target_arch = "wasm32"))]
 use rust_decimal::{Decimal, prelude::ToPrimitive};
 use anyhow::Context;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::{entity_manager::EntityManager};
 
-use crate::{entity_manager::EntityManager, openapi::{RufsOpenAPI, FillOpenAPIOptions, ForeignKey}};
+#[cfg(not(target_arch = "wasm32"))]
+use tokio_postgres::{Client, Row, types::{ToSql}};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::openapi::{RufsOpenAPI, FillOpenAPIOptions, ForeignKey};
 
 /*
 type DbConfig struct {
@@ -36,6 +41,7 @@ type DbClientSql struct {
 */
 
 
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone)]
 struct DbConfig {
 	driver_name: String,
@@ -43,12 +49,14 @@ struct DbConfig {
 	limit_query_exceptions: Vec<String>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Default for DbConfig {
     fn default() -> Self {
         Self { driver_name: Default::default(), limit_query: 10000, limit_query_exceptions: Default::default() }
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone,Default)]
 pub struct DbAdapterPostgres<'a> {
     pub openapi    : Option<&'a OpenAPI>,
@@ -61,6 +69,7 @@ pub struct DbAdapterPostgres<'a> {
     //client: Option<Arc<RwLock<Client>>>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl DbAdapterPostgres<'_> {
     fn get_json(&self, row: &Row, _debug: bool) -> Value {
         let mut obj = json!({});
@@ -165,7 +174,7 @@ impl DbAdapterPostgres<'_> {
 
     pub async fn connect(&mut self, uri :&str) -> Result<(), Box<dyn std::error::Error>> {
         println!("[DbAdapterPostgres] connect({})", uri);
-        let (client, connection) = tokio_postgres::connect(uri, NoTls).await?;
+        let (client, connection) = tokio_postgres::connect(uri, tokio_postgres::NoTls).await?;
 
         tokio::spawn(async move {
             if let Err(e) = connection.await {
@@ -274,6 +283,7 @@ impl DbAdapterPostgres<'_> {
 
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[tide::utils::async_trait]
 impl EntityManager for DbAdapterPostgres<'_> {
 	async fn exec(&self, sql: &str) -> Result<(), Error> {

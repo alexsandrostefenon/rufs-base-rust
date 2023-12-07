@@ -4,13 +4,14 @@ use jsonwebtoken::{decode, DecodingKey, Validation};
 use openapiv3::{ReferenceOr, Schema};
 use serde::{Serialize, Deserialize};
 use serde_json::{json, Value, Number};
-
+use crate::openapi::{RufsOpenAPI, SchemaPlace};
+#[cfg(not(target_arch = "wasm32"))]
 #[cfg(feature = "tide")]
 use tide::{Request, Error, StatusCode};
 
+#[cfg(not(target_arch = "wasm32"))]
 use crate::{
     entity_manager::{EntityManager},
-    openapi::{RufsOpenAPI, SchemaPlace},
     rufs_micro_service::{Claims, RufsMicroService},
 };
 
@@ -22,6 +23,7 @@ struct NotifyMessage {
     primary_key :Value
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[cfg(feature = "tide")]
 pub struct RequestFilter<'a> {
     micro_service: &'a RufsMicroService<'a>,
@@ -35,6 +37,7 @@ pub struct RequestFilter<'a> {
     may_be_array: bool
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[cfg(feature = "tide")]
 impl<'a> RequestFilter<'a> {
     pub fn new<'b,  State>(req: &'b Request<State>, rms: &'b RufsMicroService<'b>, method: &'b str, obj_in: Value) -> Result<RequestFilter<'a>, tide::Error> where 'b: 'a {

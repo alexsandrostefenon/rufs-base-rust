@@ -1,9 +1,12 @@
+#[cfg(not(target_arch = "wasm32"))]
 #[cfg(feature = "tide")]
 use std::fs;
 
+#[cfg(not(target_arch = "wasm32"))]
 #[cfg(feature = "tide")]
 use tide::Error;
 
+#[cfg(not(target_arch = "wasm32"))]
 #[cfg(feature = "tide")]
 use crate::{rufs_micro_service::LoginResponse, openapi::RufsOpenAPI};
 
@@ -16,6 +19,7 @@ pub struct LoginRequest {
     pub password: String,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[cfg(feature = "tide")]
 #[tide::utils::async_trait]
 pub trait IMicroServiceServer {
@@ -49,6 +53,7 @@ impl Default for MicroServiceServer {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[cfg(feature = "tide")]
 impl MicroServiceServer {
     fn load_open_api(&mut self) -> Result<(), Error> {
@@ -88,6 +93,7 @@ impl MicroServiceServer {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[cfg(feature = "tide")]
 #[tide::utils::async_trait]
 impl IMicroServiceServer for MicroServiceServer {

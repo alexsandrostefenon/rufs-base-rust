@@ -13,7 +13,8 @@ type EntityManager interface {
 
  */
 
-#[tide::utils::async_trait]
+ #[cfg(not(target_arch = "wasm32"))]
+ #[tide::utils::async_trait]
 pub trait EntityManager {
     async fn insert(&self, openapi: &OpenAPI, schema_name :&str, obj: &Value) -> Result<Value, Box<dyn std::error::Error>>;
     async fn find(&self, openapi: &OpenAPI, schema_name: &str, key: &Value, order_by: &Vec<String>) -> Vec<Value>;

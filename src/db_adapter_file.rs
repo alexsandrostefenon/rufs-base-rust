@@ -1,8 +1,10 @@
 use openapiv3::{OpenAPI, Schema};
 use std::{collections::HashMap, fs, io::Error, sync::{RwLock, LockResult, RwLockReadGuard, RwLockWriteGuard, Arc}};
 use serde_json::{Value, Number};
-use crate::{entity_manager::EntityManager, openapi::FillOpenAPIOptions};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::{entity_manager::EntityManager};
 use crate::openapi::RufsOpenAPI;
+use crate::openapi::FillOpenAPIOptions;
 
 #[derive(Debug, Clone, Default)]
 pub struct DbAdapterFile<'a> {
@@ -37,6 +39,7 @@ impl DbAdapterFile<'_> {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[tide::utils::async_trait]
 impl EntityManager for DbAdapterFile<'_> {
     async fn insert(&self, openapi: &OpenAPI, table_name :&str, obj: &Value) -> Result<Value, Box<dyn std::error::Error>> {

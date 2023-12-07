@@ -967,8 +967,6 @@ func (self *OpenAPI) convertStandartToRufs() {
             }
         }
 
-        #[cfg(feature = "wasm")]
-        web_sys::console::log_1(&format!("[get_schema_from_responses({}, {})] : not found schema from response_object.content = {:?}", schema_name, may_be_array, response_object.content).into());
         None
     }
 
