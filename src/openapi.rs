@@ -1,5 +1,6 @@
 use std::{collections::HashMap};
 
+use anyhow::Context;
 use convert_case::{Case, Casing};
 use indexmap::IndexMap;
 use openapiv3::*;
@@ -102,6 +103,7 @@ pub trait RufsOpenAPI {
     fn get_path_params(&self, uri: &str, params: &Value) -> Result<String, Error>;
     fn get_schema_name(&self, path: &str, method: &str, may_be_array: bool) -> Result<String, Error>;
     fn get_properties_from_schema_name<'a>(&'a self, parent_name: &Option<String>, schema_name :&str, schema_place :&SchemaPlace) -> Option<&'a IndexMap<String, ReferenceOr<Box<Schema>>>>;
+    fn get_properties_with_extensions(&self, path: &str, method: &str, schema_place: &SchemaPlace) -> Result<(Vec<String>, Vec<String>, IndexMap<String, ReferenceOr<Box<Schema>>>), Box<dyn std::error::Error>>;
     fn get_properties_from_schema<'a>(&'a self, schema :&'a Schema) -> Option<&'a IndexMap<String, ReferenceOr<Box<Schema>>>>;
     fn get_property_from_schema<'a>(&'a self, schema :&'a Schema, property_name :&str) -> Option<&'a Schema>;
     fn get_property_from_schemas<'a>(&'a self, schema_name: &str, property_name :&'a str) -> Option<&Schema>;
@@ -371,7 +373,24 @@ func (self *OpenAPI) convertStandartToRufs() {
                 _ => todo!(),
             }
         } else {
-            return Ok(value.clone());
+            /*
+            match &field.schema_kind {
+                SchemaKind::Type(typ) => {
+                    match typ {
+                        Type::Number(_) => {
+                            if let Some(value) = value.as_f64() {
+                                return Ok(json!((value * 10000.0).trunc() / 10000.0));
+                            } else {
+                                return Ok(value.clone());
+                            }
+                        },
+                        _ => return Ok(value.clone()),
+                    }
+                },
+                _ => return Ok(value.clone()),
+            }
+            */
+            return Ok(value.clone())
         }
     }
 
@@ -481,7 +500,6 @@ func (self *OpenAPI) convertStandartToRufs() {
     }
 
     fn copy_fields(&self, path :&str, method :&str, schema_place :&SchemaPlace, may_be_array: bool, data_in: &Value, ignore_null: bool, ignore_hidden: bool, only_primary_keys: bool) -> Result<Value, Error> {
-        println!("[copy_fields({}, {}, {:?}, {}, {:?}, {}, {}, {})]", path, method, schema_place, may_be_array, data_in, ignore_null, ignore_hidden, only_primary_keys);
         let schema = self.get_schema(path, method, schema_place, may_be_array).unwrap();
         let extensions = &schema.schema_data.extensions;
         let properties = self.get_properties_from_schema(schema).unwrap();
@@ -1079,7 +1097,7 @@ func (self *OpenAPI) convertStandartToRufs() {
             match &parameter_object {
                 ReferenceOr::Reference { reference } => {
                     let schema = self.get_schema_from_ref(reference, may_be_array);
-                    println!("[OpenAPI.get_schema_from_operation_object_parameters()] : {:?}", schema);
+                    //println!("[OpenAPI.get_schema_from_operation_object_parameters()] : {:?}", schema);
                     return schema;
                 },
                 ReferenceOr::Item(parameter_object) => {
@@ -1093,7 +1111,7 @@ func (self *OpenAPI) convertStandartToRufs() {
                                             Type::Number(_) => todo!(),
                                             Type::Integer(_) => todo!(),
                                             Type::Object(_) => {
-                                                println!("[OpenAPI.get_schema_from_operation_object_parameters()] : {:?}", schema);
+                                                //println!("[OpenAPI.get_schema_from_operation_object_parameters()] : {:?}", schema);
                                                 return Ok(schema);
                                             },
                                             Type::Array(_) => todo!(),
@@ -1242,7 +1260,7 @@ func (self *OpenAPI) convertStandartToRufs() {
                         Type::Array(array) => {
                             match array.items.as_ref().unwrap() {
                                 ReferenceOr::Reference { reference } => {
-                                    println!("[OpenAPI.get_schema_name({path}, {method})] : SchemaKind::Type::Array : {}", reference);
+                                    //println!("[OpenAPI.get_schema_name({path}, {method})] : SchemaKind::Type::Array : {}", reference);
                                     return Ok(OpenAPI::get_schema_name_from_ref(&reference))
                                 },
                                 ReferenceOr::Item(_) => todo!(),
@@ -1315,6 +1333,197 @@ func (self *OpenAPI) convertStandartToRufs() {
         };
 
         self.get_properties_from_schema(schema)
+    }
+
+    fn get_properties_with_extensions(&self, path: &str, method: &str, schema_place: &SchemaPlace) -> Result<(Vec<String>, Vec<String>, IndexMap<String, ReferenceOr<Box<Schema>>>), Box<dyn std::error::Error>> {
+		fn get_max_field_size(openapi: &OpenAPI, schema: &Schema, property_name: &str) -> usize {
+			let field = openapi.get_property_from_schema(schema, property_name).unwrap();
+
+            match &field.schema_kind {
+                SchemaKind::Type(typ) => match  typ {
+                    Type::String(typ) => match &typ.format {
+                        VariantOrUnknownOrEmpty::Item(format) => match format {
+                            StringFormat::Date => 30,
+                            StringFormat::DateTime => 30,
+                            StringFormat::Password => todo!(),
+                            StringFormat::Byte => todo!(),
+                            StringFormat::Binary => todo!(),
+                        },
+                        _ => {
+                            if let Some(max_len) = typ.max_length {
+                                max_len
+                            } else {
+                                100
+                            }
+                        },
+                    },
+                    Type::Number(_) => {
+                        if let Some(precision) = field.schema_data.extensions.get("x-precision") {
+                            precision.as_i64().unwrap() as usize
+                        } else {
+                            15
+                        }
+                    },
+                    Type::Integer(_) => 9,
+                    Type::Object(_) => todo!(),
+                    Type::Array(_) => todo!(),
+                    Type::Boolean {  } => 5,
+                },
+                _ => todo!(),
+            }
+		}
+
+        fn process_properties(properties: &mut IndexMap<String, ReferenceOr<Box<Schema>>>, not_table_visible: &mut Vec<String>, short_description_list: &mut Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
+            let properties_len = properties.len();
+
+            for (field_name, field) in properties {
+                if let ReferenceOr::Item(field) = field {
+                    match &mut field.schema_kind {
+                        SchemaKind::Type(typ) => {
+                            match typ {
+                                Type::Array(array) => {
+                                    let field = array.items.as_mut().context("data_view_get 2 : context")?;
+
+                                    let field = match field {
+                                        ReferenceOr::Reference { reference: _ } => continue,
+                                        ReferenceOr::Item(field) => field.as_mut(),
+                                    };
+
+                                    match &mut field.schema_kind {
+                                        SchemaKind::Type(typ) => {
+                                            match typ {
+                                                Type::Object(schema) => {
+                                                    let mut short_description_list = vec![];
+                                                    let mut not_table_visible = vec![];
+                                                    process_properties(&mut schema.properties, &mut not_table_visible, &mut short_description_list)?;
+                                                },
+                                                _ => {}
+                                            }
+                                        },
+                                        SchemaKind::Any(schema) => {
+                                            let mut short_description_list = vec![];
+                                            let mut not_table_visible = vec![];
+                                            process_properties(&mut schema.properties, &mut not_table_visible, &mut short_description_list)?;
+                                        },
+                                        _ => todo!(),
+                                    }
+        
+                                },
+                                _ => {
+                                    let extensions = &mut field.schema_data.extensions;
+                                    if extensions.get("x-shortDescription").is_none() {extensions.insert("x-shortDescription".to_string(), json!(false));};
+                                    if extensions.get("x-orderIndex").is_none() {extensions.insert("x-orderIndex".to_string(), json!(properties_len));};
+                                    if extensions.get("x-tableVisible").is_none() {extensions.insert("x-tableVisible".to_string(), json!(true));};
+                                    //println!("[Service::new] 1 : {}.{}.x-tableVisible = {}", path, field_name, extensions.get("x-tableVisible").context("broken")?);
+                        
+                                    if let Some(hidden) = extensions.get("x-hidden") {
+                                        if let Value::Bool(hidden) = hidden {
+                                            if hidden == &true {
+                                                not_table_visible.push(field_name.clone());
+                                                extensions.insert("x-tableVisible".to_string(), json!(false));
+                                                //println!("[Service::new] 2 : {}.{}.x-tableVisible = {}", path, field_name, extensions.get("x-tableVisible").context("broken")?);
+                                            }
+                                        }
+                                    }
+                        
+                                    if let Some(short_description) = extensions.get("x-shortDescription") {
+                                        if let Value::Bool(short_description) = short_description {
+                                            if short_description == &true {
+                                                short_description_list.push(field_name.clone());
+                                            }
+                                        }
+                                    }
+                                },
+                            }
+                        },
+                        _ => {},
+                    }
+                }
+            }
+
+            Ok(())
+        }
+
+        let schema = self.get_schema(path, method, schema_place, false)?;
+        let mut properties = anyhow::Context::context(self.get_properties_from_schema(schema), "Missing properties")?.clone();
+        let extensions = &schema.schema_data.extensions;
+        //self.foreignKeys = self.schema["x-foreignKeys"] || {};
+        //self.primaryKeys = self.schema["x-primaryKeys"] || [];
+        let primary_keys = if let Some(list) = extensions.get("x-primaryKeys") {
+            if let Value::Array(list) = list {
+                list.iter().map(|v| v.as_str().unwrap().to_string()).collect()
+            } else {
+                vec![]
+            }
+        } else {
+            vec![]
+        };
+        
+        let mut short_description_list = vec![];
+        let mut not_table_visible = vec![];
+        process_properties(&mut properties, &mut not_table_visible, &mut short_description_list)?;
+        // Se não foi definido manualmente o shortDescriptionList, monta em modo automático usando os uniqueMaps
+        if short_description_list.len() == 0 {
+            let unique_keys = if let Some(v) = extensions.get("x-uniqueKeys") {
+                v.clone()
+            } else {
+                json!({})
+            };
+
+            if unique_keys.as_object().unwrap().len() > 0 {
+                for (field_name, field) in &mut properties {
+                    if let ReferenceOr::Item(field) = field {
+                        let extensions = &mut field.schema_data.extensions;
+    
+                        if extensions.get("x-hidden").is_none() && extensions.get("x-identityGeneration").is_some() {
+                            extensions.insert("x-hidden".to_string(), json!(true));
+                            not_table_visible.push(field_name.clone());
+                            extensions.insert("x-tableVisible".to_string(), json!(false));
+                            //println!("[Service::new] 3 : {}.{}.x-tableVisible = {}", path, field_name, extensions.get("x-tableVisible").context("broken")?);
+                        }
+                    }
+                }
+            }
+
+            let mut short_description_list_size = 0;
+            
+            if primary_keys.iter().find(|field_name| not_table_visible.contains(field_name)) == None {
+                for field_name in &primary_keys {
+                    short_description_list.push(field_name.clone());
+                    short_description_list_size += get_max_field_size(self, schema, field_name);
+                }
+            }
+
+            for (_, list) in unique_keys.as_object().unwrap() {
+                let list = list.as_array().unwrap().iter().map(|field_name| field_name.as_str().unwrap().to_string()).collect::<Vec<String>>();
+
+                if list.iter().find(|field_name| not_table_visible.contains(field_name)) == None {
+                    for field_name in &list {
+                        if short_description_list.contains(field_name) == false {
+                            short_description_list.push(field_name.clone());
+                            short_description_list_size += get_max_field_size(self, schema, field_name);
+                        }
+                    }
+
+                    if short_description_list.len() > 3 || short_description_list_size > 30 {
+                        break
+                    }
+                }
+            }
+
+            for (field_name, _) in &properties {
+                if short_description_list.len() > 3 || short_description_list_size > 30 {
+                    break
+                }
+
+                if not_table_visible.contains(field_name) == false && short_description_list.contains(field_name) == false {
+                    short_description_list.push(field_name.clone());
+                    short_description_list_size += get_max_field_size(self, schema, field_name);
+                }
+            }
+        }
+
+        Ok((short_description_list, primary_keys, properties))
     }
 
     fn get_property_from_schema<'a>(&'a self, schema :&'a Schema, property_name :&str) -> Option<&'a Schema> {

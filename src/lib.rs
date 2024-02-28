@@ -21,14 +21,13 @@ pub mod rufs_micro_service;
 #[cfg(feature = "tide")]
 pub async fn rufs_tide_new(rufs: rufs_micro_service::RufsMicroService<'static>) -> Result<Box<tide::Server<rufs_micro_service::RufsMicroService<'static>>>, Box<dyn std::error::Error>> {
     use jsonwebtoken::{decode, DecodingKey, Validation};
-    use micro_service_server::{LoginRequest};
-    use request_filter::RequestFilter;
     use serde_json::Value;
-    use crate::{micro_service_server::IMicroServiceServer, rufs_micro_service::{RufsMicroService, Claims}};
-    
-        use std::{future::Future, pin::Pin};
+    use std::{future::Future, pin::Pin};
     use async_std::path::Path;
     use tide::{Response, Next, StatusCode, Body, http::{mime}};
+    use micro_service_server::{LoginRequest};
+    use request_filter::RequestFilter;
+    use crate::{micro_service_server::IMicroServiceServer, rufs_micro_service::{RufsMicroService, Claims}};
 
     async fn handle_login(mut request: tide::Request<RufsMicroService<'_>>) -> tide::Result {
         //println!("[handle_login] : {:?}", request);
@@ -102,7 +101,18 @@ pub async fn rufs_tide_new(rufs: rufs_micro_service::RufsMicroService<'static>) 
                 response.insert_header("Access-Control-Allow-Headers", acess_control_request_headers);
                 return Ok(response);
             }
-    
+
+            if request.method() != tide::http::Method::Get {
+                return Ok(next.run(request).await);
+            }
+
+            let rufs = request.state();
+            let api_path = format!("{}/", rufs.micro_service_server.api_path);
+
+            if request.url().path().starts_with(&api_path) {
+                return Ok(next.run(request).await);
+            }
+
             let path = request.url().path()[1..].to_string();
     
             let name = if path.ends_with("/") || path.is_empty() {
@@ -110,8 +120,6 @@ pub async fn rufs_tide_new(rufs: rufs_micro_service::RufsMicroService<'static>) 
             } else {
                 path.clone()
             };
-    
-            let rufs = request.state();
     
             for folder in &rufs.static_paths {
                 let file = Path::new(folder).join(&name);
@@ -145,8 +153,12 @@ pub async fn rufs_tide_new(rufs: rufs_micro_service::RufsMicroService<'static>) 
         Ok(())
     }));
 
-    app.at(&format!("/{}/login", &api_path)).post(handle_login);
-    app.at(&format!("/{}/*", &api_path)).all(handle_api);
+    let path_login = format!("/{}/login", &api_path);
+    println!("[rufs_tide_new] listening login at {}...", path_login);
+    app.at(&path_login).post(handle_login);
+    let path_api = format!("/{}/*", &api_path);
+    println!("[rufs_tide_new] listening api at {}...", path_api);
+    app.at(&path_api).all(handle_api);
     app.with(static_paths);
     Ok(app)
 }

@@ -28,7 +28,7 @@ chrono = { version="0.4.26", features = [ "alloc" ], optional = true }
 serde = { version = "1.0.147", features = ["derive"] }
 serde_json = "1.0.87"
 serde_yaml = "0.8.26"
-async-std = { version = "1.12.0", features = ["attributes"], optional = true }
+async-std = { version = "1.12.0", features = ["attributes", "tokio1"], optional = true }
 base64 = "0.13.0"
 jsonwebtoken = "8.2.0"
 regex = "1.7.0"

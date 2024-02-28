@@ -56,7 +56,6 @@ pub struct Filter;
 
 impl Filter {
     fn check_match_exact(item: &Value, key: &Value) -> Result<bool, Box<dyn std::error::Error>> {
-        //println!("[Filter.check_match_exact] item : {}, key : {}", item, key);
         let mut _match = Ok(true);
 
         for (field_name, expected_value) in key.as_object().unwrap() {
