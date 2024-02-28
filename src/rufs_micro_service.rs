@@ -146,6 +146,7 @@ pub struct RufsMicroService<'a> {
     */
     pub check_rufs_tables: bool,
     pub migration_path: String,
+    pub static_paths: Vec<String>,
     pub entity_manager: DbAdapterPostgres<'a>,
     pub db_adapter_file: DbAdapterFile<'a>,
     pub ws_server_connections : Arc<RwLock<HashMap<String, WebSocketConnection>>>,
@@ -478,7 +479,7 @@ const RUFS_MICRO_SERVICE_OPENAPI_STR: &str = r##"{
 					"name":           {"type": "string", "maxLength": 32, "nullable": false, "unique": true},
 					"password":       {"type": "string", "nullable": false},
 					"path":           {"type": "string"},
-					"roles":          {"type": "array", "items": {"properties": {"path": {"type": "string"}, "mask": {"type": "integer", "x-flags": ["get","post","put","delete"]}}}},
+					"roles":          {"type": "array", "items": {"properties": {"path": {"type": "string", "default": ""}, "mask": {"type": "integer", "default": 0, "x-flags": ["get","post","put","delete","query"]}}}},
 					"routes":         {"type": "array", "items": {"properties": {"path": {"type": "string"}, "controller": {"type": "string"}, "templateUrl": {"type": "string"}}}},
 					"menu":           {"type": "array", "items": {"properties": {"group": {"type": "string", "default": "action"}, "label": {"type": "string"}, "path": {"type": "string", "default": "service/action?filter={}&aggregate={}"}}}}
 				},

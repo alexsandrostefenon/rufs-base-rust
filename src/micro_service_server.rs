@@ -58,7 +58,7 @@ impl Default for MicroServiceServer {
 impl MicroServiceServer {
     fn load_open_api(&mut self) -> Result<(), Error> {
         if self.openapi_file_name.is_empty() {
-            self.openapi_file_name = format!("openapi-{}-rust.json", self.app_name);
+            self.openapi_file_name = format!("openapi-{}.json", self.app_name);
         }
 
         println!("[MicroServiceServer.load_open_api({}/{})]", std::env::current_dir().unwrap().to_string_lossy(), self.openapi_file_name);

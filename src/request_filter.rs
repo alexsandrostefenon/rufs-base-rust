@@ -212,7 +212,7 @@ impl<'a> RequestFilter<'a> {
 */
     fn parse_query_parameters(&self, ignore_null: bool) -> Result<Value, Error> {
         let obj = self.micro_service.micro_service_server.openapi.copy_fields(&self.path, &self.method, &SchemaPlace::Parameter, true, &self.parameters, ignore_null, false, false).unwrap();
-        println!("[openapi.parse_query_parameters({})] : {}", self.parameters, obj.to_string());
+        //println!("[openapi.parse_query_parameters({})] : {}", self.parameters, obj.to_string());
         Ok(obj)
     }
 
