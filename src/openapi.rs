@@ -9,6 +9,14 @@ use serde_json::{Value, json};
 
 use std::fmt;
 
+#[derive(Clone)]
+#[derive(Debug, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Role {
+    pub path: String,
+    pub mask: u64,
+}
+
 #[derive(Debug)]
 pub struct Error {
     msg :String

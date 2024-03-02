@@ -28,6 +28,7 @@ use tide::{Error, StatusCode};
 #[cfg(feature = "tide")]
 use tide_websockets::WebSocketConnection;
 
+use crate::openapi::Role;
 #[cfg(not(target_arch = "wasm32"))]
 #[cfg(feature = "http_server")]
 use crate::{
@@ -60,14 +61,6 @@ pub struct MenuItem {
     group: String,
     label: String,
     path: String,
-}
-
-#[derive(Clone)]
-#[derive(Debug, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct Role {
-    pub path: String,
-    pub mask: u64,
 }
 
 #[derive(Deserialize, Serialize, Default)]
@@ -138,7 +131,7 @@ type IRufsMicroService interface {
 */
 #[cfg(not(target_arch = "wasm32"))]
 #[cfg(feature = "tide")]
-#[derive(Default, Clone)]
+#[derive(Clone)]
 pub struct RufsMicroService<'a> {
     pub micro_service_server: MicroServiceServer,
     /*
@@ -151,6 +144,7 @@ pub struct RufsMicroService<'a> {
     pub db_adapter_file: DbAdapterFile<'a>,
     pub ws_server_connections : Arc<RwLock<HashMap<String, WebSocketConnection>>>,
     pub ws_server_connections_tokens : Arc<RwLock<HashMap<String, Claims>>>,
+    pub watcher: &'static Box<dyn DataViewWatch>
 }
 
 /*
@@ -453,6 +447,214 @@ impl IMicroServiceServer for RufsMicroService<'_> {
         Ok(login_response)
     }
 
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "tide")]
+use crate::client::DataViewWatch;
+
+#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "tide")]
+pub async fn rufs_tide_new(rufs: RufsMicroService<'static>) -> Result<Box<tide::Server<RufsMicroService<'static>>>, Box<dyn std::error::Error>> {
+    use jsonwebtoken::{decode, DecodingKey, Validation};
+    use serde_json::Value;
+    use std::{future::Future, pin::Pin};
+    use async_std::path::Path;
+    use tide::{Response, Next, Body, http::{mime}};
+
+    use crate::{micro_service_server::LoginRequest, request_filter::RequestFilter, client::DataViewManager};
+
+    async fn handle_login(mut request: tide::Request<RufsMicroService<'_>>) -> tide::Result {
+        //println!("[handle_login] : {:?}", request);
+        let obj_in = request.body_json::<Value>().await?;
+        println!("\n\ncurl -X '{}' {} -d '{}'", request.method(), request.url(), obj_in);
+        let login_request = serde_json::from_value::<LoginRequest>(obj_in).unwrap();//request.body_json::<LoginRequest>().await?;
+        let rufs = request.state();
+    
+        if login_request.user.is_empty() || login_request.password.is_empty() {
+            println!("Login request is empty");
+        }
+    
+        let login_response = match rufs.authenticate_user(&login_request.user, &login_request.password, request.remote().unwrap()).await {
+            Ok(login_response) => login_response,
+            Err(error) => {
+                println!("[RufsMicroService.handle.login.authenticate_user] : {}", error);
+                let msg = error.to_string();
+                let mut response = Response::from(error);
+                response.set_content_type(mime::PLAIN);
+                response.set_body(msg);
+                return Ok(response);
+            }
+        };
+    
+        Ok(Response::builder(StatusCode::Ok).body(Body::from_json(&login_response)?).build())
+    }
+    
+    async fn handle_api(mut request: tide::Request<RufsMicroService<'_>>) -> tide::Result {
+        let method = request.method().to_string().to_lowercase();
+        let auth = request.header("Authorization").unwrap().as_str();
+        print!("\n\ncurl -X '{}' {} -H 'Authorization: {}'", method, request.url(), auth);
+    
+        let obj_in = if ["post", "put", "patch"].contains(&method.as_str()) {
+            let obj_in = request.body_json::<Value>().await?;
+            println!(" -d '{}'", obj_in);
+            obj_in
+        } else {
+            println!();
+            Value::Null
+        };
+    
+        let rufs = request.state();
+        let mut rf = RequestFilter::new(&request, rufs, &method, obj_in).unwrap();
+    
+        if rf.schema_name == "request" && rf.method == "put" {
+          println!("handle_api = {}", rf.schema_name);
+        }
+    
+        let response = match rf.check_authorization(&request).await {
+            Ok(true) => rf.process_request().await,
+            Ok(false) => Response::builder(StatusCode::Unauthorized).build(),
+            Err(err) => tide::Response::builder(StatusCode::BadRequest)
+                .body(format!("[RufsMicroService.OnRequest.CheckAuthorization] : {}", err))
+                .build(),
+        };
+    
+        Ok(response)
+    }
+    
+    fn static_paths<'a>(request: tide::Request<RufsMicroService<'static>>, next: Next<'a, RufsMicroService<'static>>) -> Pin<Box<dyn Future<Output = tide::Result> + Send + 'a>> {
+        Box::pin(async {
+            if request.method() == tide::http::Method::Options {
+                let acess_control_request_headers = match request.header("Access-Control-Request-Headers") {
+                    Some(value) => value.to_string(),
+                    None => "".to_string(),
+                };
+    
+                let mut response = next.run(request).await;
+                response.insert_header("Access-Control-Allow-Origin", "*");
+                response.insert_header("Access-Control-Allow-Methods", "GET, PUT, OPTIONS, POST, DELETE");
+                response.insert_header("Access-Control-Allow-Headers", acess_control_request_headers);
+                return Ok(response);
+            }
+
+            if request.method() != tide::http::Method::Get {
+                return Ok(next.run(request).await);
+            }
+
+            let rufs = request.state();
+            let api_path = format!("{}/", rufs.micro_service_server.api_path);
+
+            if request.url().path().starts_with(&api_path) {
+                return Ok(next.run(request).await);
+            }
+
+            let path = request.url().path()[1..].to_string();
+    
+            let name = if path.ends_with("/") || path.is_empty() {
+                path.clone() + &"index.html".to_string()
+            } else {
+                path.clone()
+            };
+    
+            for folder in &rufs.static_paths {
+                let file = Path::new(folder).join(&name);
+                //println!("[TideRufsMicroService.handle] folder = {:?}, url_file = {}, file = {:?}", folder, name, file);
+    
+                if file.exists().await {
+                    match tide::Body::from_file(&file).await {
+                        Ok(body) => return Ok(Response::builder(StatusCode::Ok).body(body).build()),
+                        Err(e) => return Err(e.into()),
+                    }
+                }
+            }
+    
+            Ok(next.run(request).await)
+        })
+    }
+
+    let api_path = rufs.micro_service_server.api_path.clone();
+    let mut app = Box::new(tide::with_state(rufs));
+
+    app.at("/websocket").get(tide_websockets::WebSocket::new(|request, mut stream| async move {
+        while let Some(Ok(tide_websockets::Message::Text(token))) = async_std::stream::StreamExt::next(&mut stream).await {
+            let wsc = stream.clone();
+            let rufs :&RufsMicroService= request.state();
+            rufs.ws_server_connections.write().unwrap().insert(token.clone(), wsc);
+            let secret = std::env::var("RUFS_JWT_SECRET").unwrap_or("123456".to_string());
+            let token_data = decode::<Claims>(&token, &DecodingKey::from_secret(secret.as_ref()), &Validation::default())?;
+            rufs.ws_server_connections_tokens.write().unwrap().insert(token, token_data.claims);
+        }
+
+        Ok(())
+    }));
+
+    let path_login = format!("/{}/login", &api_path);
+    println!("[rufs_tide_new] listening login at {}...", path_login);
+    app.at(&path_login).post(handle_login);
+    let path_api = format!("/{}/*", &api_path);
+    println!("[rufs_tide_new] listening api at {}...", path_api);
+    app.at(&path_api).all(handle_api);
+    app.with(static_paths);
+    
+    lazy_static::lazy_static! {
+        static ref DATA_VIEW_MANAGER_MAP: tokio::sync::Mutex<std::collections::HashMap<String, DataViewManager<'static>>>  = {
+            let data_view_manager_map = std::collections::HashMap::new();
+            tokio::sync::Mutex::new(data_view_manager_map)
+        }; 
+    }
+
+    async fn wasm_login(mut req: tide::Request<RufsMicroService<'_>>) -> tide::Result {
+        let data_in = req.body_json::<Value>().await?;
+        let mut data_view_manager_map = DATA_VIEW_MANAGER_MAP.lock().await;
+        let state = req.state();
+        //, data_in.get("path").context("Missing param path")?.as_str().context("Param path is not string")?
+        let path = format!("http://127.0.0.1:{}", state.micro_service_server.port);
+        let mut data_view_manager = DataViewManager::new(&path, state.watcher);
+
+        let data_out = match data_view_manager.login(data_in).await {
+            Ok(data_out) => data_out,
+            Err(err) => {
+                let mut response = tide::Response::from(err.to_string());
+                response.set_status(401);
+                return Ok(response);
+            }
+        };
+
+        data_view_manager_map.insert(data_view_manager.server_connection.login_response.jwt_header.clone(), data_view_manager);
+        Ok(data_out.into())
+    }
+        
+    app.at("/wasm_ws/login").post(wasm_login);
+
+    async fn wasm_process(mut req: tide::Request<RufsMicroService<'_>>) -> tide::Result {
+        let authorization_header_prefix = "Bearer ";
+        let token_raw = req.header("Authorization").context("Missing header Authorization")?.last().as_str();
+
+        let jwt = if token_raw.starts_with(authorization_header_prefix) {
+            &token_raw[authorization_header_prefix.len()..]
+        } else {
+            return None.context("broken token")?;
+        };
+
+        let mut data_view_manager_map = DATA_VIEW_MANAGER_MAP.lock().await;
+        let data_view_manager = data_view_manager_map.get_mut(jwt).context("Missing session")?;
+        let data_in = req.body_json::<Value>().await?;
+
+        let data_out = match data_view_manager.process(data_in).await {
+            Ok(data_out) => data_out,
+            Err(err) => {
+                let mut response = tide::Response::from(err.to_string());
+                response.set_status(500);
+                return Ok(response);
+            }
+        };
+
+        let data_out = serde_json::to_value(data_out)?;
+        Ok(data_out.into())
+    }
+        
+    app.at("/wasm_ws/process").post(wasm_process);
+    Ok(app)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
