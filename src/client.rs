@@ -827,7 +827,7 @@ impl DataView {
             form[field_name] = json!(value);
         }
 
-        let form_id = format!("{}-{}", element_id.form_type, self.data_view_id.form_id);
+        let form_id = format!("{}--{}", element_id.form_type, self.data_view_id.form_id);
         data_out[form_id] = form;
         self.properties_modified.clear();
 
@@ -942,7 +942,7 @@ impl DataView {
                     if data_view.action != DataViewProcessAction::View && html_options.len() > 0 && html_options.len() <= 20 {
                         format!(
                             r##"
-                        <select class="form-control" id="{form_type_str}-{form_id}-{field_name}" name="{field_name}" ng-required="field.essential == true && field.nullable != true" ng-disabled="{{field.readOnly == true}}">
+                        <select class="form-control" id="{form_type_str}--{form_id}--{field_name}" name="{field_name}" ng-required="field.essential == true && field.nullable != true" ng-disabled="{{field.readOnly == true}}">
                             <option value=""></option>
                             {html_options_str}
                         </select>
@@ -954,8 +954,8 @@ impl DataView {
 
                         format!(
                             r##"
-                        <input class="form-control" id="{form_type_str}-{form_id}-{field_name}" name="{field_name}" type="{html_input_typ}" {html_input_step} {html_input_pattern} maxlength="{html_input_max_length}" placeholder="" ng-required="field.essential == true && field.nullable != true" {disabled} list="list-{form_id}-{field_name}" autocomplete="off">
-                        <datalist ng-if="field.filterResultsStr.length >  20" id="list-{form_id}-{field_name}">
+                        <input class="form-control" id="{form_type_str}--{form_id}--{field_name}" name="{field_name}" type="{html_input_typ}" {html_input_step} {html_input_pattern} maxlength="{html_input_max_length}" placeholder="" ng-required="field.essential == true && field.nullable != true" {disabled} list="list--{form_id}--{field_name}" autocomplete="off">
+                        <datalist ng-if="field.filterResultsStr.length >  20" id="list--{form_id}--{field_name}">
                             {html_options_str}
                         </datalist>
                         "##
@@ -968,13 +968,13 @@ impl DataView {
                 //let reference = reference.as_str().context("not string content")?;
                 let mut list = vec![];
                 list.push(format!(
-                    r##"<div class="col-1"><a id="reference-view-{form_id}-{field_name}" name="reference-view-{field_name}" class="btn btn-secondary" href="#"><i class="bi bi-eye-fill"></i></a></div>"##
+                    r##"<div class="col-1"><a id="reference-view--{form_id}--{field_name}" name="reference-view-{field_name}" class="btn btn-secondary" href="#"><i class="bi bi-eye-fill"></i></a></div>"##
                 ));
 
                 let html_external_search = if data_view.action != DataViewProcessAction::View {
-                    list.push(format!(r##"<div class="col-1"><a id="reference-create-{form_id}-{field_name}" name="reference-create-{field_name}" class="btn btn-secondary" href="#"><i class="bi bi-plus"></i></a></div>"##));
+                    list.push(format!(r##"<div class="col-1"><a id="reference-create--{form_id}--{field_name}" name="reference-create-{field_name}" class="btn btn-secondary" href="#"><i class="bi bi-plus"></i></a></div>"##));
                     let html_external_search = format!(
-                        r##"<div class="col-1"><a id="reference-search-{form_id}-{field_name}" name="reference-search-{field_name}" class="btn btn-secondary" href="#"><i class="bi bi-search"></i></a></div>"##
+                        r##"<div class="col-1"><a id="reference-search--{form_id}--{field_name}" name="reference-search-{field_name}" class="btn btn-secondary" href="#"><i class="bi bi-search"></i></a></div>"##
                     );
                     list.push(html_external_search.clone());
                     html_external_search
@@ -999,7 +999,7 @@ impl DataView {
                         r##"
                     <div class="form-group form-group row">
                         <label class="col-offset-1 control-label">
-                            <input type="checkbox" id="{form_type_str}-{form_id}-{field_name}-{index}" name="{field_name}-{index}"/>
+                            <input type="checkbox" id="{form_type_str}--{form_id}--{field_name}-{index}" name="{field_name}-{index}"/>
                             {label}
                         </label>
                     </div>
@@ -1019,7 +1019,7 @@ impl DataView {
                     format!(
                         r##"
                         <div class="col-{col_size}">
-                            <label for="{form_type_str}-{form_id}-{field_name}" class="control-label">{label}</label>
+                            <label for="{form_type_str}--{form_id}--{field_name}" class="control-label">{label}</label>
                             <div class="row">
                                 <div class="col">{html_input}</div>
                                 {html_references}
@@ -1062,7 +1062,7 @@ impl DataView {
                             r#"
                         <div class="form-group">
                             <div ng-if="field.htmlType.includes('date')" class="col-offset-3 col-9">
-                                <select class="form-control" id="{form_type_str}-{form_id}-{field_name}-range" name="{field_name}-range" ng-model="vm.instanceFilterRange[fieldName]" ng-change="vm.setFilterRange(fieldName, vm.instanceFilterRange[fieldName])">
+                                <select class="form-control" id="{form_type_str}--{form_id}--{field_name}-range" name="{field_name}-range" ng-model="vm.instanceFilterRange[fieldName]" ng-change="vm.setFilterRange(fieldName, vm.instanceFilterRange[fieldName])">
                                     <option value=""></option>
                                     {html_options}
                                 </select>
@@ -1085,13 +1085,13 @@ impl DataView {
                                     format!(
                                         r#"
                                     <div class="col-4">
-                                        <input class="form-control" id="{form_type_str}-{form_id}-{field_name}@min" name="{field_name}@min" type="{html_input_typ}" {html_input_step} placeholder="">
+                                        <input class="form-control" id="{form_type_str}--{form_id}--{field_name}@min" name="{field_name}@min" type="{html_input_typ}" {html_input_step} placeholder="">
                                     </div>
                             
                                     <label for="{field_name}@max" class="col-1 control-label" style="text-align: center">à</label>
                             
                                     <div class="col-4">
-                                        <input class="form-control" id="{form_type_str}-{form_id}-{field_name}@max" name="{field_name}@max" type="{html_input_typ}" {html_input_step} placeholder="">
+                                        <input class="form-control" id="{form_type_str}--{form_id}--{field_name}@max" name="{field_name}@max" type="{html_input_typ}" {html_input_step} placeholder="">
                                     </div>
                                     "#
                                     )
@@ -1099,7 +1099,7 @@ impl DataView {
                                     format!(
                                         r#"
                                     <div class="col-9">
-                                        <input class="form-control" id="{form_type_str}-{form_id}-{field_name}" name="{field_name}" type="{html_input_typ}" {html_input_step} placeholder="">
+                                        <input class="form-control" id="{form_type_str}--{form_id}--{field_name}" name="{field_name}" type="{html_input_typ}" {html_input_step} placeholder="">
                                     </div>
                                     "#
                                     )
@@ -1112,7 +1112,7 @@ impl DataView {
                         r#"
                         {html_field_range}
                         <div class="form-group row">
-                            <label for="{form_type_str}-{form_id}-{field_name}" class="control-label col-2">{label}</label>
+                            <label for="{form_type_str}--{form_id}--{field_name}" class="control-label col-2">{label}</label>
                             {html_input}
                             {html_external_search}
                         </div>
@@ -1131,7 +1131,7 @@ impl DataView {
                         format!(
                             r#"
                         <div class="col-9">
-                            <select class="form-control" id="{form_type_str}-{form_id}-{field_name}" name="{field_name}">
+                            <select class="form-control" id="{form_type_str}--{form_id}--{field_name}" name="{field_name}">
                                 <option value=""></option>
                                 {html_options}
                             </select>
@@ -1140,35 +1140,35 @@ impl DataView {
                         )
                     } else {
                         let html_input = if is_rangeable {
-                            format!(r#"<input  class="form-control" id="{form_type_str}-{form_id}-{field_name}" name="{field_name}" type="{html_input_typ}" {html_input_step} placeholder="">"#)
+                            format!(r#"<input  class="form-control" id="{form_type_str}--{form_id}--{field_name}" name="{field_name}" type="{html_input_typ}" {html_input_step} placeholder="">"#)
                         } else {
-                            format!(r#"<input  class="form-control" id="{form_type_str}-{form_id}-{field_name}" name="{field_name}" type="checkbox">"#)
+                            format!(r#"<input  class="form-control" id="{form_type_str}--{form_id}--{field_name}" name="{field_name}" type="checkbox">"#)
                         };
 
                         format!(r#"<div class="col-4">{html_input}</div>"#)
                     };
 
-                    format!(r#"<div class="form-group row"><label for="{form_type_str}-{form_id}-{field_name}" class="control-label">{label}</label>{html_input}</div>"#)
+                    format!(r#"<div class="form-group row"><label for="{form_type_str}--{form_id}--{field_name}" class="control-label">{label}</label>{html_input}</div>"#)
                 }
                 FormType::Sort => {
                     format!(
                         r#"
                         <div class="form-group row">
-                            <label for="{form_type_str}-{form_id}-{field_name}" class="control-label">{label}</label>
+                            <label for="{form_type_str}--{form_id}--{field_name}" class="control-label">{label}</label>
                                 
                             <div class="col-3">
-                                <select class="form-control" id="{form_type_str}-{form_id}-{field_name}-order_by" name="{field_name}-order_by" ng-model="vm.properties[fieldName].sortType">
+                                <select class="form-control" id="{form_type_str}--{form_id}--{field_name}-order_by" name="{field_name}-order_by" ng-model="vm.properties[fieldName].sortType">
                                     <option value="asc">asc</option>
                                     <option value="desc">desc</option>
                                 </select>
                             </div>
                     
                             <div class="col-3">
-                                <input  class="form-control" id="{form_type_str}-{form_id}-{field_name}-index" name="{field_name}-index" ng-model="vm.properties[fieldName].orderIndex" type="number" step="1">
+                                <input  class="form-control" id="{form_type_str}--{form_id}--{field_name}-index" name="{field_name}-index" ng-model="vm.properties[fieldName].orderIndex" type="number" step="1">
                             </div>
                     
                             <div class="col-3">
-                                <input  class="form-control" id="{form_type_str}-{form_id}-{field_name}-table_visible" name="{field_name}-table_visible" type="checkbox">
+                                <input  class="form-control" id="{form_type_str}--{form_id}--{field_name}-table_visible" name="{field_name}-table_visible" type="checkbox">
                             </div>
                         </div>
                     "#
@@ -1195,7 +1195,7 @@ impl DataView {
                 let header = format!(
                     r#"
                     <div class="card-header">
-                        <a href="{href_new}" id="create-{form_type_str}-{form_id}" class="btn btn-default"><i class="bi bi-plus"></i> {label}</a>
+                        <a href="{href_new}" id="create-{form_type_str}--{form_id}" class="btn btn-default"><i class="bi bi-plus"></i> {label}</a>
                     </div>
                 "#
                 );
@@ -1206,24 +1206,24 @@ impl DataView {
                     r##"
                     <div class="panel panel-default" ng-if="vm.rufsService.list.length > 0 || vm.rufsService.access.get == true">
                         <nav>
-                            <div class="nav nav-tabs" role="tablist" id="nav-tab-{form_id}">
-                                <button class="nav-link" data-bs-toggle="tab" data-bs-target="#nav-filter-{form_id}"      role="tab" type="button" aria-controls="nav-filter-{form_id}"      aria-selected="false" id="nav-tab-filter-{form_id}">Filtro</button>
-                                <button class="nav-link" data-bs-toggle="tab" data-bs-target="#nav-aggregate-{form_id}"   role="tab" type="button" aria-controls="nav-aggregate-{form_id}"   aria-selected="false" id="nav-tab-aggregate-{form_id}">Relatório</button>
-                                <button class="nav-link" data-bs-toggle="tab" data-bs-target="#nav-sort-{form_id}"        role="tab" type="button" aria-controls="nav-sort-{form_id}"        aria-selected="false" id="nav-tab-sort-{form_id}">Ordenamento</button>
+                            <div class="nav nav-tabs" role="tablist" id="nav-tab--{form_id}">
+                                <button class="nav-link" data-bs-toggle="tab" data-bs-target="#nav-filter--{form_id}"      role="tab" type="button" aria-controls="nav-filter--{form_id}"      aria-selected="false" id="nav-tab-filter--{form_id}">Filtro</button>
+                                <button class="nav-link" data-bs-toggle="tab" data-bs-target="#nav-aggregate--{form_id}"   role="tab" type="button" aria-controls="nav-aggregate--{form_id}"   aria-selected="false" id="nav-tab-aggregate--{form_id}">Relatório</button>
+                                <button class="nav-link" data-bs-toggle="tab" data-bs-target="#nav-sort--{form_id}"        role="tab" type="button" aria-controls="nav-sort--{form_id}"        aria-selected="false" id="nav-tab-sort--{form_id}">Ordenamento</button>
                             </div>
                         </nav>
                     
                         <div class="tab-content">
-                            <div class="tab-pane fade" id="nav-filter-{form_id}" role="tabpanel" aria-labelledby="nav-tab-filter-{form_id}" tabindex="0">
+                            <div class="tab-pane fade" id="nav-filter--{form_id}" role="tabpanel" aria-labelledby="nav-tab-filter--{form_id}" tabindex="0">
                             {html_filter}
                             </div>
                         
-                            <div class="tab-pane fade" id="nav-aggregate-{form_id}" role="tabpanel" aria-labelledby="nav-tab-aggregate-{form_id}" tabindex="0">
-                            <canvas id="chart-aggregate-{form_id}"></canvas>
+                            <div class="tab-pane fade" id="nav-aggregate--{form_id}" role="tabpanel" aria-labelledby="nav-tab-aggregate--{form_id}" tabindex="0">
+                            <canvas id="chart-aggregate--{form_id}"></canvas>
                             {html_aggregate}
                             </div>
                         
-                            <div class="tab-pane fade" id="nav-sort-{form_id}" role="tabpanel" aria-labelledby="nav-tab-sort-{form_id}" tabindex="0">
+                            <div class="tab-pane fade" id="nav-sort--{form_id}" role="tabpanel" aria-labelledby="nav-tab-sort--{form_id}" tabindex="0">
                             {html_sort}
                             </div>
                         </div>
@@ -1232,7 +1232,7 @@ impl DataView {
                 );
                 let table = format!(
                     r#"
-                    <div id="div-table-{form_id}" class="table-responsive" style="white-space: nowrap;">
+                    <div id="div-table--{form_id}" class="table-responsive" style="white-space: nowrap;">
                     </div>
                 "#
                 );
@@ -1258,16 +1258,16 @@ impl DataView {
 
         let str = format!(
             r##"
-            <div id="div-{form_type_str}-{form_id}" class="card" {hidden}>
+            <div id="div-{form_type_str}--{form_id}" class="card" {hidden}>
                 {header}
                 <div class="card-body">
-                    <form id="{form_type_str}-{form_id}" name="{form_type_str}-{form_id}" class="{form_class}" role="form" {hidden_form}>
+                    <form id="{form_type_str}--{form_id}" name="{form_type_str}--{form_id}" class="{form_class}" role="form" {hidden_form}>
                         {html_fields}
                         <div class="form-group">
-                            <button id="apply-{form_type_str}-{form_id}"  name="apply"  class="btn btn-primary"><i class="bi bi-apply"></i> Aplicar</button>
-                            <button id="clear-{form_type_str}-{form_id}"  name="clear"  class="btn btn-default"><i class="bi bi-erase"></i> Limpar</button>
-                            <button id="cancel-{form_type_str}-{form_id}" name="cancel" class="btn btn-default"><i class="bi bi-exit"></i> Sair</button>
-                            <button id="delete-{form_type_str}-{form_id}" name="delete" class="btn btn-default"><i class="bi bi-remove"></i> Remove</button>
+                            <button id="apply-{form_type_str}--{form_id}"  name="apply"  class="btn btn-primary"><i class="bi bi-apply"></i> Aplicar</button>
+                            <button id="clear-{form_type_str}--{form_id}"  name="clear"  class="btn btn-default"><i class="bi bi-erase"></i> Limpar</button>
+                            <button id="cancel-{form_type_str}--{form_id}" name="cancel" class="btn btn-default"><i class="bi bi-exit"></i> Sair</button>
+                            <button id="delete-{form_type_str}--{form_id}" name="delete" class="btn btn-default"><i class="bi bi-remove"></i> Remove</button>
                         </div>
                     </form>
                     {html_crud_items}
@@ -1315,9 +1315,9 @@ impl DataView {
             let col = format!(
                 r##"
             <th>
-                <a href="#" id="sort_left-{form_id}-{field_name}"><i class="bi bi-arrow-left"></i> </a>
-                <a href="#" id="sort_toggle-{form_id}-{field_name}"> {label}</a>
-                <a href="#" id="sort_rigth-{form_id}-{field_name}"><i class="bi bi-arrow-right"></i> </a>
+                <a href="#" id="sort_left--{form_id}--{field_name}"><i class="bi bi-arrow-left"></i> </a>
+                <a href="#" id="sort_toggle--{form_id}--{field_name}"> {label}</a>
+                <a href="#" id="sort_rigth--{form_id}--{field_name}"><i class="bi bi-arrow-right"></i> </a>
             </th>
             "##
             );
@@ -1349,13 +1349,13 @@ impl DataView {
 
                 let parent_name = if data_view.path.is_none() { &data_view.data_view_id.parent_name } else { &None };
                 let field_str = Service::build_field_str(&data_view_manager.server_connection, parent_name, &data_view.data_view_id.schema_name, field_name, item)?;
-                html_cols.push(format!(r#"<td><a id="table_row_col-{form_id}-{field_name}-{index}" href="{href_go_to_field}">{field_str}</a></td>"#));
+                html_cols.push(format!(r#"<td><a id="table_row_col--{form_id}--{field_name}-{index}" href="{href_go_to_field}">{field_str}</a></td>"#));
             }
 
             let html_cols = html_cols.join("\n");
 
             let html_a_search_select = if let Some(select_out) = &params_search.select_out {
-                format!(r##"<a href="#" id="search_select-{form_id}-{select_out}-{item_index}"><i class="bi bi-ok"></i> Select</a>"##)
+                format!(r##"<a href="#" id="search_select--{form_id}--{select_out}-{item_index}"><i class="bi bi-ok"></i> Select</a>"##)
             } else {
                 "".to_string()
             };
@@ -1364,17 +1364,17 @@ impl DataView {
             let href_edit = build_href(data_view_manager, data_view, item, "edit")?;
             let href_item_move = format!(
                 r##"
-            <a id="table_row-remove-{form_id}-{index}" ng-if="edit == true" href="#"><i class="bi bi-trash"></i> Delete</a>
-            <a id="table_row-up-{form_id}-{index}"     ng-if="edit == true" href="#"><i class="bi bi-arrow-up"></i> Up</a>
-            <a id="table_row-down-{form_id}-{index}"   ng-if="edit == true" href="#"><i class="bi bi-arrow-down"></i> Down</a>
+            <a id="table_row-remove--{form_id}--{index}" ng-if="edit == true" href="#"><i class="bi bi-trash"></i> Delete</a>
+            <a id="table_row-up--{form_id}--{index}"     ng-if="edit == true" href="#"><i class="bi bi-arrow-up"></i> Up</a>
+            <a id="table_row-down--{form_id}--{index}"   ng-if="edit == true" href="#"><i class="bi bi-arrow-down"></i> Down</a>
             "##
             );
             let row = format!(
                 r##"
             <tr>
                 <td>
-                    <a id="table_row-view-{form_id}-{index}" href="{href_view}"><i class="bi bi-eye-fill"></i> View</a>
-                    <a id="table_row-edit-{form_id}-{index}" href="{href_edit}"><i class="bi bi-eye-fill"></i> Edit</a>
+                    <a id="table_row-view--{form_id}--{index}" href="{href_view}"><i class="bi bi-eye-fill"></i> View</a>
+                    <a id="table_row-edit--{form_id}--{index}" href="{href_edit}"><i class="bi bi-eye-fill"></i> Edit</a>
                     {html_a_search_select}
                     {href_item_move}
                 </td>
@@ -1396,7 +1396,7 @@ impl DataView {
             let mut html_pages = vec![];
 
             for page in 1..max_page {
-                html_pages.push(format!(r##"<li class="page-item"><a class="page-link" id="selected_page-{form_id}-{page}" href="#">{page}</a></li>"##));
+                html_pages.push(format!(r##"<li class="page-item"><a class="page-link" id="selected_page--{form_id}--{page}" href="#">{page}</a></li>"##));
             }
 
             let html_pages = html_pages.join("\n");
@@ -1423,7 +1423,7 @@ impl DataView {
                 <label for="page-size" class="col-2 col-form-label">Page size</label>
 
                 <div class="col-2">
-                    <input class="form-control" id="page_size-{form_id}" name="page_size" type="number" step="1" value="{page_size}">
+                    <input class="form-control" id="page_size--{form_id}" name="page_size" type="number" step="1" value="{page_size}">
                 </div>
             </div>
             "##
@@ -1436,7 +1436,7 @@ impl DataView {
         let html_rows = hmtl_rows.join("\n");
         let ret = format!(
             r##"
-            <table id="table-{form_id}" class="table table-responsive table-bordered table-striped clearfix">
+            <table id="table--{form_id}" class="table table-responsive table-bordered table-striped clearfix">
                 <thead>
                     <tr>
                         <th></th>
@@ -3304,7 +3304,7 @@ impl DataViewManager<'_> {
     }
 
     async fn process_click_target(&mut self, target: &str) -> Result<DataViewResponse, Box<dyn std::error::Error>> {
-        let re = regex::Regex::new(r"(?P<action>create)-(?P<form_type>instance|filter|aggregate|sort)-((?P<parent>[\w_]+)-)?(?P<name>[\w_]+)$")?;
+        let re = regex::Regex::new(r"(?P<action>create)-(?P<form_type>instance|filter|aggregate|sort)--((?P<parent>[\w_]+)-)?(?P<name>[\w_]+)$")?;
 
         if let Some(cap) = re.captures(target) {
             let element_id = HtmlElementId::new_with_regex(&cap)?;
@@ -3313,7 +3313,7 @@ impl DataViewManager<'_> {
             return self.process_data_view_action(&element_id, &DataViewProcessAction::New, &params_search, &params_extra).await;
         }
 
-        let re = regex::Regex::new(r"delete-(?P<form_type>instance|filter|aggregate|sort)-((?P<parent>[\w_]+)-)?(?P<name>[\w_]+)")?;
+        let re = regex::Regex::new(r"delete-(?P<form_type>instance|filter|aggregate|sort)--((?P<parent>[\w_]+)-)?(?P<name>[\w_]+)")?;
 
         if let Some(cap) = re.captures(target) {
             let element_id = HtmlElementId::new_with_regex(&cap)?;
@@ -3328,7 +3328,7 @@ impl DataViewManager<'_> {
             return self.process_data_view_action(&element_id, &DataViewProcessAction::Search, &params_search, &params_extra).await;
         }
 
-        let re = regex::Regex::new(r"apply-(?P<form_type>instance|filter|aggregate|sort)-((?P<parent>[\w_]+)-)?(?P<name>[\w_]+)$")?;
+        let re = regex::Regex::new(r"apply-(?P<form_type>instance|filter|aggregate|sort)--((?P<parent>[\w_]+)-)?(?P<name>[\w_]+)$")?;
 
         if let Some(cap) = re.captures(target) {
             let element_id = HtmlElementId::new_with_regex(&cap)?;
@@ -3402,7 +3402,7 @@ impl DataViewManager<'_> {
             return Ok(data_view_response);
         }
 
-        let re = regex::Regex::new(r"(table_row|reference)-(?P<action>new|edit|view|search)-((?P<parent>[\w_]+)-)?(?P<name>[\w_]+)(-(?P<field_name>[\w_]+))?-(?P<index>\d+)")?;
+        let re = regex::Regex::new(r"(table_row|reference)-(?P<action>new|edit|view|search)--((?P<parent>[\w_]+)-)?(?P<name>[\w_]+)-(-(?P<field_name>[\w_]+))?-(?P<index>\d+)")?;
 
         if let Some(cap) = re.captures(target) {
             let element_id = HtmlElementId::new_with_regex(&cap)?;
@@ -3435,7 +3435,7 @@ impl DataViewManager<'_> {
             return self.process_data_view_action(&element_id, &action, &params_search, &instance).await;
         }
 
-        let re = regex::Regex::new(r"(?P<act>sort_left|sort_toggle|sort_rigth)-((?P<parent>[\w_]+)-)?(?P<name>[\w_]+)-(?P<field_name>[\w_]+)")?;
+        let re = regex::Regex::new(r"(?P<act>sort_left|sort_toggle|sort_rigth)--((?P<parent>[\w_]+)-)?(?P<name>[\w_]+)--(?P<field_name>[\w_]+)")?;
 
         if let Some(cap) = re.captures(target) {
             let element_id = HtmlElementId::new_with_regex(&cap)?;
@@ -3466,7 +3466,7 @@ impl DataViewManager<'_> {
             return Ok(data_view_response);
         }
 
-        let re = regex::Regex::new(r"selected_page-((?P<parent>[\w_]+)-)?(?P<name>[\w_]+)-(?P<index>\d+)")?;
+        let re = regex::Regex::new(r"selected_page--((?P<parent>[\w_]+)-)?(?P<name>[\w_]+)--(?P<index>\d+)")?;
 
         if let Some(cap) = re.captures(target) {
             let element_id = HtmlElementId::new_with_regex(&cap)?;
@@ -3611,7 +3611,7 @@ impl DataViewManager<'_> {
         }
 
         let mut data_view_response = DataViewResponse { changes: json!({}), ..Default::default() };
-        let re = regex::Regex::new(r"(?P<form_type>instance|filter|aggregate|sort)-((?P<parent>[\w_]+)-)?(?P<name>[\w_]+)-(?P<field_name>[\w_]+)(?P<form_type_ext>@min|@max)?(-(?P<index>\d+))?")?;
+        let re = regex::Regex::new(r"(?P<form_type>instance|filter|aggregate|sort)--((?P<parent>[\w_]+)-)?(?P<name>[\w_]+)--(?P<field_name>[\w_]+)(?P<form_type_ext>@min|@max)?(-(?P<index>\d+))?")?;
 
         if let Some(cap) = re.captures(target) {
             let element_id = &HtmlElementId::new_with_regex(&cap)?;
@@ -3852,7 +3852,7 @@ pub mod tests {
                                 }
                             }
 
-                            let re = regex::Regex::new(r"id=(instance|table_row_col)-((?P<parent>[\w_]+)-)?(?P<name>[\w_]+)-(?P<field_name>[\w_]+)(-(?P<index>\d+))?")?;
+                            let re = regex::Regex::new(r"id=(instance|table_row_col)--((?P<parent>[\w_]+)-)?(?P<name>[\w_]+)--(?P<field_name>[\w_]+)(-(?P<index>\d+))?")?;
 
                             let Some(cap) = re.captures(&target) else {
                                 println!("\nDon't match target !\n");
