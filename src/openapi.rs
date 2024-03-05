@@ -1766,6 +1766,8 @@ func (self *OpenAPI) convertStandartToRufs() {
 
     // (service, (service.field|foreign_table_name)
     fn get_foreign_key_description(&self, schema :&str, field_name: &str) -> Result<Option<ForeignKeyDescription>, Error> {
+        // TODO : primeiro procurar em foreign_keys
+        // let foreign_keys = schema.extensions.get("x-foreignKeys").context("context")?;
         let field = self.get_property(schema, field_name);
 
         if field.is_none() {
