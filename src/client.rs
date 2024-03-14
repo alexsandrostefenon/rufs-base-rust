@@ -46,41 +46,6 @@ impl HttpRestRequest {
             ..Default::default()
         }
     }
-
-    /*
-        static urlSearchParamsToJson(urlSearchParams, properties) {
-            const convertSearchParamsTypes = (searchParams, properties) => {
-                let reservedParams = ["primaryKey", "overwrite", "filter", "filterRange", "filterRangeMin", "filterRangeMax"];
-
-                for name of reservedParams {
-                    let obj = searchParams[name];
-
-                    if obj != undefined {
-                        for [fieldName, value] of Object.entries(obj) {
-                            let field = properties[fieldName];
-
-                            if field != undefined {
-                                if field.type == "integer")
-                                    obj[fieldName] = Number.parseInt(value);
-                                else if field.type == "number")
-                                    obj[fieldName] = Number.parseFloat(value);
-                                else if field.type.startsWith("date") == true)
-                                    obj[fieldName] = new Date(value);
-                            }
-                        }
-                    }
-                }
-            }
-
-            if urlSearchParams.is_none() || urlSearchParams == null)
-                return {};
-
-            let _Qs = HttpRestRequest.Qs != null ? HttpRestRequest.Qs : Qs;
-            let searchParams = _Qs.parse(urlSearchParams, {ignoreQueryPrefix: true, allowDots: true});
-            if properties != undefined) convertSearchParamsTypes(searchParams, properties);
-            return searchParams;
-        }
-    */
     /*
        async fn login_basic(&mut self, path :&str, username :&str, password :&str) -> Result<LoginResponseClient, Box<std::error::Error>> {
            let client = reqwest::Client::new();
@@ -184,14 +149,9 @@ impl HttpRestRequest {
     */
 }
 
-#[derive(Debug, Default, Deserialize, Serialize)]
-pub struct Pagination {
-    page: Option<usize>,
-    page_size: Option<usize>,
-}
-
-#[derive(PartialEq, Clone, Copy, Debug)]
+#[derive(PartialEq, Clone, Copy, Debug, Default)]
 pub enum DataViewProcessAction {
+    #[default]
     Search,
     New,
     Edit,
@@ -207,20 +167,6 @@ impl std::fmt::Display for DataViewProcessAction {
             DataViewProcessAction::View => write!(f, "view"),
         }
     }
-}
-
-#[derive(Debug, Default, Deserialize, Serialize)]
-pub struct DataViewProcessParams {
-    primary_key: Option<Value>,
-    filter: Option<Value>,
-    filter_range: Option<Value>,
-    filter_range_min: Option<Value>,
-    filter_range_max: Option<Value>,
-    aggregate: Option<Value>,
-    sort: Option<HashMap<String, FieldSort>>,
-    pagination: Option<Pagination>,
-    overwrite: Option<Value>,
-    select_out: Option<String>,
 }
 
 pub struct Service {
@@ -326,11 +272,11 @@ impl Service {
         }
     }
     // private, use in get, save, update and remove
-    pub fn update_list(&mut self, value: Value, pos: Option<usize>) -> usize {
+    pub fn update_list(&mut self, value: Value, pos: Option<usize>) -> Result<usize, Box<dyn std::error::Error>> {
         #[cfg(debug_assertions)]
         if value.is_array() {
-            for _value in &self.list {
-                println!("[DEBUG - {:?} - {:?}]", self.get_primary_key(&value), value);
+            for value in &self.list {
+                println!("[DEBUG - {:?} - {:?}]", self.get_primary_key(value), value);
             }
         }
 
@@ -374,7 +320,7 @@ impl Service {
             }
         };
 
-        ret
+        Ok(ret)
     }
 
     fn build_field_str(server_connection: &ServerConnection, parent_name: &Option<String>, schema_name: &str, field_name: &str, obj: &Value) -> Result<String, Box<dyn std::error::Error>> {
@@ -538,17 +484,20 @@ pub struct DataViewResponse {
     changes: Value,
     tables: Value,
     aggregates: Value,
+    forms: Value
 }
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Default)]
 pub enum DataViewType {
+    #[default]
     Primary,
     ObjectProperty,
     Dependent,
 }
 
-#[derive(PartialEq, Clone, Debug)]
+#[derive(PartialEq, Clone, Debug, Default)]
 pub enum FormType {
+    #[default]
     Instance,
     Filter,
     Aggregate,
@@ -580,7 +529,7 @@ impl Display for FormType {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct DataViewId {
     pub schema_name: String,
     pub parent_name: Option<String>,
@@ -588,13 +537,14 @@ pub struct DataViewId {
     form_id_parent: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct HtmlElementId {
     pub data_view_id: DataViewId,
     pub form_type: FormType,
     form_type_ext: Option<String>,
     field_name: Option<String>,
     index: Option<usize>,
+    // TODO : mover para DataViewId
     action: Option<DataViewProcessAction>,
 }
 
@@ -686,50 +636,56 @@ impl HtmlElementId {
     }
 }
 
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct DataViewParams {
+    primary_key: Option<Value>,
+    filter: Value,
+    filter_range: Value,
+    filter_range_min: Value,
+    filter_range_max: Value,
+    aggregate: Value,
+    sort: IndexMap<String, FieldSort>,
+    page: usize,
+    page_size: usize,
+    pub instance: Value,
+    origin: Option<String>,
+}
+
+impl Default for DataViewParams {
+    fn default() -> Self {
+        Self { primary_key: Default::default(), filter: json!({}), filter_range: json!({}), filter_range_min: json!({}), filter_range_max: json!({}), aggregate: json!({}), sort: Default::default(), page: 0, page_size: 25, instance: json!({}), origin: Default::default() }
+    }
+}
+
+#[derive(Default)]
 pub struct DataView {
+    pub params: DataViewParams,
+    // TODO : mover para DataViewId
+    action: DataViewProcessAction,
+    // const
     pub data_view_id: DataViewId,
     pub path: Option<String>,
     typ: DataViewType,
     short_description_list: Vec<String>,
     extensions: IndexMap<String, Value>,
     properties: IndexMap<String, ReferenceOr<Box<Schema>>>,
+    fields_table: Vec<String>,
+    pub childs: Vec<DataView>,
+    // mutable
     properties_modified: IndexMap<String, Value>,
-
-    //property_name: Option<String>,
-    //method: String,
-    //schema_place: SchemaPlace,
-    action: DataViewProcessAction,
-    //data_view_method_place : Vec<DataStoreMethodPlace>,
-    //label :String,
-    // data instance
-    active_primary_key: Option<Value>, // active index of filter_results
-    pub instance: Value,
-    instance_flags: HashMap<String, Vec<bool>>,
+    // data
     original: Value,
-    // data list
+    // data aux
     active_index: Option<usize>, // active index of filter_results
+    instance_flags: HashMap<String, Vec<bool>>,
+    // data list aggregate
+    aggregate_results: HashMap<String, usize>,
+    // list data
     pub filter_results: Vec<Value>,
     field_filter_results: IndexMap<String, Value>,
     pub field_results: IndexMap<String, Vec<Value>>,
     field_results_str: IndexMap<String, Vec<String>>,
     field_external_references_str: IndexMap<String, String>,
-    //list: Vec<Value>,
-    //list_str: Vec<String>,
-    current_page: usize,
-    page_size: usize,
-    // data list aggregate
-    instance_aggregate_range: Value,
-    aggregate_results: HashMap<String, usize>,
-    // data list filter
-    instance_filter: Value,
-    instance_filter_range: Value,
-    instance_filter_range_min: Value,
-    instance_filter_range_max: Value,
-    // data list sort
-    fields_sort: HashMap<String, FieldSort>,
-    // ui
-    fields_table: Vec<String>,
-    pub childs: Vec<DataView>,
 }
 
 impl DataView {
@@ -742,45 +698,17 @@ impl DataView {
 
         let element_id = HtmlElementId::new(schema_name, parent_name, FormType::Instance, None, None, None);
         let data_view_id = element_id.data_view_id.clone();
+        let mut params = DataViewParams::default();
+        params.page = 1;
 
         Self {
+            params,
             data_view_id,
             path,
-            //property_name,
-            //access,
             action,
-            //method: String::default(),
-            //schema_place: SchemaPlace::Schemas,
-            //data_view_method_place: vec![],
-            //label,
-            short_description_list: vec![],
-            properties: IndexMap::default(),
-            properties_modified: IndexMap::default(),
-            extensions: IndexMap::default(),
-            field_filter_results: IndexMap::default(),
-            field_results: IndexMap::default(),
-            field_results_str: IndexMap::default(),
-            field_external_references_str: IndexMap::default(),
-            //list: vec![],
-            //list_str: vec![],
-            active_index: None,
-            filter_results: vec![],
-            current_page: 1,
-            page_size: 25,
-            active_primary_key: None,
-            instance: json!({}),
-            instance_flags: HashMap::default(),
-            original: json!({}),
-            instance_aggregate_range: json!({}),
-            aggregate_results: HashMap::default(),
-            instance_filter: json!({}),
-            instance_filter_range: json!({}),
-            instance_filter_range_min: json!({}),
-            instance_filter_range_max: json!({}),
-            fields_sort: HashMap::default(),
-            fields_table: vec![],
-            childs: vec![],
             typ,
+            original: json!({}),
+            ..Default::default()
         }
     }
 
@@ -813,11 +741,12 @@ impl DataView {
         Ok(())
     }
 
-    pub fn clear(&mut self) {
-        self.original = json!({});
-        self.instance = json!({});
+    pub fn clear(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        self.original.as_object_mut().context("broken original")?.clear();
+        self.params.instance.as_object_mut().context("broken params.instance")?.clear();
         self.instance_flags.clear();
         self.field_external_references_str.clear();
+        Ok(())
     }
 
     fn build_changes(&mut self, element_id: &HtmlElementId, data_out: &mut Value) -> Result<(), Box<dyn std::error::Error>> {
@@ -868,7 +797,7 @@ impl DataView {
                 Type::String(typ) => {
                     let max_length = typ.max_length.unwrap_or(1024);
 
-                    let col_size = if max_length > 110 { 11 } else { (max_length / 10) + 1 };
+                    let col_size = if max_length > 110 { 11 } else { (max_length / 8) + 1 };
 
                     let (html_input_typ, is_rangeable) = match &typ.format {
                         VariantOrUnknownOrEmpty::Item(format) => match format {
@@ -1281,7 +1210,7 @@ impl DataView {
         Ok(str)
     }
 
-    fn build_table(data_view_manager: &DataViewManager, data_view: &DataView, params_search: &DataViewProcessParams) -> Result<String, Box<dyn std::error::Error>> {
+    fn build_table(data_view_manager: &DataViewManager, data_view: &DataView, params_search: &DataViewParams) -> Result<String, Box<dyn std::error::Error>> {
         fn build_href(data_view_manager: &DataViewManager, data_view: &DataView, item: &Value, action: &DataViewProcessAction) -> Result<String, Box<dyn std::error::Error>> {
             let str = if data_view.path.is_some() {
                 let service = data_view_manager.server_connection.service_map.get(&data_view.data_view_id.schema_name).context("Missing service")?;
@@ -1324,13 +1253,13 @@ impl DataView {
             hmtl_header.push(col);
         }
 
-        let mut offset_ini = (data_view.current_page - 1) * data_view.page_size;
+        let mut offset_ini = (data_view.params.page - 1) * data_view.params.page_size;
 
         if offset_ini > list.len() {
             offset_ini = list.len();
         }
 
-        let mut offset_end = data_view.current_page * data_view.page_size;
+        let mut offset_end = data_view.params.page * data_view.params.page_size;
 
         if offset_end > list.len() {
             offset_end = list.len();
@@ -1345,7 +1274,8 @@ impl DataView {
 
             for field_name in &data_view.fields_table {
                 let href_go_to_field = if data_view.path.is_some() {
-                    data_view.build_go_to_field(&data_view_manager.server_connection, field_name, &DataViewProcessAction::View, item, false)?.unwrap_or("#".to_string())
+                    let element_id = HtmlElementId {data_view_id: data_view.data_view_id.clone(), field_name: Some(field_name.clone()), action: Some(DataViewProcessAction::View), ..Default::default()};
+                    DataView::build_go_to_field(&data_view_manager.server_connection, &element_id, item)?.unwrap_or("#".to_string())
                 } else {
                     "#".to_string()
                 };
@@ -1363,28 +1293,27 @@ impl DataView {
 
             let html_cols = html_cols.join("\n");
 
-            let html_a_search_select = if let Some(select_out) = &params_search.select_out {
-                format!(r##"<a href="#" id="search_select--{form_id}--{select_out}-{item_index}"><i class="bi bi-ok"></i> Select</a>"##)
+            let html_a_select = if let Some(_origin) = &params_search.origin {
+                // bi-box-arrow-left, bi-box-arrow-down-left
+                format!(r##"<a href="#" id="search_select-new--{form_id}--{item_index}"><i class="bi bi-check-lg"></i> Select</a>"##)
             } else {
                 "".to_string()
             };
 
             let href_view = build_href(data_view_manager, data_view, item, &DataViewProcessAction::View)?;
             let href_edit = build_href(data_view_manager, data_view, item, &DataViewProcessAction::Edit)?;
-            let href_item_move = format!(
-                r##"
+            let href_item_move = format!(r##"
             <a id="table_row-remove--{form_id}--{index}" ng-if="edit == true" href="#"><i class="bi bi-trash"></i> Delete</a>
             <a id="table_row-up--{form_id}--{index}"     ng-if="edit == true" href="#"><i class="bi bi-arrow-up"></i> Up</a>
             <a id="table_row-down--{form_id}--{index}"   ng-if="edit == true" href="#"><i class="bi bi-arrow-down"></i> Down</a>
             "##
             );
-            let row = format!(
-                r##"
+            let row = format!(r##"
             <tr>
                 <td>
                     <a id="table_row-view--{form_id}--{index}" href="{href_view}"><i class="bi bi-eye-fill"></i> View</a>
                     <a id="table_row-edit--{form_id}--{index}" href="{href_edit}"><i class="bi bi-eye-fill"></i> Edit</a>
-                    {html_a_search_select}
+                    {html_a_select}
                     {href_item_move}
                 </td>
                 {html_cols}
@@ -1395,11 +1324,11 @@ impl DataView {
             item_index += 1;
         }
 
-        let html_page_control = if list.len() > data_view.page_size {
-            let max_page = if list.len() % data_view.page_size == 0 {
-                list.len() / data_view.page_size
+        let html_page_control = if list.len() > data_view.params.page_size {
+            let max_page = if list.len() % data_view.params.page_size == 0 {
+                list.len() / data_view.params.page_size
             } else {
-                (list.len() / data_view.page_size) + 1
+                (list.len() / data_view.params.page_size) + 1
             };
 
             let mut html_pages = vec![];
@@ -1409,7 +1338,7 @@ impl DataView {
             }
 
             let html_pages = html_pages.join("\n");
-            let page_size = data_view.page_size;
+            let page_size = data_view.params.page_size;
             format!(
                 r##"
             <nav aria-label="Page navigation">
@@ -1461,39 +1390,6 @@ impl DataView {
         );
         Ok(ret)
     }
-
-    fn paginate(&mut self, page_size: Option<usize>, page: Option<usize>) -> Result<(), Box<dyn std::error::Error>> {
-        self.page_size = page_size.unwrap_or(25);
-        self.current_page = page.unwrap_or(1);
-        //let result = self.filter_results.len().div_ceil(self.page_size);
-        //self.numPages = (result == 0) ? 1 : result;
-        Ok(())
-    }
-    /*
-       fn paginate(usize pageSize, usize page) {
-           if pageSize == null {
-               pageSize = CrudUiSkeleton.calcPageSize();
-           }
-
-           if pageSize < 10 {
-               pageSize = 10;
-           }
-
-           super.paginate(pageSize, 1);
-           //self.setPage(1);
-       }
-    */
-    /*
-        fn set_page_size(&mut self, page_size: usize) {
-            return self.paginate(Some(page_size), None);
-        }
-    */
-    /*
-        fn set_page(&mut self, page: Option<usize>) {
-            return self.paginate(Some(self.page_size), page);
-            //self.dataStoreManager.getDocuments(service, self.listPage);
-        }
-    */
     /*
         fn is_valid(&self) -> bool {
             //let properties = self.properties || self.schema.properties;
@@ -1526,24 +1422,11 @@ impl DataView {
             ret
         }
     */
-    /*
-        fn is_changed(&self) -> bool {
-            let mut ret = false;
-
-            for (field_name, _) in &self.properties {
-                if self.instance[field_name] != self.original[field_name] {
-                    ret = true;
-                    break;
-                }
-            }
-
-            return ret;
-        }
-    */
     // Aggregate Section
-    fn clear_aggregate(&mut self) {
-        self.instance_aggregate_range = json!({});
-        self.aggregate_results = HashMap::default();
+    fn clear_aggregate(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        self.params.aggregate.as_object_mut().context("broken obj")?.clear();
+        self.aggregate_results.clear();
+        Ok(())
     }
 
     fn apply_aggregate(&mut self, server_connection: &ServerConnection, aggregate: &Value) -> Result<(), Box<dyn std::error::Error>> {
@@ -1571,8 +1454,8 @@ impl DataView {
             list.join("")
         }
 
-        if !aggregate.is_null() {
-            self.instance_aggregate_range = aggregate.clone();
+        if !aggregate.as_object().context("broken ok")?.is_empty() {
+            self.params.aggregate = aggregate.clone();
         }
 
         self.aggregate_results = HashMap::default();
@@ -1587,7 +1470,7 @@ impl DataView {
         for item in list {
             let mut list_label = vec![];
 
-            for (field_name, range) in self.instance_aggregate_range.as_object().unwrap() {
+            for (field_name, range) in self.params.aggregate.as_object().context("broken ok")? {
                 let Some(value) = item.get(field_name) else {
                     continue;
                 };
@@ -1677,13 +1560,11 @@ impl DataView {
     // Filter section
     fn clear_filter(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         // hora corrente, hora anterior, uma hora, hoje, ontem, um dia, semana corrente, semana anterior, uma semana, quinzena corrente, quinzena anterior, 15 dias, mês corrente, mês anterior, 30 dias, ano corrente, ano anterior, 365 dias
-        self.instance_filter = json!({});
-        self.instance_filter_range = json!({});
-        self.instance_filter_range_min = json!({});
-        self.instance_filter_range_max = json!({});
-        //self.filter_results = self.list.clone();
-        //self.filter_results.clear();
-        self.clear();
+        self.params.filter.as_object_mut().context("broken ok")?.clear();
+        self.params.filter_range.as_object_mut().context("broken ok")?.clear();
+        self.params.filter_range_min.as_object_mut().context("broken ok")?.clear();
+        self.params.filter_range_max.as_object_mut().context("broken ok")?.clear();
+        self.clear()?;
         Ok(())
     }
 
@@ -1746,20 +1627,10 @@ impl DataView {
                         }
                     }
                     Value::Array(_) => todo!(),
-                    Value::Object(obj) => {
+                    Value::Object(_obj) => {
                         if recursive == true {
-                            for (name, value_a) in obj {
-                                let Some(value_b) = actual_property.get(name) else {
-                                    return Ok(false);
-                                };
-
-                                if !value_a.is_null() && value_b.is_null() {
-                                    return Ok(false);
-                                };
-
-                                if match_object(value_a, value_b, match_string_partial, recursive, compare_type)? == false {
-                                    return Ok(false);
-                                }
+                            if match_object(expected_property, actual_property, match_string_partial, recursive, compare_type)? == false {
+                                return Ok(false);
                             }
 
                             true
@@ -1819,36 +1690,33 @@ impl DataView {
         self.filter_results = list
             .into_iter()
             .filter(|candidate| {
-                let mut flag = compare_func(candidate, &self.instance_filter, 0);
-
-                if flag == true {
-                    flag = compare_func(candidate, &self.instance_filter_range_min, -1);
+                if candidate.is_object() {
+                    let mut flag = compare_func(candidate, &self.params.filter, 0);
 
                     if flag == true {
-                        flag = compare_func(candidate, &self.instance_filter_range_max, 1);
+                        flag = compare_func(candidate, &self.params.filter_range_min, -1);
+    
+                        if flag == true {
+                            flag = compare_func(candidate, &self.params.filter_range_max, 1);
+                        }
                     }
+    
+                    flag
+                } else {
+                    false
                 }
-
-                flag
             })
             .cloned()
             .collect();
-        //self.paginate(null, null);
     }
 
-    fn apply_sort(&mut self, sort: &Option<HashMap<String, FieldSort>>) -> Result<(), Box<dyn std::error::Error>> {
-        if let Some(sort) = sort {
-            for (field_name, field) in &mut self.fields_sort {
-                if let Some(sort) = sort.get(field_name) {
-                    field.sort_type = sort.sort_type.clone();
-                    field.order_index = sort.order_index.clone();
-                    field.table_visible = sort.table_visible.clone();
-                }
-            }
+    fn apply_sort(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        if self.params.sort.is_empty() {
+            return Ok(())
         }
         // format fieldsTable in correct order;
         {
-            let mut entries: Vec<(&String, &FieldSort)> = self.fields_sort.iter().collect();
+            let mut entries: Vec<(&String, &FieldSort)> = self.params.sort.iter().collect();
             entries.sort_by(|a, b| a.1.order_index.cmp(&b.1.order_index));
             self.fields_table = vec![];
 
@@ -1863,7 +1731,7 @@ impl DataView {
             let mut ret = Ordering::Equal;
 
             for field_name in &self.fields_table {
-                let field = self.fields_sort.get(field_name).unwrap();
+                let field = self.params.sort.get(field_name).unwrap();
 
                 if field.sort_type != FieldSortType::None {
                     let val_a = a.get(field_name);
@@ -1896,7 +1764,7 @@ impl DataView {
     }
 
     fn clear_sort(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        self.fields_sort.clear();
+        self.params.sort.clear();
         //let properties = self.schemaResponse != undefined ? self.schemaResponse.properties : self.properties;
 
         for (field_name, field) in &self.properties {
@@ -1905,7 +1773,7 @@ impl DataView {
                 let table_visible = extension.get("x-tableVisible").unwrap_or(&Value::Bool(false)).as_bool().unwrap_or(false);
                 let hidden = extension.get("x-hidden").unwrap_or(&Value::Bool(false)).as_bool().unwrap_or(false);
                 let order_index = extension.get("x-orderIndex").unwrap_or(&Value::from(0)).as_i64().unwrap_or(0);
-                self.fields_sort.insert(
+                self.params.sort.insert(
                     field_name.clone(),
                     FieldSort {
                         sort_type: FieldSortType::None,
@@ -1917,23 +1785,23 @@ impl DataView {
             }
         }
 
-        self.apply_sort(&None)
+        self.apply_sort()
     }
 
     fn get_form_type_instance(&self, form_type: &FormType, form_type_ext: &Option<String>) -> Result<&Value, Box<dyn std::error::Error>> {
         let instance = match form_type {
-            FormType::Instance => &self.instance,
+            FormType::Instance => &self.params.instance,
             FormType::Filter => match form_type_ext {
                 Some(form_type_ext) => {
                     if form_type_ext == "@max" {
-                        &self.instance_filter_range_max
+                        &self.params.filter_range_max
                     } else {
-                        &self.instance_filter_range_min
+                        &self.params.filter_range_min
                     }
                 }
-                None => &self.instance_filter,
+                None => &self.params.filter,
             },
-            FormType::Aggregate => &self.instance_aggregate_range,
+            FormType::Aggregate => &self.params.aggregate,
             FormType::Sort => todo!(),
         };
 
@@ -1992,21 +1860,21 @@ impl DataView {
                 FormType::Filter => match form_type_ext {
                     Some(form_type_ext) => {
                         if form_type_ext == "@max" {
-                            data_view.instance_filter_range_max[field_name] = value
+                            data_view.params.filter_range_max[field_name] = value
                         } else {
-                            data_view.instance_filter_range_min[field_name] = value
+                            data_view.params.filter_range_min[field_name] = value
                         }
                     }
-                    None => data_view.instance_filter[field_name] = value,
+                    None => data_view.params.filter[field_name] = value,
                 },
-                FormType::Aggregate => data_view.instance_aggregate_range[field_name] = value,
+                FormType::Aggregate => data_view.params.aggregate[field_name] = value,
                 FormType::Sort => todo!(),
                 FormType::Instance => {
-                    data_view.instance[field_name] = value;
+                    data_view.params.instance[field_name] = value;
 
                     if data_view.typ == DataViewType::ObjectProperty {
                         if let Some(index) = data_view.active_index {
-                            data_view.filter_results[index] = data_view.instance.clone();
+                            data_view.filter_results[index] = data_view.params.instance.clone();
                         }
                     }
                 },
@@ -2180,14 +2048,7 @@ impl DataView {
     }
 
     fn set_values(&mut self, server_connection: &ServerConnection, watcher: &Box<dyn DataViewWatch>, obj: &Value, element_id: &HtmlElementId) -> Result<(), Box<dyn std::error::Error>> {
-        fn set_values_process(
-            data_view: &mut DataView,
-            child_name: Option<&str>,
-            server_connection: &ServerConnection,
-            watcher: &Box<dyn DataViewWatch>,
-            obj: &Value,
-            element_id: &HtmlElementId,
-        ) -> Result<(), Box<dyn std::error::Error>> {
+        fn set_values_process(data_view: &mut DataView, child_name: Option<&str>, server_connection: &ServerConnection, watcher: &Box<dyn DataViewWatch>, obj: &Value, element_id: &HtmlElementId) -> Result<(), Box<dyn std::error::Error>> {
             let keys = if let Some(child_name) = child_name {
                 let data_view = data_view.get_child_mut(child_name)?;
                 data_view.properties.iter().map(|item| item.0.to_string()).collect::<Vec<String>>()
@@ -2236,9 +2097,9 @@ impl DataView {
         };
 
         if self.action == DataViewProcessAction::New {
-            server_connection.save(path, &self.instance).await
+            server_connection.save(path, &self.params.instance).await
         } else {
-            server_connection.update(path, &self.instance).await
+            server_connection.update(path, &self.params.instance).await
         }
     }
 
@@ -2247,74 +2108,51 @@ impl DataView {
         Ok(format!("#!/app/{}/{}?{}", form_id, action, query_string))
     }
 
-    fn build_go_to_field(&self, server_connection: &ServerConnection, field_name: &str, action: &DataViewProcessAction, obj: &Value, is_go_now: bool) -> Result<Option<String>, Box<dyn std::error::Error>> {
-        fn super_go_to_field(
-            data_view: &DataView,
-            server_connection: &ServerConnection,
-            field_name: &str,
-            action: &DataViewProcessAction,
-            obj: &Value,
-            is_go_now: bool,
-        ) -> Result<Option<String>, Box<dyn std::error::Error>> {
-            let schema_name = &data_view.data_view_id.schema_name;//reference.as_str().unwrap();
+    fn build_go_to_field(server_connection: &ServerConnection, element_id: &HtmlElementId, obj: &Value) -> Result<Option<String>, Box<dyn std::error::Error>> {
+        let schema_name = &element_id.data_view_id.schema_name;//reference.as_str().unwrap();
+        let field_name = element_id.field_name.as_ref().context("broken field_name")?;
 
-            if let Some(item) = server_connection.login_response.openapi.get_primary_key_foreign(schema_name, field_name, obj)? {
-                let service_name = &item.schema;
-                let mut query_obj = json!({});
-    
-                if action == &DataViewProcessAction::Search && is_go_now == true {
-                    query_obj["selectOut"] = json!(field_name);
-                    let filter = json!({});
-                    /*
-                               if item.is_unique_key == false {
-                                   for (field_name, value) in item.primary_key {
-                                       if value.is_null() == false {
-                                           filter[field_name] = value;
-                                       }
+        if let Some(item) = server_connection.login_response.openapi.get_primary_key_foreign(schema_name, field_name, obj)? {
+            let action = element_id.action.as_ref().context("broken action")?;
+            let mut query_obj = json!({});
+
+            if action == &DataViewProcessAction::Search {
+                query_obj["origin"] = json!(format!("{}--{}--{}", element_id.form_type, element_id.data_view_id.form_id, field_name));
+                let filter = json!({});
+                /*
+                           if item.is_unique_key == false {
+                               for (field_name, value) in item.primary_key {
+                                   if value.is_null() == false {
+                                       filter[field_name] = value;
                                    }
                                }
-                    */
-                    query_obj["filter"] = filter;
-                    //server_connection.useHistoryState = true;
-                    //window.history.replaceState(this.instance, "Edited values");
-                } else {
-                    query_obj = item.primary_key;
-                }
-    
-                let url = DataView::build_location_hash(&service_name.to_case(convert_case::Case::Snake), action, &query_obj)?;
-                Ok(Some(url))
+                           }
+                */
+                query_obj["filter"] = filter;
+                //server_connection.useHistoryState = true;
+                //window.history.replaceState(this.instance, "Edited values");
             } else {
-                let Some(value) = obj.get(field_name) else {
-                    return Ok(None);
-                };
-
-                let Some(value) = value.as_str() else {
-                    return Ok(None);
-                };
-
-                if value.starts_with("#") {
-                    return Ok(Some(value.to_string()));
-                } else {
-                    return Ok(None);
-                }
+                query_obj = item.primary_key;
             }
-        }
 
-        let url = super_go_to_field(self, server_connection, field_name, action, obj, is_go_now)?;
-
-        let url = if let Some(url) = url {
+            let service_name = &item.schema;
+            let url = DataView::build_location_hash(&service_name.to_case(convert_case::Case::Snake), action, &query_obj)?;
             Ok(Some(url))
         } else {
-            if self.path.is_some() {
-                let service = server_connection.service_map.get(&self.data_view_id.schema_name).context("Missing service")?;
-                let primary_key = &service.get_primary_key(obj).context(format!("Missing primary key"))?;
-                Ok(Some(DataView::build_location_hash(&self.data_view_id.form_id, action, primary_key)?))
-            } else {
-                Ok(None)
-            }
-        };
+            let Some(value) = obj.get(field_name) else {
+                return Ok(None);
+            };
 
-        return url;
+            let Some(value) = value.as_str() else {
+                return Ok(None);
+            };
+
+            if value.starts_with("#") {
+                return Ok(Some(value.to_string()));
+            } else {
+                return Ok(None);
+            }
+        }
     }
 
     fn get_child_mut(&mut self, child_name: &str) -> Result<&mut DataView, anyhow::Error> {
@@ -2391,7 +2229,7 @@ impl ServerConnection {
                 return Err(format!("Missing parameter {} in query string {}.", "primary_key", ""))?;
             }
 
-            service.update_list(data, None)
+            service.update_list(data, None)?
         };
 
         let ret = service.list.get(pos).unwrap();
@@ -2453,7 +2291,7 @@ impl ServerConnection {
         let method = "post"; //data_view.method
         let data_out = self.login_response.openapi.copy_fields(&service.path, method, &schema_place, false, item_send, false, false, false)?;
         let data = self.http_rest.save(&service.path, &data_out).await?;
-        let new_pos = service.update_list(data.clone(), None);
+        let new_pos = service.update_list(data.clone(), None)?;
         self.update_list_str(schema_name, &data, None, new_pos)?;
         let service = self.service_map.get(schema_name).unwrap();
 
@@ -2478,7 +2316,7 @@ impl ServerConnection {
         let primary_key = &service.get_primary_key(&data_out).context(format!("Missing primary key"))?;
         let data = self.http_rest.update(&service.path, primary_key, &data_out).await?;
         let old_pos = service.find_pos(primary_key);
-        let new_pos = service.update_list(data.clone(), old_pos);
+        let new_pos = service.update_list(data.clone(), old_pos)?;
         self.update_list_str(schema_name, &data, old_pos, new_pos)?;
         let service = self.service_map.get(schema_name).unwrap();
 
@@ -2915,7 +2753,7 @@ impl DataViewManager<'_> {
         Ok(json!({"menu": self.watcher.menu(), "path": self.server_connection.login_response.path, "jwt_header": self.server_connection.login_response.jwt_header}))
     }
 
-    async fn process_data_view_action(&mut self, element_id: &HtmlElementId, action: &DataViewProcessAction, params_search: &DataViewProcessParams, params_extra: &Value) -> Result<DataViewResponse, Box<dyn std::error::Error>> {
+    async fn process_data_view_action(&mut self, element_id: &HtmlElementId, action: &DataViewProcessAction, params_search: &DataViewParams, params_extra: &Value) -> Result<DataViewResponse, Box<dyn std::error::Error>> {
         fn set_filter_range(data_view: &mut DataView, field_name: &str, range: &str) {
             let period_labels = [" minuto ", " hora ", " dia ", " semana ", " quinzena ", " mês ", " ano "];
             let periods = [60, 3600, 86400, 7 * 86400, 15 * 86400, 30 * 86400, 365 * 86400];
@@ -2983,8 +2821,8 @@ impl DataViewManager<'_> {
                 _ => (date_ini, date_end),
             };
 
-            data_view.instance_filter_range_min[field_name] = json!(date_ini.to_rfc3339());
-            data_view.instance_filter_range_max[field_name] = json!(date_end.to_rfc3339());
+            data_view.params.filter_range_min[field_name] = json!(date_ini.to_rfc3339());
+            data_view.params.filter_range_max[field_name] = json!(date_end.to_rfc3339());
         }
 
         fn build_field_filter_results(data_view: &mut DataView, server_connection: &ServerConnection) -> Result<(), Box<dyn std::error::Error>> {
@@ -3085,9 +2923,7 @@ impl DataViewManager<'_> {
                     continue;
                 };
 
-                let foreign_key = server_connection.login_response.openapi.get_foreign_key(&item.schema, &item.field, &primary_key)?;
-
-                let foreign_key = foreign_key.context(format!("Missing foreign value {} in {}, field {}.", primary_key, item.schema, item.field))?;
+                let foreign_key = server_connection.login_response.openapi.get_foreign_key(&item.schema, &item.field, &primary_key)?.context("Missing foreign value.")?;
 
                 for (field_name, value) in foreign_key.as_object().unwrap() {
                     let property = data_view_item
@@ -3104,7 +2940,7 @@ impl DataViewManager<'_> {
                 data_view_item.set_values(server_connection, watcher, &foreign_key, element_id)?;
             }
 
-            data_view.active_primary_key = Some(primary_key);
+            data_view.params.primary_key = Some(primary_key);
             data_view.set_values(server_connection, watcher, &value, element_id)
         }
 
@@ -3183,16 +3019,16 @@ impl DataViewManager<'_> {
         };
 
         let data_view = data_view_get_mut!(self, element_id);
-        data_view.clear();
+        data_view.clear()?;
         data_view.clear_filter()?;
         data_view.clear_sort()?;
-        data_view.clear_aggregate();
+        data_view.clear_aggregate()?;
 
         for data_view in &mut data_view.childs {
-            data_view.clear();
+            data_view.clear()?;
             data_view.clear_filter()?;
             data_view.clear_sort()?;
-            data_view.clear_aggregate();
+            data_view.clear_aggregate()?;
         }
 
         if &data_view.action != action {
@@ -3217,55 +3053,54 @@ impl DataViewManager<'_> {
 
         match &data_view.action {
             DataViewProcessAction::Search => {
-                if params_search.filter.is_some() || params_search.filter_range.is_some() || params_search.filter_range_min.is_some() || params_search.filter_range_max.is_some() {
-                    if let Some(filter_range) = &params_search.filter_range {
-                        for (field_name, value) in filter_range.as_object().unwrap() {
-                            if let Some(value) = value.as_str() {
-                                if value.len() > 0 {
-                                    set_filter_range(data_view, field_name, value);
-                                }
+                data_view.params.origin = params_search.origin.clone();
+
+                {
+                    let mut have_filter = false;
+
+                    for (field_name, value) in params_search.filter_range.as_object().context("broken obj")? {
+                        have_filter = true;
+                        
+                        if let Some(value) = value.as_str() {
+                            if value.len() > 0 {
+                                set_filter_range(data_view, field_name, value);
                             }
                         }
                     }
 
-                    if let Some(filter) = &params_search.filter {
-                        for (field_name, value) in filter.as_object().context("broken")? {
-                            data_view.instance_filter[field_name] = value.clone();
-                        }
+                    if params_search.filter.as_object().context("bron obj")?.is_empty() == false {
+                        have_filter = true;
+                        data_view.params.filter = params_search.filter.clone();
                     }
 
-                    if let Some(filter) = &params_search.filter_range_min {
-                        for (field_name, value) in filter.as_object().context("broken")? {
-                            data_view.instance_filter_range_min[field_name] = value.clone();
-                        }
+                    if params_search.filter_range_min.as_object().context("broken ok")?.is_empty() == false {
+                        have_filter = true;
+                        data_view.params.filter_range_min = params_search.filter_range_min.clone();
                     }
 
-                    if let Some(filter) = &params_search.filter_range_max {
-                        for (field_name, value) in filter.as_object().context("broken")? {
-                            data_view.instance_filter_range_max[field_name] = value.clone();
-                        }
+                    if params_search.filter_range_max.as_object().context("broken ok")?.is_empty() == false {
+                        have_filter = true;
+                        data_view.params.filter_range_max = params_search.filter_range_max.clone();
                     }
 
-                    let service = self.server_connection.service_map.get(&data_view.data_view_id.schema_name).context("Missing service in service_map")?;
-                    data_view.apply_filter(&service.list);
-                    //data_view.setPage(1);
+                    if have_filter {
+                        let service = self.server_connection.service_map.get(&data_view.data_view_id.schema_name).context("Missing service in service_map")?;
+                        data_view.apply_filter(&service.list);
+                    }
                 }
 
-                if let Some(aggregate) = &params_search.aggregate {
-                    data_view.apply_aggregate(&self.server_connection, aggregate)?;
+                if params_search.aggregate.as_object().context("broken obj")?.is_empty() == false {
+                    data_view.apply_aggregate(&self.server_connection, &params_search.aggregate)?;
                 }
 
-                if params_search.sort.is_some() {
-                    data_view.apply_sort(&params_search.sort)?;
-                }
-
-                if let Some(pagination) = &params_search.pagination {
-                    data_view.paginate(pagination.page_size, pagination.page)?;
+                if params_search.sort.is_empty() == false {
+                    data_view.params.sort = params_search.sort.clone();
+                    data_view.apply_sort()?;
                 }
             }
             DataViewProcessAction::New => {
-                if let Some(overwrite) = &params_search.overwrite {
-                    data_view.set_values(&self.server_connection, &self.watcher, overwrite, element_id)?;
+                if params_search.instance.as_object().context("broken obj")?.is_empty() == false {
+                    data_view.set_values(&self.server_connection, &self.watcher, &params_search.instance, element_id)?;
                 } else {
                     data_view.set_values(&self.server_connection, &self.watcher, params_extra, element_id)?;
                 }
@@ -3309,7 +3144,7 @@ impl DataViewManager<'_> {
 
         if let Some(cap) = re.captures(target) {
             let element_id = HtmlElementId::new_with_regex(&cap)?;
-            let params_search = DataViewProcessParams { ..Default::default() };
+            let params_search = DataViewParams { ..Default::default() };
             let params_extra = json!({});
             return self.process_data_view_action(&element_id, &DataViewProcessAction::New, &params_search, &params_extra).await;
         }
@@ -3319,12 +3154,12 @@ impl DataViewManager<'_> {
         if let Some(cap) = re.captures(target) {
             let element_id = HtmlElementId::new_with_regex(&cap)?;
             let data_view = data_view_get!(self, element_id);
-            let primary_key = data_view
-                .active_primary_key
+            let primary_key = data_view.params
+                .primary_key
                 .as_ref()
                 .context(format!("don't opened item in form_id {}", data_view.data_view_id.form_id))?;
             let _old_value = self.server_connection.remove(&data_view.data_view_id.schema_name, primary_key).await?;
-            let params_search = DataViewProcessParams { ..Default::default() };
+            let params_search = DataViewParams { ..Default::default() };
             let params_extra = json!({});
             return self.process_data_view_action(&element_id, &DataViewProcessAction::Search, &params_search, &params_extra).await;
         }
@@ -3374,24 +3209,20 @@ impl DataViewManager<'_> {
                             obj_in                            
                         };
 
-                        let params_search = DataViewProcessParams { ..Default::default() };
+                        let params_search = DataViewParams { ..Default::default() };
                         self.process_data_view_action(&element_id, &action, &params_search, &params_extra).await?
                     } else {
                         DataViewResponse { ..Default::default() }
                     }
                 }
                 FormType::Filter => {
-                    let mut params_search = DataViewProcessParams::default();
                     let data_view = data_view_get!(self, element_id);
-                    params_search.filter = Some(data_view.instance_filter.clone());
-                    params_search.filter_range = Some(data_view.instance_filter_range.clone());
-                    params_search.filter_range_min = Some(data_view.instance_filter_range_min.clone());
-                    params_search.filter_range_max = Some(data_view.instance_filter_range_max.clone());
+                    let params_search = data_view.params.clone();
                     self.process_data_view_action(&element_id, &DataViewProcessAction::Search, &params_search, &json!({})).await?
                 }
                 FormType::Aggregate => {
                     let data_view = data_view_get_mut!(self, element_id);
-                    let aggregate = data_view.instance_aggregate_range.clone();
+                    let aggregate = data_view.params.aggregate.clone();
                     data_view.apply_aggregate(&self.server_connection, &aggregate)?;
                     let mut data_view_response = DataViewResponse { ..Default::default() };
                     data_view_response.aggregates[&data_view.data_view_id.form_id] = json!(data_view.aggregate_results);
@@ -3428,10 +3259,10 @@ impl DataViewManager<'_> {
                 data_view.active_index = Some(active_index);
                 list.get(active_index).context(format!("Missing {}.filter_results[{}], size = {}", schema_name, active_index, list.len()))?.clone()
             } else {
-                data_view.instance.clone()
+                data_view.params.instance.clone()
             };
 
-            let params_search = DataViewProcessParams { ..Default::default() };
+            let params_search = DataViewParams { ..Default::default() };
             let action = element_id.action.context("Missing action")?;
             return self.process_data_view_action(&element_id, &action, &params_search, &instance).await;
         }
@@ -3442,7 +3273,7 @@ impl DataViewManager<'_> {
             let element_id = HtmlElementId::new_with_regex(&cap)?;
             let data_view = data_view_get_mut!(self, element_id);
             let field_name = element_id.field_name.as_ref().context("broken field_name")?;
-            let field = data_view.fields_sort.get_mut(field_name).context(format!("Missing field sort : {}", field_name))?;
+            let field = data_view.params.sort.get_mut(field_name).context(format!("Missing field sort : {}", field_name))?;
 
             match cap.name("act").context("broken")?.as_str() {
                 "sort_left" => field.order_index -= 1,
@@ -3457,8 +3288,8 @@ impl DataViewManager<'_> {
                 data_view.filter_results = service.list.clone();
             }
 
-            data_view.apply_sort(&None)?;
-            let params_search = DataViewProcessParams { ..Default::default() };
+            data_view.apply_sort()?;
+            let params_search = DataViewParams { ..Default::default() };
             let mut data_view_response = DataViewResponse { ..Default::default() };
             data_view_response.tables = json!({});
             let data_view = data_view_get!(self, element_id);
@@ -3472,8 +3303,8 @@ impl DataViewManager<'_> {
         if let Some(cap) = re.captures(target) {
             let element_id = HtmlElementId::new_with_regex(&cap)?;
             let data_view = data_view_get_mut!(self, element_id);
-            data_view.current_page = element_id.index.context("broken index")?;
-            let params_search = DataViewProcessParams { ..Default::default() };
+            data_view.params.page = element_id.index.context("broken index")?;
+            let params_search = DataViewParams { ..Default::default() };
             let mut data_view_response = DataViewResponse { ..Default::default() };
             data_view_response.tables = json!({});
             let data_view = data_view_get!(self, element_id);
@@ -3482,24 +3313,53 @@ impl DataViewManager<'_> {
             return Ok(data_view_response);
         }
 
-        let re = regex::Regex::new(r"(reference)-(?P<action>new|edit|view|search)--((?P<parent>\pL[\w_]+)-)?(?P<name>\pL[\w_]+)-(-(?P<field_name>\pL[\w_]+))?(-(?P<index>\d+))?")?;
+        let re = regex::Regex::new(r"(reference|search_select)-(?P<action>new|edit|view|search)--((?P<parent>\pL[\w_]+)-)?(?P<name>\pL[\w_]+)-(-(?P<field_name>\pL[\w_]+))?(-(?P<index>\d+))?")?;
 
         let target = if let Some(cap) = re.captures(target) {
             let element_id = HtmlElementId::new_with_regex(&cap)?;
-            let data_view = data_view_get_mut!(self, element_id);
-            let field_name = element_id.field_name.as_ref().context("broken field_name")?;
-            let action = &element_id.action.context("broken")?;
-            let href_go_to_field = data_view.build_go_to_field(&self.server_connection, field_name, action, &data_view.instance, false)?;
+            let data_view = data_view_get!(self, element_id);
+
+            if let Some(origin) = &data_view.params.origin {
+                let obj = {
+                    let index = element_id.index.context("Missing index")?;
+
+                    let list = if data_view.path.is_none() || data_view.filter_results.len() > 0 {
+                        &data_view.filter_results
+                    } else {
+                        let schema_name = &data_view.data_view_id.schema_name;
+                        let service = self.server_connection.service_map.get(schema_name).context("broken service")?;
+                        &service.list
+                    };
+            
+                    list.get(index).context("List broken of index")?    
+                };
+
+                let re = regex::Regex::new(r"(?P<form_type>instance|filter|aggregate|sort)--((?P<parent>\pL[\w_]+)-)?(?P<name>\pL[\w_]+)--(?P<field_name>\pL[\w_]+)(?P<form_type_ext>@min|@max)?(-(?P<index>\d+))?")?;
+                let cap = re.captures(origin).context("broken origin")?;
+                let element_id_origin = &HtmlElementId::new_with_regex(&cap)?;
+                let field_name = element_id_origin.field_name.as_ref().context("missing field_name")?;
+                let data_view_origin = data_view_get!(self, element_id_origin);               
+                let foreign_key = self.server_connection.login_response.openapi.get_foreign_key(&data_view_origin.data_view_id.schema_name, field_name, obj)?.context("Missing foreign value.")?;
+                let value = foreign_key.get(field_name).context("Missing field")?;
+                let data_view_origin = data_view_get_parent_mut!(self, element_id_origin);
+                data_view_origin.set_value(&self.server_connection, self.watcher.as_ref(), field_name, &value, element_id_origin)?;
+                let mut data_view_response = DataViewResponse { changes: json!({}), forms: json!({}), ..Default::default() };
+                data_view_origin.build_changes(element_id_origin, &mut data_view_response.changes)?;
+                data_view_response.forms[element_id.data_view_id.form_id.clone()] = json!({"visible": false});
+                return Ok(data_view_response);
+            }
+
+            let href_go_to_field = DataView::build_go_to_field(&self.server_connection, &element_id, &data_view.params.instance)?;
             href_go_to_field.unwrap_or("#".to_string())
         } else {
             target.to_string()
         };
-
-        let re = regex::Regex::new(r"#!/app/((?P<parent>\pL[\w_]+)-)?(?P<name>\pL[\w_]+)/(?P<action>new|edit|view|search)(?P<query_string>\?[\w\.=&]+)?")?;
+        // search_select--{form_id}--{item_index}
+        let re = regex::Regex::new(r"#!/app/((?P<parent>\pL[\w_]+)-)?(?P<name>\pL[\w_]+)/(?P<action>new|edit|view|search)(?P<query_string>\?[\w\.=&-]+)?")?;
 
         if let Some(cap) = re.captures(&target) {
             let element_id = HtmlElementId::new_with_regex(&cap)?;
-            let mut params_search = DataViewProcessParams { ..Default::default() };
+            let mut params_search = DataViewParams::default();
 
             let params_extra = if let Some(query_string) = cap.name("query_string") {
                 let str = query_string.as_str();
@@ -3530,7 +3390,21 @@ impl DataViewManager<'_> {
                         *obj_out = value.clone();
                     }
 
-                    params_search = serde_json::from_value::<DataViewProcessParams>(obj_out.clone())?;
+                    for field_name in ["filter", "filter_range", "filter_range_min", "filter_range_max", "aggregate", "instance", "sort"] {
+                        if obj_out.get(field_name).is_none() {
+                            obj_out[field_name] = json!({});
+                        }
+                    }
+
+                    if obj_out.get("page").is_none() {
+                        obj_out["page"] = json!(1);
+                    }
+
+                    if obj_out.get("page_size").is_none() {
+                        obj_out["page_size"] = json!(25);
+                    }
+
+                    params_search = serde_json::from_value::<DataViewParams>(obj_out.clone())?;
                     obj_out
                 } else {
                     json!({})
@@ -3629,10 +3503,7 @@ impl DataViewManager<'_> {
 
         if let Some(cap) = re.captures(target) {
             let element_id = &HtmlElementId::new_with_regex(&cap)?;
-            let Some(field_name) = &element_id.field_name else {
-                return None.context("[process_edit_target] missing field field_name")?;
-            };
-
+            let field_name = element_id.field_name.as_ref().context("missing field_name")?;
             let data_view = data_view_get!(self, element_id);
             let (value, is_flags) = parse_value_process(data_view, &self.server_connection, element_id, value)?;
             let data_view_parent = data_view_get_parent_mut!(self, element_id);
@@ -3641,7 +3512,7 @@ impl DataViewManager<'_> {
 
             if is_flags {
                 let data_view = data_view_get!(self, element_id);
-                let params_search = DataViewProcessParams { ..Default::default() };
+                let params_search = DataViewParams { ..Default::default() };
                 data_view_response.tables = json!({});
                 let table = DataView::build_table(self, data_view, &params_search)?;
                 data_view_response.tables[&data_view.data_view_id.form_id] = json!(table);
@@ -3732,7 +3603,7 @@ pub mod tests {
     use serde_json::{json, Value};
     use std::fs;
 
-    use crate::{client::{DataViewManager, ServerConnection, HtmlElementId, DataViewProcessParams}, data_store::Filter};
+    use crate::{client::{DataViewManager, ServerConnection, HtmlElementId, DataViewParams}, data_store::Filter};
 
     use super::DataViewWatch;
     /*
@@ -3905,7 +3776,7 @@ pub mod tests {
                                     .to_string()
                             } else if let Some(str) = data_view.field_external_references_str.get(field_name) {
                                 str.clone()
-                            } else if let Some(value) = data_view.instance.get(field_name) {
+                            } else if let Some(value) = data_view.params.instance.get(field_name) {
                                 match value {
                                     Value::String(value) => value.to_string(),
                                     Value::Bool(value) => value.to_string(),
@@ -3949,9 +3820,9 @@ pub mod tests {
 
                                 let params_search = if let Some(query_string) = cap.name("query_string") {
                                     let str = query_string.as_str();
-                                    serde_qs::from_str::<DataViewProcessParams>(str)?
+                                    serde_qs::from_str::<DataViewParams>(str)?
                                 } else {
-                                    DataViewProcessParams { ..Default::default() }
+                                    DataViewParams { ..Default::default() }
                                 };
 
                                 let params_extra = if let Some(query_string) = cap.name("query_string") {
