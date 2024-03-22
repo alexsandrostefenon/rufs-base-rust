@@ -793,51 +793,55 @@ impl DataView {
                 _ => continue,
             };
 
-            let (html_input_typ, html_input_step, html_input_pattern, html_input_max_length, col_size, is_rangeable) = match typ {
-                Type::String(typ) => {
-                    let max_length = typ.max_length.unwrap_or(1024);
-
-                    let col_size = if max_length > 110 { 11 } else { (max_length / 8) + 1 };
-
-                    let (html_input_typ, is_rangeable) = match &typ.format {
-                        VariantOrUnknownOrEmpty::Item(format) => match format {
-                            StringFormat::Date => ("date", true),
-                            StringFormat::DateTime => ("datetime-local", true),
-                            StringFormat::Password => ("text", false),
-                            StringFormat::Byte => ("text", false),
-                            StringFormat::Binary => ("text", false),
-                        },
-                        _ => ("text", false),
-                    };
-
-                    (html_input_typ, "".to_string(), "", max_length, col_size, is_rangeable)
-                }
-                Type::Number(_typ) => {
-                    let precision: usize = extension.get("x-precision").unwrap_or(&json!(12)).as_u64().unwrap_or(12).try_into().unwrap_or(12);
-                    let scale = if let Some(scale) = extension.get("x-scale") {
-                        match scale.as_u64().unwrap_or(3) {
-                            1 => "0.1",
-                            3 => "0.001",
-                            4 => "0.0001",
-                            5 => "0.00001",
-                            _ => "0.01",
-                        }
-                    } else {
-                        "0.01"
-                    };
-
-                    ("number", format!(r#"step="{}""#, scale), "", precision, 2, true)
-                }
-                Type::Integer(_typ) => {
-                    if let Some(_reference) = extension.get("x-$ref") {
-                        ("text", "".to_string(), "", 1024, 8, false)
-                    } else {
-                        ("number", r#"step="1""#.to_string(), r#"pattern="\d+""#, 15, 2, true)
+            let (html_input_typ, html_input_step, html_input_pattern, html_input_max_length, col_size, is_rangeable) = if let Some(_reference) = extension.get("x-$ref") {
+                ("text", "".to_string(), "", 1024, 8, false)
+            } else {
+                match typ {
+                    Type::String(typ) => {
+                        let max_length = typ.max_length.unwrap_or(1024);
+    
+                        let col_size = if max_length > 110 { 11 } else { (max_length / 7) + 1 };
+    
+                        let (html_input_typ, is_rangeable) = match &typ.format {
+                            VariantOrUnknownOrEmpty::Item(format) => match format {
+                                StringFormat::Date => ("date", true),
+                                StringFormat::DateTime => ("datetime-local", true),
+                                StringFormat::Password => ("text", false),
+                                StringFormat::Byte => ("text", false),
+                                StringFormat::Binary => ("text", false),
+                            },
+                            _ => ("text", false),
+                        };
+    
+                        (html_input_typ, "".to_string(), "", max_length, col_size, is_rangeable)
                     }
+                    Type::Number(_typ) => {
+                        let precision: usize = extension.get("x-precision").unwrap_or(&json!(12)).as_u64().unwrap_or(12).try_into().unwrap_or(12);
+                        let scale = if let Some(scale) = extension.get("x-scale") {
+                            match scale.as_u64().unwrap_or(3) {
+                                1 => "0.1",
+                                3 => "0.001",
+                                4 => "0.0001",
+                                5 => "0.00001",
+                                _ => "0.01",
+                            }
+                        } else {
+                            "0.01"
+                        };
+    
+                        ("number", format!(r#"step="{}""#, scale), "", precision, 2, true)
+                    }
+                    Type::Integer(_typ) => {
+                        if let Some(_reference) = extension.get("x-$ref") {
+                            ("text", "".to_string(), "", 1024, 8, false)
+                        } else {
+                            ("number", r#"step="1""#.to_string(), r#"pattern="\d+""#, 15, 2, true)
+                        }
+                    }
+                    Type::Boolean {} => ("checkbox", "".to_string(), "", 0, 1, false),
+                    Type::Object(_) => continue,
+                    Type::Array(_) => continue,
                 }
-                Type::Boolean {} => ("checkbox", "".to_string(), "", 0, 1, false),
-                Type::Object(_) => continue,
-                Type::Array(_) => continue,
             };
 
             let mut html_options = vec![];

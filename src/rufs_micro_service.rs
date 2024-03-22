@@ -1,43 +1,15 @@
-#[cfg(not(target_arch = "wasm32"))]
-#[cfg(feature = "http_server")]
+
 use std::{collections::HashMap, fs, path::Path, sync::{RwLock, Arc}};
-
-#[cfg(not(target_arch = "wasm32"))]
-use anyhow::Context;
-#[cfg(not(target_arch = "wasm32"))]
-#[cfg(feature = "http_server")]
-use async_std::path::PathBuf;
-#[cfg(not(target_arch = "wasm32"))]
-#[cfg(feature = "http_server")]
-use jsonwebtoken::{encode, EncodingKey, Header};
-
-use openapiv3::{OpenAPI};
-#[cfg(not(target_arch = "wasm32"))]
-use openapiv3::{SecurityRequirement};
-#[cfg(not(target_arch = "wasm32"))]
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-#[cfg(not(target_arch = "wasm32"))]
-use serde_json::json;
+use serde_json::{Value,json};
+use openapiv3::{OpenAPI,SecurityRequirement};
+use jsonwebtoken::{encode, EncodingKey, Header};
+use anyhow::Context;
+use async_std::path::PathBuf;
+use async_trait::async_trait;
 
-#[cfg(not(target_arch = "wasm32"))]
-#[cfg(feature = "tide")]
-use tide::{Error, StatusCode};
-
-#[cfg(not(target_arch = "wasm32"))]
-#[cfg(feature = "tide")]
-use tide_websockets::WebSocketConnection;
-
-use crate::openapi::Role;
-#[cfg(not(target_arch = "wasm32"))]
-#[cfg(feature = "http_server")]
-use crate::{
-    db_adapter_file::DbAdapterFile,
-    db_adapter_postgres::DbAdapterPostgres,
-    entity_manager::EntityManager,
-    micro_service_server::{IMicroServiceServer, MicroServiceServer},
-    openapi::{FillOpenAPIOptions, RufsOpenAPI},
-};
+use crate::{db_adapter_file::DbAdapterFile,db_adapter_postgres::DbAdapterPostgres,entity_manager::EntityManager,openapi::{FillOpenAPIOptions, RufsOpenAPI, Role}};
 
 #[derive(Deserialize, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -123,128 +95,93 @@ pub struct Claims {
     ip: String,
 }
 
-/*
-type IRufsMicroService interface {
-    IMicroServiceServer
-    LoadFileTables() error
+#[derive(serde::Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct LoginRequest {
+    pub user: String,
+    pub password: String,
 }
-*/
-#[cfg(not(target_arch = "wasm32"))]
-#[cfg(feature = "tide")]
+
+#[async_trait]
+pub trait Authenticator {
+    async fn authenticate_user(&self, user_name: &str, user_password: &str, remote_addr: &str) -> Result<LoginResponse, Box<dyn std::error::Error>>;
+}
+
+#[derive(Clone)]
+pub struct RufsParams {
+    pub app_name: String,
+    pub port: u16,
+    pub api_path: String,
+    pub request_body_content_type: String,
+    pub openapi_file_name : String,
+}
+
+impl Default for RufsParams {
+    fn default() -> Self {
+        Self {
+            port: 8080,
+            api_path: "rest".to_string(),
+            app_name: "base".to_string(),
+            request_body_content_type: "application/json".to_string(),
+            openapi_file_name: "".to_string(),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct RufsMicroService<'a> {
-    pub micro_service_server: MicroServiceServer,
-    /*
-    dbConfig                  *DbConfig
-    */
-    pub check_rufs_tables: bool,
-    pub migration_path: String,
-    pub static_paths: Vec<String>,
+    pub params: RufsParams,
+    pub openapi: OpenAPI,
     pub entity_manager: DbAdapterPostgres<'a>,
     pub db_adapter_file: DbAdapterFile<'a>,
-    pub ws_server_connections : Arc<RwLock<HashMap<String, WebSocketConnection>>>,
     pub ws_server_connections_tokens : Arc<RwLock<HashMap<String, Claims>>>,
-    pub watcher: &'static Box<dyn DataViewWatch>
+    pub watcher: &'static Box<dyn DataViewWatch>,
+    #[cfg(feature = "tide")]
+    pub ws_server_connections_tide : Arc<RwLock<HashMap<String, tide_websockets::WebSocketConnection>>>,
+    #[cfg(feature = "warp")]
+    pub ws_server_connections_warp : Arc<RwLock<HashMap<String, futures_util::stream::SplitSink<warp::ws::WebSocket, warp::ws::Message>>>>,
 }
 
-/*
-
-func (rms *RufsMicroService) OnRequest(req *http.Request) Response {
-    if strings.HasSuffix(req.URL.Path, "/login") {
-        loginRequest := map[string]string{}
-        err := json.NewDecoder(req.Body).Decode(&loginRequest)
-
-        if err != nil {
-            return ResponseUnauthorized(fmt.Sprint(err))
-        }
-
-        userName, ok := loginRequest["user"]
-
-        if !ok {
-            return ResponseBadRequest(fmt.Sprint("[RufsMicroService.OnRequest.login] missing field 'user'"))
-        }
-
-        password, ok := loginRequest["password"]
-
-        if !ok {
-            return ResponseBadRequest(fmt.Sprint("[RufsMicroService.OnRequest.login] missing field 'password'"))
-        }
-
-        if loginResponse, err := rms.authenticateUser(userName, password, req.RemoteAddr); err == nil {
-            if userName == "admin" {
-                loginResponse.Openapi = rms.openapi
-            } else {
-                loginResponse.Openapi = rms.openapi
-            }
-
-            token := jwt.New(jwt.SigningMethodHS256)
-            token.Claims = &RufsClaims{&jwt.StandardClaims{ExpiresAt: time.Now().Add(time.Minute * 60 * 8).Unix()}, loginResponse.TokenPayload}
-            jwtSecret := os.Getenv("RUFS_JWT_SECRET")
-
-            if jwtSecret == "" {
-                jwtSecret = "123456"
-            }
-
-            loginResponse.JwtHeader, err = token.SignedString([]byte(jwtSecret))
-            return ResponseOk(loginResponse)
-        } else {
-            return ResponseUnauthorized(fmt.Sprint(err))
-        }
-    } else {
-        rf, err := RequestFilterInitialize(req, rms)
-
-        if err != nil {
-            return ResponseBadRequest(fmt.Sprintf("[RufsMicroService.OnRequest] : %s", err))
-        }
-
-        if access, err := rf.CheckAuthorization(req); err != nil {
-            return ResponseBadRequest(fmt.Sprintf("[RufsMicroService.OnRequest.CheckAuthorization] : %s", err))
-        } else if !access {
-            return ResponseUnauthorized("Explicit Unauthorized")
-        }
-
-        return rf.ProcessRequest()
-    }
-}
-
-func (rms *RufsMicroService) OnWsMessageFromClient(connection *websocket.Conn, tokenString string) {
-    rms.MicroServiceServer.OnWsMessageFromClient(connection, tokenString)
-
-    token, err := jwt.ParseWithClaims(tokenString, &RufsClaims{}, func(token *jwt.Token) (interface{}, error) {
-        if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-            return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-        }
-
-        jwtSecret := os.Getenv("RUFS_JWT_SECRET")
-
-        if jwtSecret == "" {
-            jwtSecret = "123456"
-        }
-
-        hmacSampleSecret := []byte(jwtSecret)
-        return hmacSampleSecret, nil
-    })
-
-    if claims, ok := token.Claims.(*RufsClaims); ok && token.Valid {
-        rms.wsServerConnections[tokenString] = connection
-        rms.wsServerConnectionsTokens[tokenString] = claims
-        log.Printf("[MicroServiceServer.onWsMessageFromClient] Ok")
-    } else {
-        fmt.Println(err)
-    }
-}
-*/
-#[cfg(not(target_arch = "wasm32"))]
-#[cfg(feature = "tide")]
 impl RufsMicroService<'_> {
-    pub async fn connect(&mut self, db_uri: &str) -> Result<(), Box<dyn std::error::Error>> {
-        fn load_file_tables(rms :&mut RufsMicroService) -> Result<(), Error> {
-            fn load_table(rms: &mut RufsMicroService, name: &str, default_rows: &serde_json::Value) -> Result<(), Error> {
+    fn load_open_api(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        if self.params.openapi_file_name.is_empty() {
+            self.params.openapi_file_name = format!("openapi-{}.json", self.params.app_name);
+        }
+
+        println!("[MicroServiceServer.load_open_api({}/{})]", std::env::current_dir().unwrap().to_string_lossy(), self.params.openapi_file_name);
+
+        match fs::File::open(&self.params.openapi_file_name) {
+            Ok(file) => self.openapi = serde_json::from_reader(file)?,
+            Err(error) => match error.kind() {
+                std::io::ErrorKind::NotFound => self.openapi = OpenAPI::default(),
+                _ => todo!(),
+            }
+        }
+        
+        self.openapi.create("jwt");
+        Ok(())
+    }
+    
+    pub fn store_open_api(&self, file_name :&str) -> Result<(), Box<dyn std::error::Error>> {
+        let file_name = if file_name.is_empty() {
+            &self.params.openapi_file_name
+        } else {
+            file_name
+        };
+
+        let contents = serde_json::to_string_pretty(&self.openapi)?;
+        std::fs::write(file_name, contents)?;
+        Ok(())
+    }
+
+    pub async fn connect<'a>(db_uri: &str, rufs_tables_in_db: bool, migration_path: &str, params: RufsParams, watcher: &'static Box<dyn DataViewWatch>) -> Result<RufsMicroService<'a>, Box<dyn std::error::Error>> {
+        fn load_file_tables(rms :&mut RufsMicroService) -> Result<(), Box<dyn std::error::Error>> {
+            fn load_table(rms: &mut RufsMicroService, name: &str, default_rows: &serde_json::Value) -> Result<(), Box<dyn std::error::Error>> {
                 if rms.db_adapter_file.have_table(&name) {
                     return Ok(());
                 }
     
-                rms.db_adapter_file.load(name, default_rows).or(Err(Error::from_str(500, "")))
+                rms.db_adapter_file.load(name, default_rows)
             }
     
             //RequestFilterUpdateRufsServices(rms.fileDbAdapter, rms.openapi)
@@ -261,13 +198,9 @@ impl RufsMicroService<'_> {
         }
     
         async fn create_rufs_tables(rms: &RufsMicroService<'_>, openapi_rufs: &OpenAPI) -> Result<(), Box<dyn std::error::Error>> {
-            if !rms.check_rufs_tables {
-                return Ok(());
-            }
-
             for name in ["rufsGroupOwner", "rufsUser", "rufsGroup", "rufsGroupUser"] {
-                if rms.micro_service_server.openapi.components.as_ref().unwrap().schemas.get(name).is_none() {
-                    println!("don't matched schema {}, existents :\n{:?}", name, rms.micro_service_server.openapi.components.as_ref().unwrap().schemas.keys());
+                if rms.openapi.components.as_ref().unwrap().schemas.get(name).is_none() {
+                    println!("don't matched schema {}, existents :\n{:?}", name, rms.openapi.components.as_ref().unwrap().schemas.keys());
                     let schema = openapi_rufs.components.as_ref().unwrap().schemas.get(name).unwrap().as_item().unwrap();
                     rms.entity_manager.create_table(name, schema).await?;
                 }
@@ -287,13 +220,13 @@ impl RufsMicroService<'_> {
             Ok(())
         }
 
-        async fn exec_migrations(rms: &mut RufsMicroService<'_>) -> Result<(), Error> {
-            fn get_version(name: &str) -> Result<usize, Error> {
+        async fn exec_migrations(rms: &mut RufsMicroService<'_>, migration_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+            fn get_version(name: &str) -> Result<usize, Box<dyn std::error::Error>> {
                 let reg_exp = Regex::new(r"(\d{1,3})\.(\d{1,3})\.(\d{1,3})").unwrap();
                 let reg_exp_result = reg_exp.captures(name).unwrap();
 
                 if reg_exp_result.len() != 4 {
-                    return Err(Error::from_str(500, format!("Missing valid version in name {}", name)));
+                    return Err(format!("Missing valid version in name {}", name))?;
                 }
 
                 let str_version = format!(
@@ -307,29 +240,27 @@ impl RufsMicroService<'_> {
                 Ok(str_version.parse().unwrap())
             }
 
-            async fn migrate(rms: &mut RufsMicroService<'_>, file_name: &str) -> Result<(), Error> {
+            async fn migrate(rms: &mut RufsMicroService<'_>, migration_path: &str, file_name: &str) -> Result<(), Box<dyn std::error::Error>> {
                 println!("Migrating to version {}...", file_name);
-                let text = fs::read_to_string(PathBuf::from(rms.migration_path.clone()).join(file_name))?;
+                let text = fs::read_to_string(PathBuf::from(migration_path).join(file_name))?;
 
                 for sql in text.split("--split") {
-                    if let Err(error) = rms.entity_manager.exec(sql).await {
-                        return Err(tide::Error::from_str(500, format!("{}", error)));
-                    }
+                    rms.entity_manager.exec(sql).await?;
                 }
 
                 let new_version = get_version(file_name)?;
-                rms.micro_service_server.openapi.info.version = format!("{}.{}.{}", ((new_version / 1000) / 1000) % 1000, (new_version / 1000) % 1000, new_version % 1000);
+                rms.openapi.info.version = format!("{}.{}.{}", ((new_version / 1000) / 1000) % 1000, (new_version / 1000) % 1000, new_version % 1000);
                 println!("... Migrated version {}", file_name);
                 Ok(())
             }
 
-            if Path::new(&rms.migration_path).exists() == false {
+            if Path::new(migration_path).exists() == false {
                 return Ok(());
             }
 
-            let old_version = get_version(&rms.micro_service_server.openapi.info.version)?;
+            let old_version = get_version(&rms.openapi.info.version)?;
 
-            let files = fs::read_dir(rms.migration_path.clone()).unwrap();
+            let files = fs::read_dir(migration_path).context("Broken migration path.")?;
             let mut list: Vec<String> = vec![];
 
             for file_info in files {
@@ -347,66 +278,75 @@ impl RufsMicroService<'_> {
                 return version_i.cmp(&version_j);
             });
 
-            for file_name in list {
-                migrate(rms, &file_name).await.unwrap();
+            for file_name in &list {
+                migrate(rms, migration_path, file_name).await.unwrap();
             }
 
             Ok(())
         }
 
-        self.micro_service_server.connect()?;
-        self.entity_manager.connect(db_uri).await?;
+        let mut rufs = RufsMicroService {
+            params, 
+            watcher,
+            openapi: Default::default(),
+            entity_manager: DbAdapterPostgres::default(),
+            db_adapter_file: DbAdapterFile::default(),
+            ws_server_connections_tokens: Arc::default(),
+            #[cfg(feature = "tide")]
+            ws_server_connections_tide: Arc::default(),
+            #[cfg(feature = "warp")]
+            ws_server_connections_warp: Arc::default(),
+        };
+    
+        rufs.load_open_api()?;
+        rufs.entity_manager.connect(db_uri).await?;
         //self.entity_manager.UpdateOpenAPI(self.openapi, FillOpenAPIOptions{requestBodyContentType: self.requestBodyContentType};
         let openapi_rufs = serde_json::from_str::<OpenAPI>(RUFS_MICRO_SERVICE_OPENAPI_STR)?;
-        create_rufs_tables(self, &openapi_rufs).await?;
-        exec_migrations(self).await?;
-        //rms.db_adapter_file.openapi = Some(&rms.micro_service_server.openapi);
+
+        if rufs_tables_in_db {
+            create_rufs_tables(&rufs, &openapi_rufs).await?;
+        }
+
+        exec_migrations(&mut rufs, migration_path).await?;
+        //rms.db_adapter_file.openapi = Some(&rms.openapi);
         let mut options = FillOpenAPIOptions::default();
-        options.request_body_content_type = self.micro_service_server.request_body_content_type.clone();
+        options.request_body_content_type = rufs.params.request_body_content_type.clone();
         //self.micro_service_server.store_open_api("")?;
-        self.entity_manager.update_open_api(&mut self.micro_service_server.openapi, &mut options).await?;
+        rufs.entity_manager.update_open_api(&mut rufs.openapi, &mut options).await?;
         let mut options = FillOpenAPIOptions::default();
         options.security = SecurityRequirement::from([("jwt".to_string(), vec![])]);
         options.schemas = openapi_rufs.components.context("missing section components")?.schemas.clone();
-        options.request_body_content_type = self.micro_service_server.request_body_content_type.clone();
-        self.micro_service_server.openapi.fill(&mut options)?;
-        self.micro_service_server.store_open_api("")?;
+        options.request_body_content_type = rufs.params.request_body_content_type.clone();
+        rufs.openapi.fill(&mut options)?;
+        rufs.store_open_api("")?;
 
-        if self.check_rufs_tables == false {
-            load_file_tables(self)?;
+        if rufs_tables_in_db == false {
+            load_file_tables(&mut rufs)?;
         }
 
-        Ok(())
+        Ok(rufs)
     }
+
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-#[cfg(feature = "tide")]
-#[tide::utils::async_trait]
-impl IMicroServiceServer for RufsMicroService<'_> {
+#[async_trait]
+impl Authenticator for RufsMicroService<'_> {
 
-    async fn authenticate_user(&self, user_name: &str, user_password: &str, remote_addr: &str) -> Result<LoginResponse, Error> {
+    async fn authenticate_user(&self, user_name: &str, user_password: &str, remote_addr: &str) -> Result<LoginResponse, Box<dyn std::error::Error>> {
         let entity_manager = if self.db_adapter_file.have_table("rufsUser") {
             &self.db_adapter_file as &(dyn EntityManager + Sync + Send)
         } else {
             &self.entity_manager as &(dyn EntityManager + Sync + Send)
         };
 
-        let user = match entity_manager.find_one(&self.micro_service_server.openapi, "rufsUser", &json!({ "name": user_name })).await {
-            Some(value) => {
-                match RufsUser::deserialize(*value) {
-                    Ok(user) => user,
-                    Err(error) => return Err(Error::from_str(StatusCode::InternalServerError, format!("fail to parse struct from json : {}", error))),
-                }
-            },
-            None => return Err(Error::from_str(StatusCode::InternalServerError, "fail to find user")),
-        };
+        let user = entity_manager.find_one(&self.openapi, "rufsUser", &json!({ "name": user_name })).await.context("Fail to find user.")?;
+        let user = RufsUser::deserialize(*user)?;
 
         if user.password.len() > 0 && user.password != user_password {
-            return Err(Error::from_str(StatusCode::Unauthorized, "Don't match user and password."));
+            return Err("Don't match user and password.")?;
         }
 
-        let list_in = entity_manager.find(&self.micro_service_server.openapi, "rufsGroupUser", &json!({"rufsUser": user.id}), &vec![]).await;
+        let list_in = entity_manager.find(&self.openapi, "rufsGroupUser", &json!({"rufsUser": user.id}), &vec![]).await;
         let mut list_out: Vec<u64> = vec![];
 
         for item in list_in {
@@ -442,27 +382,52 @@ impl IMicroServiceServer for RufsMicroService<'_> {
             path: user.path.clone(),
             jwt_header,
             title: claims.name,
-            openapi: &self.micro_service_server.openapi,
+            openapi: &self.openapi,
         };
         Ok(login_response)
     }
 
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-#[cfg(feature = "tide")]
 use crate::client::DataViewWatch;
 
-#[cfg(not(target_arch = "wasm32"))]
-#[cfg(feature = "tide")]
-pub async fn rufs_tide_new(rufs: RufsMicroService<'static>) -> Result<Box<tide::Server<RufsMicroService<'static>>>, Box<dyn std::error::Error>> {
-    use jsonwebtoken::{decode, DecodingKey, Validation};
-    use serde_json::Value;
-    use std::{future::Future, pin::Pin};
-    use async_std::path::Path;
-    use tide::{Response, Next, Body, http::{mime}};
+lazy_static::lazy_static! {
+    static ref DATA_VIEW_MANAGER_MAP: tokio::sync::Mutex<std::collections::HashMap<String, crate::client::DataViewManager<'static>>>  = {
+        let data_view_manager_map = std::collections::HashMap::new();
+        tokio::sync::Mutex::new(data_view_manager_map)
+    }; 
+}
 
-    use crate::{micro_service_server::LoginRequest, request_filter::RequestFilter, client::DataViewManager};
+async fn wasm_login(rms: &RufsMicroService<'_>, data_in: Value) -> Result<Value, Box<dyn std::error::Error>> {
+    let mut data_view_manager_map = DATA_VIEW_MANAGER_MAP.lock().await;
+    let path = format!("http://127.0.0.1:{}", rms.params.port);
+    let mut data_view_manager = crate::client::DataViewManager::new(&path, rms.watcher);
+    let data_out = data_view_manager.login(data_in).await?;
+    data_view_manager_map.insert(data_view_manager.server_connection.login_response.jwt_header.clone(), data_view_manager);
+    Ok(data_out.into())
+}
+
+async fn wasm_process(token_raw: &str, data_in: Value) -> Result<Value, Box<dyn std::error::Error>> {
+    let authorization_header_prefix = "Bearer ";
+
+    let jwt = if token_raw.starts_with(authorization_header_prefix) {
+        &token_raw[authorization_header_prefix.len()..]
+    } else {
+        return None.context("broken token")?;
+    };
+
+    let mut data_view_manager_map = DATA_VIEW_MANAGER_MAP.lock().await;
+    let data_view_manager = data_view_manager_map.get_mut(jwt).context("Missing session")?;
+    data_view_manager.process(data_in).await
+}
+
+#[cfg(feature = "tide")]
+pub async fn rufs_tide(app: &mut Box<tide::Server<RufsMicroService<'static>>>) -> Result<(), Box<dyn std::error::Error>> {
+    use jsonwebtoken::{decode, DecodingKey, Validation};
+    use std::{future::Future, pin::Pin};
+    use tide::{Response, Next, Body};
+
+    use crate::request_filter::RequestFilter;
 
     async fn handle_login(mut request: tide::Request<RufsMicroService<'_>>) -> tide::Result {
         //println!("[handle_login] : {:?}", request);
@@ -480,17 +445,36 @@ pub async fn rufs_tide_new(rufs: RufsMicroService<'static>) -> Result<Box<tide::
             Err(error) => {
                 println!("[RufsMicroService.handle.login.authenticate_user] : {}", error);
                 let msg = error.to_string();
-                let mut response = Response::from(error);
-                response.set_content_type(mime::PLAIN);
-                response.set_body(msg);
+                let response = Response::builder(tide::StatusCode::Unauthorized).body(msg).build();
                 return Ok(response);
             }
         };
     
-        Ok(Response::builder(StatusCode::Ok).body(Body::from_json(&login_response)?).build())
+        Ok(Response::builder(tide::StatusCode::Ok).body(Body::from_json(&login_response)?).build())
     }
     
     async fn handle_api(mut request: tide::Request<RufsMicroService<'_>>) -> tide::Result {
+        fn build_response(data :Result<Value, Box<dyn std::error::Error>>) -> tide::Result {
+            let response = match data {
+                Ok(value) => tide::Response::builder(tide::StatusCode::Ok).body(value).build(),
+                Err(err) => {
+                    let err = err.to_string();
+                    let str_status = &err[0..4];
+    
+                    let status = match str_status {
+                        "401" => tide::StatusCode::Unauthorized,
+                        _ => tide::StatusCode::BadRequest
+                    };
+    
+                    tide::Response::builder(status)
+                    .body(format!("[RufsMicroService.OnRequest.CheckAuthorization] : {}", err))
+                    .build()
+                },
+            };
+
+            Ok(response)
+        }
+
         let method = request.method().to_string().to_lowercase();
         let auth = request.header("Authorization").unwrap().as_str();
         print!("\n\ncurl -X '{}' {} -H 'Authorization: {}'", method, request.url(), auth);
@@ -505,24 +489,29 @@ pub async fn rufs_tide_new(rufs: RufsMicroService<'static>) -> Result<Box<tide::
         };
     
         let rufs = request.state();
-        let mut rf = RequestFilter::new(&request, rufs, &method, obj_in).unwrap();
-    
-        if rf.schema_name == "request" && rf.method == "put" {
-          println!("handle_api = {}", rf.schema_name);
+        let path = request.url().path();
+        let query = request.url().query();
+        let mut rf = RequestFilter::new(rufs, path, query, &method, obj_in).unwrap();    
+        let mut headers: HashMap<String, String> = HashMap::new();
+
+        for header_name in request.header_names() {
+            if let Some(text) = request.header(header_name) {
+                let name = header_name.as_str().to_lowercase();
+                let text = text.as_str().to_string();
+                headers.insert(name, text);
+            }
         }
-    
-        let response = match rf.check_authorization(&request).await {
-            Ok(true) => rf.process_request().await,
-            Ok(false) => Response::builder(StatusCode::Unauthorized).build(),
-            Err(err) => tide::Response::builder(StatusCode::BadRequest)
-                .body(format!("[RufsMicroService.OnRequest.CheckAuthorization] : {}", err))
-                .build(),
+
+        let response = match rf.check_authorization::<RufsMicroService>(&headers).await {
+            Ok(true) => build_response(rf.process_request().await),
+            Ok(false) => Ok(Response::builder(tide::StatusCode::Unauthorized).build()),
+            Err(err) => build_response(Err(err)),
         };
     
-        Ok(response)
+        response
     }
     
-    fn static_paths<'a>(request: tide::Request<RufsMicroService<'static>>, next: Next<'a, RufsMicroService<'static>>) -> Pin<Box<dyn Future<Output = tide::Result> + Send + 'a>> {
+    fn static_paths_tide<'a>(request: tide::Request<RufsMicroService<'static>>, next: Next<'a, RufsMicroService<'static>>) -> Pin<Box<dyn Future<Output = tide::Result> + Send + 'a>> {
         Box::pin(async {
             if request.method() == tide::http::Method::Options {
                 let acess_control_request_headers = match request.header("Access-Control-Request-Headers") {
@@ -542,44 +531,28 @@ pub async fn rufs_tide_new(rufs: RufsMicroService<'static>) -> Result<Box<tide::
             }
 
             let rufs = request.state();
-            let api_path = format!("{}/", rufs.micro_service_server.api_path);
 
-            if request.url().path().starts_with(&api_path) {
-                return Ok(next.run(request).await);
-            }
-
-            let path = request.url().path()[1..].to_string();
-    
-            let name = if path.ends_with("/") || path.is_empty() {
-                path.clone() + &"index.html".to_string()
-            } else {
-                path.clone()
-            };
-    
-            for folder in &rufs.static_paths {
-                let file = Path::new(folder).join(&name);
-                //println!("[TideRufsMicroService.handle] folder = {:?}, url_file = {}, file = {:?}", folder, name, file);
-    
-                if file.exists().await {
-                    match tide::Body::from_file(&file).await {
-                        Ok(body) => return Ok(Response::builder(StatusCode::Ok).body(body).build()),
+            match static_paths(rufs, request.url().path()).await {
+                Ok(res) => match res {
+                    Some(file) => match tide::Body::from_file(&file).await {
+                        Ok(body) => return Ok(Response::builder(tide::StatusCode::Ok).body(body).build()),
                         Err(e) => return Err(e.into()),
-                    }
-                }
+                    },
+                    None => return Ok(next.run(request).await),
+                },
+                Err(err) => return Ok(Response::builder(tide::StatusCode::BadRequest).body(err.to_string()).build()),
             }
-    
-            Ok(next.run(request).await)
         })
     }
 
-    let api_path = rufs.micro_service_server.api_path.clone();
-    let mut app = Box::new(tide::with_state(rufs));
+    let rufs = app.state();
+    let api_path = rufs.params.api_path.clone();
 
     app.at("/websocket").get(tide_websockets::WebSocket::new(|request, mut stream| async move {
         while let Some(Ok(tide_websockets::Message::Text(token))) = async_std::stream::StreamExt::next(&mut stream).await {
             let wsc = stream.clone();
             let rufs :&RufsMicroService= request.state();
-            rufs.ws_server_connections.write().unwrap().insert(token.clone(), wsc);
+            rufs.ws_server_connections_tide.write().unwrap().insert(token.clone(), wsc);
             let secret = std::env::var("RUFS_JWT_SECRET").unwrap_or("123456".to_string());
             let token_data = decode::<Claims>(&token, &DecodingKey::from_secret(secret.as_ref()), &Validation::default())?;
             rufs.ws_server_connections_tokens.write().unwrap().insert(token, token_data.claims);
@@ -589,29 +562,17 @@ pub async fn rufs_tide_new(rufs: RufsMicroService<'static>) -> Result<Box<tide::
     }));
 
     let path_login = format!("/{}/login", &api_path);
-    println!("[rufs_tide_new] listening login at {}...", path_login);
     app.at(&path_login).post(handle_login);
     let path_api = format!("/{}/*", &api_path);
     println!("[rufs_tide_new] listening api at {}...", path_api);
     app.at(&path_api).all(handle_api);
-    app.with(static_paths);
+    app.with(static_paths_tide);
     
-    lazy_static::lazy_static! {
-        static ref DATA_VIEW_MANAGER_MAP: tokio::sync::Mutex<std::collections::HashMap<String, DataViewManager<'static>>>  = {
-            let data_view_manager_map = std::collections::HashMap::new();
-            tokio::sync::Mutex::new(data_view_manager_map)
-        }; 
-    }
-
-    async fn wasm_login(mut req: tide::Request<RufsMicroService<'_>>) -> tide::Result {
+    async fn wasm_login_tide(mut req: tide::Request<RufsMicroService<'_>>) -> tide::Result {
         let data_in = req.body_json::<Value>().await?;
-        let mut data_view_manager_map = DATA_VIEW_MANAGER_MAP.lock().await;
-        let state = req.state();
-        //, data_in.get("path").context("Missing param path")?.as_str().context("Param path is not string")?
-        let path = format!("http://127.0.0.1:{}", state.micro_service_server.port);
-        let mut data_view_manager = DataViewManager::new(&path, state.watcher);
+        let rms = req.state();
 
-        let data_out = match data_view_manager.login(data_in).await {
+        let data_out = match wasm_login(rms, data_in).await {
             Ok(data_out) => data_out,
             Err(err) => {
                 let mut response = tide::Response::from(err.to_string());
@@ -620,27 +581,16 @@ pub async fn rufs_tide_new(rufs: RufsMicroService<'static>) -> Result<Box<tide::
             }
         };
 
-        data_view_manager_map.insert(data_view_manager.server_connection.login_response.jwt_header.clone(), data_view_manager);
         Ok(data_out.into())
     }
         
-    app.at("/wasm_ws/login").post(wasm_login);
+    app.at("/wasm_ws/login").post(wasm_login_tide);
 
-    async fn wasm_process(mut req: tide::Request<RufsMicroService<'_>>) -> tide::Result {
-        let authorization_header_prefix = "Bearer ";
-        let token_raw = req.header("Authorization").context("Missing header Authorization")?.last().as_str();
-
-        let jwt = if token_raw.starts_with(authorization_header_prefix) {
-            &token_raw[authorization_header_prefix.len()..]
-        } else {
-            return None.context("broken token")?;
-        };
-
-        let mut data_view_manager_map = DATA_VIEW_MANAGER_MAP.lock().await;
-        let data_view_manager = data_view_manager_map.get_mut(jwt).context("Missing session")?;
+    async fn wasm_process_tide(mut req: tide::Request<RufsMicroService<'_>>) -> tide::Result {
+        let token_raw = &req.header("Authorization").context("Missing header Authorization")?.last().as_str().to_string();
         let data_in = req.body_json::<Value>().await?;
 
-        let data_out = match data_view_manager.process(data_in).await {
+        let data_out = match wasm_process(token_raw, data_in).await {
             Ok(data_out) => data_out,
             Err(err) => {
                 let mut response = tide::Response::from(err.to_string());
@@ -649,15 +599,176 @@ pub async fn rufs_tide_new(rufs: RufsMicroService<'static>) -> Result<Box<tide::
             }
         };
 
-        let data_out = serde_json::to_value(data_out)?;
         Ok(data_out.into())
     }
         
-    app.at("/wasm_ws/process").post(wasm_process);
-    Ok(app)
+    app.at("/wasm_ws/process").post(wasm_process_tide);
+    Ok(())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "warp")]
+pub async fn rufs_warp(rufs: RufsMicroService<'static>) -> impl warp::Filter<Extract = (impl warp::Reply,), Error = warp::Rejection> + Clone {
+    use std::{sync::Mutex, convert::Infallible};
+    use jsonwebtoken::{decode, DecodingKey, Validation};
+    use futures_util::StreamExt;
+    use warp::Reply;
+    use warp::http::{Method, HeaderMap, StatusCode};
+    use warp::path::FullPath;
+    use warp::Filter;
+    use warp::ws::WebSocket;
+
+    use crate::request_filter::RequestFilter;
+
+    let api_path = rufs.params.api_path.clone();
+    let rufs = Arc::new(Mutex::new(rufs));
+
+    fn with_rufs(rufs: Arc<Mutex<RufsMicroService<'static>>>) -> impl Filter<Extract = (Arc<Mutex<RufsMicroService<'static>>>,), Error = Infallible> + Clone {
+        warp::any().map(move || rufs.clone())
+    }
+
+    macro_rules! warp_try {
+        ($expr:expr) => {
+            match $expr {
+                Ok(val) => val,
+                Err(err) => {
+                    let err_str = err.to_string();
+                    let str_status = &err_str[0..5];
+
+                    let mut message = if (err_str.len() >= 5) {
+                        &err_str[5..]
+                    } else {
+                        &err_str
+                    };
+
+                    let status = match str_status {
+                        "401" => StatusCode::UNAUTHORIZED,
+                        _ => {
+                            message = &err_str;
+                            StatusCode::BAD_REQUEST
+                        }
+                    };
+
+                    let response = Box::new(warp::reply::with_status(message.to_string(), status)) as Box<dyn Reply>;
+                    return Ok(response);
+                }
+            }
+        };
+    }
+
+    async fn handle_api(rufs: Arc<Mutex<RufsMicroService<'static>>>, method: Method, path: FullPath, headers: HeaderMap, query: String, obj_in: Value) -> Result<impl Reply, Infallible> {
+        let method = method.to_string().to_lowercase();
+        let path = path.as_str();
+        let header = warp_try!(headers.get("Authorization").context("400-Missing Authorization header."));
+        let auth = warp_try!(header.to_str());
+
+        let query = if !query.is_empty() {
+            Some(query.as_str())
+        } else {
+            None
+        };
+
+        let mut headers_out: HashMap<String, String> = HashMap::new();
+
+        for (name, value) in &headers {
+            let key = name.to_string().to_lowercase();
+            let value = warp_try!(value.to_str());
+            headers_out.insert(key, value.to_string());
+        }
+
+        print!("\n\ncurl -X '{}' {} -H 'Authorization: {}'", method, path, auth);
+        let rufs = &rufs.lock().unwrap().to_owned();
+        let mut rf = RequestFilter::new(rufs, path, query, &method, obj_in).unwrap();
+
+        if warp_try!(rf.check_authorization::<RufsMicroService>(&headers_out).await) == false {
+            warp_try!(Err("401-Unauthorized."))
+        }
+
+        let ret = warp_try!(rf.process_request().await);
+        let ret = warp::reply::json(&ret);
+        Ok(Box::new(ret))
+    }
+    
+    let route_api_put = warp::path(api_path.clone()).
+        and(with_rufs(rufs.clone())).and(warp::method()).and(warp::path::full()).and(warp::header::headers_cloned()).
+        and(warp::query::raw()).and(warp::body::json()).and_then(handle_api);
+
+    async fn handle_api_post(rufs: Arc<Mutex<RufsMicroService<'static>>>, method: Method, path: FullPath, headers: HeaderMap, obj_in: Value) -> Result<impl Reply, Infallible> {
+        handle_api(rufs, method, path, headers, String::new(), obj_in).await
+    }
+
+    let route_api_post = warp::path(api_path.clone()).
+        and(with_rufs(rufs.clone())).and(warp::method()).and(warp::path::full()).and(warp::header::headers_cloned()).and(warp::body::json()).
+        and_then(handle_api_post);
+    
+    async fn handle_api_get_delete(rufs: Arc<Mutex<RufsMicroService<'static>>>, method: Method, path: FullPath, headers: HeaderMap, query: String) -> Result<impl Reply, Infallible> {
+        handle_api(rufs, method, path, headers, query, json!({})).await
+    }
+
+    let route_api_get_delete = warp::path(api_path.clone()).
+        and(with_rufs(rufs.clone())).and(warp::method()).and(warp::path::full()).and(warp::header::headers_cloned()).and(warp::query::raw()).
+        and_then(handle_api_get_delete);
+    
+    async fn handle_api_list_all(rufs: Arc<Mutex<RufsMicroService<'static>>>, method: Method, path: FullPath, headers: HeaderMap) -> Result<impl Reply, Infallible> {
+        handle_api(rufs, method, path, headers, String::new(), json!({})).await
+    }
+
+    let route_api_list_all = warp::path(api_path.clone()).
+        and(with_rufs(rufs.clone())).and(warp::method()).and(warp::path::full()).and(warp::header::headers_cloned()).
+        and_then(handle_api_list_all);
+    
+    async fn handle_ws(rufs: Arc<Mutex<RufsMicroService<'static>>>, ws: warp::ws::Ws) -> Result<impl Reply, Infallible> {
+        async fn user_connected(ws: WebSocket, rufs: Arc<Mutex<RufsMicroService<'static>>>) {
+            let (user_ws_tx, mut user_ws_rx) = ws.split();
+            
+            if let Some(Ok(msg)) = user_ws_rx.next().await {
+                if let Ok(token) = msg.to_str() {
+                    if let Ok(rufs) = rufs.lock() {
+                        let secret = std::env::var("RUFS_JWT_SECRET").unwrap_or("123456".to_string());
+
+                        if let Ok(token_data) = decode::<Claims>(&token, &DecodingKey::from_secret(secret.as_ref()), &Validation::default()) {
+                            rufs.ws_server_connections_warp.write().unwrap().insert(token.to_string(), user_ws_tx);
+                            rufs.ws_server_connections_tokens.write().unwrap().insert(token.to_string(), token_data.claims);
+                        }
+                    }
+                }
+            }
+        }
+
+        let res = ws.on_upgrade(move |socket| user_connected(socket, rufs));
+        Ok(res)
+    }
+
+    let route_websocket = warp::path("websocket").and(with_rufs(rufs.clone())).and(warp::ws()).and_then(handle_ws);
+
+    async fn wasm_login_warp(rufs: Arc<Mutex<RufsMicroService<'static>>>, data_in: Value, _remote: Option<std::net::SocketAddr>) -> Result<impl Reply, Infallible> {
+        let rufs = &rufs.lock().unwrap().to_owned();
+        let ret = warp_try!(wasm_login(rufs, data_in).await);
+        Ok(Box::new(warp::reply::json(&ret)))
+    }
+        
+    let route_wasm_login = warp::path("wasm_ws").and(warp::path("login")).and(with_rufs(rufs.clone())).and(warp::body::json()).and(warp::addr::remote()).and_then(wasm_login_warp);
+
+    async fn handle_login(rufs: Arc<Mutex<RufsMicroService<'static>>>, login_request: LoginRequest, remote: Option<std::net::SocketAddr>) -> Result<impl Reply, Infallible> {
+        let remote = warp_try!(remote.context("400-Missing remote address."));
+        let rufs = &rufs.lock().unwrap().to_owned();
+        let ret = warp_try!(rufs.authenticate_user(&login_request.user, &login_request.password, &remote.to_string()).await);
+        Ok(Box::new(warp::reply::json(&ret)))
+    }
+    
+    let route_login = warp::path(api_path).and(warp::path("login")).and(with_rufs(rufs.clone())).and(warp::body::json()).and(warp::addr::remote()).and_then(handle_login);
+    
+    async fn wasm_process_warp(headers: HeaderMap, obj_in: Value) -> Result<impl Reply, Infallible> {
+        let token_raw = warp_try!(warp_try!(headers.get("Authorization").context("Missing header Authorization")).to_str());
+        let ret = warp_try!(wasm_process(token_raw, obj_in).await);
+        Ok(Box::new(warp::reply::json(&ret)))
+    }
+        
+    let route_wasm_process = warp::path("wasm_ws").and(warp::path("process")).and(warp::header::headers_cloned()).and(warp::body::json()).and_then(wasm_process_warp);
+
+    let routes = route_login.or(route_wasm_login).or(route_wasm_process).or(route_websocket).or(route_api_put).or(route_api_post).or(route_api_get_delete).or(route_api_list_all);
+    routes
+}
+
 const RUFS_MICRO_SERVICE_OPENAPI_STR: &str = r##"{
     "openapi": "3.0.3",
 	"info": {
@@ -707,10 +818,10 @@ const RUFS_MICRO_SERVICE_OPENAPI_STR: &str = r##"{
 	}
 }"##;
 
-#[cfg(not(target_arch = "wasm32"))]
+
 const DEFAULT_GROUP_OWNER_ADMIN_STR: &str = r#"{"name": "admin"}"#;
 
-#[cfg(not(target_arch = "wasm32"))]
+
 const DEFAULT_USER_ADMIN_STR: &str = r#"{
     "name": "admin",
     "rufsGroupOwner": 1,

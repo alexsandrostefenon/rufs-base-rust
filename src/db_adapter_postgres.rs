@@ -1,5 +1,6 @@
 use std::{io::{Error}, sync::{Arc}, collections::HashMap};
 
+use async_trait::async_trait;
 use chrono::NaiveDateTime;
 use convert_case::Casing;
 use indexmap::IndexMap;
@@ -284,14 +285,11 @@ impl DbAdapterPostgres<'_> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[tide::utils::async_trait]
+#[async_trait]
 impl EntityManager for DbAdapterPostgres<'_> {
-	async fn exec(&self, sql: &str) -> Result<(), Error> {
-		if let Err(error) = self.client.as_ref().unwrap().batch_execute(sql).await {
-			Err(Error::new(std::io::ErrorKind::InvalidInput, error.to_string()))
-		} else {
-			Ok(())
-		}
+	async fn exec(&self, sql: &str) -> Result<(), Box<dyn std::error::Error>> {
+		self.client.as_ref().unwrap().batch_execute(sql).await?;
+		Ok(())
 	}
 
     async fn insert(&self, openapi: &OpenAPI, schema_name :&str, obj :&Value) -> Result<Value, Box<dyn std::error::Error>> {
@@ -504,7 +502,7 @@ impl EntityManager for DbAdapterPostgres<'_> {
 		Ok(self.get_json_list(&list, true).get(0).unwrap().clone())
 	}
 
-	async fn delete_one(&self, _openapi: &OpenAPI, schema_name: &str, query_params: &Value) -> Result<(), Error> {
+	async fn delete_one(&self, _openapi: &OpenAPI, schema_name: &str, query_params: &Value) -> Result<(), Box<dyn std::error::Error>> {
 		println!("[DbAdapterPostgres.delete_one({}, {})]", schema_name, query_params);
 		let table_name = schema_name.to_case(convert_case::Case::Snake);
 		let mut params: Vec<&(dyn ToSql + Sync)> = vec![];
@@ -516,7 +514,7 @@ impl EntityManager for DbAdapterPostgres<'_> {
 		Ok(())
 	}
 
-	async fn update_open_api(&mut self, openapi: &mut OpenAPI, options :&mut FillOpenAPIOptions) -> Result<(), Error> {
+	async fn update_open_api(&mut self, openapi: &mut OpenAPI, options :&mut FillOpenAPIOptions) -> Result<(), Box<dyn std::error::Error>> {
 		fn get_field_name(adapter :&mut DbAdapterPostgres, column_name :&str, schema_data :Option<&mut SchemaData>) -> String {
 			let mut field_name = column_name.to_case(convert_case::Case::Camel);
 			let field_name_lower_case = field_name.to_lowercase();
@@ -552,7 +550,7 @@ impl EntityManager for DbAdapterPostgres<'_> {
 			}
 		}
 
-		async fn process_constraints(adapter :&mut DbAdapterPostgres<'_>, schemas :&mut IndexMap<String, ReferenceOr<Schema>>) -> Result<(), Error> {
+		async fn process_constraints(adapter :&mut DbAdapterPostgres<'_>, schemas :&mut IndexMap<String, ReferenceOr<Schema>>) -> Result<(), Box<dyn std::error::Error>> {
 			let sql_info_constraints = "SELECT table_name::text,constraint_name::text,constraint_type::text FROM information_schema.table_constraints ORDER BY table_name,constraint_name";
 			let sql_info_constraints_fields = "SELECT constraint_name::text,column_name::text,ordinal_position FROM information_schema.key_column_usage ORDER BY constraint_name,ordinal_position";
 			let sql_info_constraints_fields_ref = "SELECT constraint_name::text,table_name::text,column_name::text FROM information_schema.constraint_column_usage";
@@ -766,7 +764,7 @@ impl EntityManager for DbAdapterPostgres<'_> {
 			description :String
 		}
 
-		async fn process_columns(adapter :&mut DbAdapterPostgres<'_>, schemas :&mut IndexMap<String, ReferenceOr<Schema>>) -> Result<(), Error> {
+		async fn process_columns(adapter :&mut DbAdapterPostgres<'_>, schemas :&mut IndexMap<String, ReferenceOr<Schema>>) -> Result<(), Box<dyn std::error::Error>> {
 			let sql_types = ["boolean", "character varying", "character", "integer", "jsonb", "jsonb array", "numeric", "timestamp without time zone", "timestamp with time zone", "time without time zone", "bigint", "smallint", "text", "date", "double precision", "bytea"];
 			let rufs_types = ["boolean", "string", "string", "integer", "object", "array", "number", "date-time", "date-time", "date-time", "integer", "integer", "string", "date-time", "number", "string"];
 			let sql_info_tables = "
@@ -904,7 +902,7 @@ impl EntityManager for DbAdapterPostgres<'_> {
 		Ok(())
 	}
 
-	async fn create_table(&self, name :&str, schema :&Schema) -> Result<(), Error> {
+	async fn create_table(&self, name :&str, schema :&Schema) -> Result<(), Box<dyn std::error::Error>> {
 		fn gen_sql_column_description(field_name :&str, field :&Schema) -> Result<String, Error> {
 			let typ = match &field.schema_kind {
 				SchemaKind::Type(typ) => typ,

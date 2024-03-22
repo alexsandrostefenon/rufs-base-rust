@@ -14,12 +14,10 @@ pub mod db_adapter_postgres;
 pub mod entity_manager;
 
 #[cfg(not(target_arch = "wasm32"))]
-pub mod micro_service_server;
-
-#[cfg(not(target_arch = "wasm32"))]
 #[cfg(feature = "http_server")]
 pub mod request_filter;
 
+#[cfg(not(target_arch = "wasm32"))]
 #[cfg(feature = "http_server")]
 pub mod rufs_micro_service;
 

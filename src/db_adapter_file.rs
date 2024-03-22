@@ -1,5 +1,6 @@
+use async_trait::async_trait;
 use openapiv3::{OpenAPI, Schema};
-use std::{collections::HashMap, fs, io::Error, sync::{RwLock, LockResult, RwLockReadGuard, RwLockWriteGuard, Arc}};
+use std::{collections::HashMap, fs, sync::{RwLock, LockResult, RwLockReadGuard, RwLockWriteGuard, Arc}};
 use serde_json::{Value, Number};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{entity_manager::EntityManager};
@@ -17,7 +18,7 @@ impl DbAdapterFile<'_> {
         self.tables.read().unwrap().get(name).is_some()
     }
 
-    pub fn load(&mut self, name: &str, default_rows: &Value) -> Result<(), Error> {
+    pub fn load(&mut self, name: &str, default_rows: &Value) -> Result<(), Box<dyn std::error::Error>> {
         let file = fs::File::open(format!("{}.json", name))?;
         let json = match serde_json::from_reader(file) {
             Err(_error) => {
@@ -31,7 +32,7 @@ impl DbAdapterFile<'_> {
         Ok(())
     }
 
-    fn store(&self, name :&str, list: &Value) -> Result<(), Error> {
+    fn store(&self, name :&str, list: &Value) -> Result<(), Box<dyn std::error::Error>> {
         let path = format!("{}.json", name);
         let contents = serde_json::to_string_pretty(list)?;
         std::fs::write(path, contents)?;
@@ -40,7 +41,7 @@ impl DbAdapterFile<'_> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[tide::utils::async_trait]
+#[async_trait]
 impl EntityManager for DbAdapterFile<'_> {
     async fn insert(&self, openapi: &OpenAPI, table_name :&str, obj: &Value) -> Result<Value, Box<dyn std::error::Error>> {
         let mut obj = obj.clone();
@@ -106,10 +107,10 @@ impl EntityManager for DbAdapterFile<'_> {
             return Ok(obj.clone());
         }
 
-        Err(Error::new(std::io::ErrorKind::NotFound, format!("[FileDbAdapter.Update(name = {}, key = {})] : don't find table", table_name, key)))?
+        Err(format!("[FileDbAdapter.Update(name = {}, key = {})] : don't find table", table_name, key))?
     }
 
-    async fn delete_one(&self, _openapi: &OpenAPI, table_name: &str, key: &Value) -> Result<(), Error> {
+    async fn delete_one(&self, _openapi: &OpenAPI, table_name: &str, key: &Value) -> Result<(), Box<dyn std::error::Error>> {
         let tables: LockResult<RwLockWriteGuard<HashMap<String, Value>>> = self.tables.write();
         let mut tables: RwLockWriteGuard<HashMap<String, Value>> = tables.unwrap();
         let list = tables.get(table_name).unwrap().as_array().unwrap();
@@ -122,18 +123,18 @@ impl EntityManager for DbAdapterFile<'_> {
             return Ok(());
         }
 
-        Err(Error::new(std::io::ErrorKind::NotFound, format!("[FileDbAdapter.Update(name = {}, key = {})] : don't find table", table_name, key)))
+        Err(format!("[FileDbAdapter.Update(name = {}, key = {})] : don't find table", table_name, key))?
     }
 
-    async fn update_open_api(&mut self, _openapi: &mut OpenAPI, _options :&mut FillOpenAPIOptions) -> Result<(), Error> {
+    async fn update_open_api(&mut self, _openapi: &mut OpenAPI, _options :&mut FillOpenAPIOptions) -> Result<(), Box<dyn std::error::Error>> {
         Ok(())
     }
 
-    async fn exec(&self, _sql: &str) -> Result<(), Error> {
+    async fn exec(&self, _sql: &str) -> Result<(), Box<dyn std::error::Error>> {
         Ok(())
     }   
 
-    async fn create_table(&self, _name: &str, _schema :&Schema) -> Result<(), Error> {
+    async fn create_table(&self, _name: &str, _schema :&Schema) -> Result<(), Box<dyn std::error::Error>> {
         Ok(())
     }
 
