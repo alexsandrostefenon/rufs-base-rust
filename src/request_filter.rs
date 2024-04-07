@@ -1,17 +1,15 @@
-use anyhow::Context;
+use std::collections::HashMap;
+
 use indexmap::IndexMap;
 use jsonwebtoken::{decode, DecodingKey, Validation};
 use openapiv3::{ReferenceOr, Schema};
 use serde::{Serialize, Deserialize};
 use serde_json::{json, Value, Number};
 use crate::openapi::{RufsOpenAPI, SchemaPlace};
-#[cfg(not(target_arch = "wasm32"))]
-#[cfg(feature = "tide")]
-use tide::{Request, Error, StatusCode};
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{
-    entity_manager::{EntityManager},
+    entity_manager::EntityManager,
     rufs_micro_service::{Claims, RufsMicroService},
 };
 
@@ -24,7 +22,7 @@ struct NotifyMessage {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[cfg(feature = "tide")]
+#[cfg(feature = "http_server")]
 pub struct RequestFilter<'a> {
     micro_service: &'a RufsMicroService<'a>,
     entity_manager: Option<Box<&'a (dyn EntityManager + Send + Sync)>>,
@@ -38,32 +36,32 @@ pub struct RequestFilter<'a> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[cfg(feature = "tide")]
+#[cfg(feature = "http_server")]
 impl<'a> RequestFilter<'a> {
-    pub fn new<'b,  State>(req: &'b Request<State>, rms: &'b RufsMicroService<'b>, method: &'b str, obj_in: Value) -> Result<RequestFilter<'a>, tide::Error> where 'b: 'a {
+    pub fn new<'b>(rms: &'b RufsMicroService<'b>, path: &'b str, query: Option<&'b str>, method: &'b str, obj_in: Value) -> Result<RequestFilter<'a>, Box<dyn std::error::Error>> where 'b: 'a {
         let mut rf = Self { micro_service: &rms, entity_manager: Default::default(), token_payload: Default::default(), path: Default::default(), method: Default::default(), schema_name: Default::default(), parameters: Default::default(), obj_in: Default::default(), may_be_array: false };
         rf.method = method.to_string();
         rf.obj_in = obj_in;
 
-        if let Some(query) = req.url().query() {
+        if let Some(query) = query {
             rf.parameters = queryst::parse(query).unwrap();
             println!("[RequestFilter.new()] rf.parameters = {}", rf.parameters.to_string());
         }
 
-        let mut uri_path = req.url().path();
+        let mut uri_path = path;
 
-        if uri_path.starts_with(&format!("/{}/", rms.micro_service_server.api_path)) {
-            uri_path = &uri_path[rms.micro_service_server.api_path.len() + 1..];
+        if uri_path.starts_with(&format!("/{}/", rms.params.api_path)) {
+            uri_path = &uri_path[rms.params.api_path.len() + 1..];
         }
 
-        rf.path = rms.micro_service_server.openapi.get_path_params(uri_path, &rf.parameters).unwrap();
+        rf.path = rms.openapi.get_path_params(uri_path, &rf.parameters).unwrap();
 
         rf.may_be_array = match &rf.parameters {
             Value::Object(obj) => !(obj.contains_key("id") || obj.contains_key("primaryKey")),
             _ => true,
         };
 
-        rf.schema_name = rms.micro_service_server.openapi.get_schema_name(&rf.path, &rf.method, false).unwrap();
+        rf.schema_name = rms.openapi.get_schema_name(&rf.path, &rf.method, false).unwrap();
 
         if rms.db_adapter_file.have_table(&rf.schema_name) {
             rf.entity_manager = Some(Box::new(&rms.db_adapter_file));
@@ -75,8 +73,8 @@ impl<'a> RequestFilter<'a> {
         Ok(rf)
     }
     // private to create,update,delete,read
-    fn check_object_access(&mut self) -> Result<(), Error> {
-        let openapi = &self.micro_service.micro_service_server.openapi;
+    fn check_object_access(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let openapi = &self.micro_service.openapi;
         let user_rufs_group_owner = self.token_payload.as_ref().unwrap().rufs_group_owner;
         //let rufs_group_owner_entries = openapi.get_properties_with_ref(&self.schema_name, "#/components/schemas/rufsGroupOwner");
 
@@ -86,7 +84,7 @@ impl<'a> RequestFilter<'a> {
 
         let obj = &mut self.obj_in;
 
-        let mut obj_rufs_group_owner = if let Some(obj_rufs_group_owner) = openapi.get_primary_key_foreign(&self.schema_name, "rufsGroupOwner", obj).or(Err(Error::from_str(500, "unknow")))? {
+        let mut obj_rufs_group_owner = if let Some(obj_rufs_group_owner) = openapi.get_primary_key_foreign(&self.schema_name, "rufsGroupOwner", obj)? {
             obj_rufs_group_owner
         } else {
             return Ok(());
@@ -112,111 +110,78 @@ impl<'a> RequestFilter<'a> {
                 }
 
                 if !found {
-                    return Err(Error::from_str(404, "unauthorized object rufsGroup"));
+                    return Err("404-Unauthorized object rufsGroup.")?;
                 }
             } else {
                 return Ok(());
             }
         } else {
-            return Err(Error::from_str(404, "unauthorized object rufsGroupOwner"));
+            return Err("404-Unauthorized object rufsGroupOwner.")?;
         }
 
-        Err(Error::from_str(500, "unknow"))
+        Err("Unknow")?
     }
 
-    async fn process_create(&mut self) -> tide::Response {
-        if let Err(error) = self.check_object_access() {
-            return tide::Response::builder(error.status()).body(error.to_string()).build();
-        }
-
+    async fn process_create(&mut self) -> Result<Value, Box<dyn std::error::Error>> {
+        self.check_object_access()?;
         let entity_manager = self.entity_manager.as_ref().unwrap();
-        let openapi = &self.micro_service.micro_service_server.openapi;
-        let new_obj = entity_manager.insert(openapi, &self.schema_name, &self.obj_in.clone()).await;
-
-        match &new_obj {
-            Ok(new_obj) => {
-                self.notify(new_obj, false);
-                tide::Response::builder(200).body(new_obj.clone()).build()
-            },
-            Err(error) => tide::Response::builder(500).body(error.to_string()).build(),
-        }
+        let openapi = &self.micro_service.openapi;
+        let new_obj = entity_manager.insert(openapi, &self.schema_name, &self.obj_in.clone()).await?;
+        Ok(new_obj)
     }
 
-    async fn get_object(&self, use_document :bool) -> Result<Box<Value>, Error> {
+    async fn get_object(&self, use_document :bool) -> Result<Box<Value>, Box<dyn std::error::Error>> {
         let key = self.parse_query_parameters(false)?;
         println!("[RequestFilter.get_object({})] : {}", self.schema_name, key);
         let entity_manager = self.entity_manager.as_ref().unwrap();
-        let openapi = &self.micro_service.micro_service_server.openapi;
-        let obj = entity_manager.find_one(openapi, &self.schema_name, &key).await.context(format!("Missing data in {} for key {}", self.schema_name, key))?;
+        let openapi = &self.micro_service.openapi;
+        let obj = entity_manager.find_one(openapi, &self.schema_name, &key).await?.ok_or_else(|| format!("Missing data in {} for key {}", self.schema_name, key))?;
 
         if use_document != true {
             return Ok(obj);
         }
 
-        Err(Error::from_str(StatusCode::NotImplemented, "[ResquestFilter.GetObject] don't implemented com rf useDocument == true"))
+        Err("[ResquestFilter.GetObject] don't implemented com rf useDocument == true")?
     }
 
-    async fn process_read(&self) -> tide::Response {
+    async fn process_read(&self) -> Result<Value, Box<dyn std::error::Error>> {
         println!("[RequestFilter.process_read({})]", self.schema_name);
         // TODO : check RequestBody schema
-        match self.get_object(false).await {
-            Ok(obj) => tide::Response::builder(200).body(obj.as_ref().clone()).build(),
-            Err(error) => tide::Response::builder(error.status()).body(error.to_string()).build(),
-        }
+        let obj = self.get_object(false).await?.as_ref().clone();
+        Ok(obj)
     }
 
-    async fn process_update(&mut self) -> tide::Response {
-        if let Err(error) = self.get_object(false).await {
-            return tide::Response::builder(error.status()).body(error.to_string()).build();
-        }
-
-        if let Err(error) = self.check_object_access() {
-            return tide::Response::builder(error.status()).body(error.to_string()).build();
-        }
-
+    async fn process_update(&mut self) -> Result<Value, Box<dyn std::error::Error>> {
+        //let obj = self.get_object(false).await?;
+        self.check_object_access()?;
         let primary_key = &self.parse_query_parameters(false).unwrap();
         println!("[RequestFilter.process_update({})] : {}", self.schema_name, primary_key);
         let entity_manager = self.entity_manager.as_ref().unwrap();
-        let new_obj = entity_manager.update(&self.micro_service.micro_service_server.openapi, &self.schema_name, primary_key, &self.obj_in).await;
-
-        match new_obj {
-            Ok(new_obj) => {
-                self.notify(&new_obj, false);
-                tide::Response::builder(200).body(new_obj.clone()).build()
-            },
-            Err(error) => tide::Response::builder(500).body(error.to_string()).build(),
-        }
+        let new_obj = entity_manager.update(&self.micro_service.openapi, &self.schema_name, primary_key, &self.obj_in).await?;
+        self.notify(&new_obj, false);
+        Ok(new_obj)
     }
 
-    async fn process_delete(&mut self) -> tide::Response {
-        let obj_deleted = match self.get_object(false).await {
-            Ok(obj) => obj,
-            Err(error) => return tide::Response::builder(error.status()).body(error.to_string()).build(),
-        };
-
+    async fn process_delete(&mut self) -> Result<Value, Box<dyn std::error::Error>> {
+        let obj_deleted = self.get_object(false).await?;
         let primary_key = &self.parse_query_parameters(false).unwrap();
         let entity_manager = self.entity_manager.as_ref().unwrap();
-        let res = entity_manager.delete_one(&self.micro_service.micro_service_server.openapi, &self.schema_name, primary_key).await;
-
-        if let Err(error) = res {
-            return tide::Response::builder(500).body(error.to_string()).build();
-        }
-
+        entity_manager.delete_one(&self.micro_service.openapi, &self.schema_name, primary_key).await?;
         self.notify(&obj_deleted, true);
-        tide::Response::builder(200).body(obj_deleted.as_ref().clone()).build()
+        Ok(obj_deleted.as_ref().clone())
     }
 /*
     func (rf *RequestFilter) processPatch() Response {
         return ResponseInternalServerError("TODO")
     }
 */
-    fn parse_query_parameters(&self, ignore_null: bool) -> Result<Value, Error> {
-        let obj = self.micro_service.micro_service_server.openapi.copy_fields(&self.path, &self.method, &SchemaPlace::Parameter, true, &self.parameters, ignore_null, false, false).unwrap();
+    fn parse_query_parameters(&self, ignore_null: bool) -> Result<Value, Box<dyn std::error::Error>> {
+        let obj = self.micro_service.openapi.copy_fields(&self.path, &self.method, &SchemaPlace::Parameter, true, &self.parameters, ignore_null, false, false).unwrap();
         //println!("[openapi.parse_query_parameters({})] : {}", self.parameters, obj.to_string());
         Ok(obj)
     }
 
-    async fn process_query(&self) -> tide::Response {
+    async fn process_query(&self) -> Result<Value, Box<dyn std::error::Error>> {
         fn get_order_by(properties: &IndexMap<String, ReferenceOr<Box<Schema>>>) -> Vec<String> {
             let mut order_by = Vec::<String>::new();
 
@@ -246,7 +211,7 @@ impl<'a> RequestFilter<'a> {
             order_by
         }
 
-        let schema = self.micro_service.micro_service_server.openapi.get_schema_from_parameters(&self.path, &self.method, true).unwrap();
+        let schema = self.micro_service.openapi.get_schema_from_parameters(&self.path, &self.method, true).unwrap();
         let fields = self.parse_query_parameters(true).unwrap();
 
         let order_by = match &schema.schema_kind {
@@ -258,12 +223,12 @@ impl<'a> RequestFilter<'a> {
             _ => todo!(),
         };
 
-        let list = self.entity_manager.as_ref().unwrap().find(&self.micro_service.micro_service_server.openapi, &self.schema_name, &fields, &order_by).await;
+        let list = self.entity_manager.as_ref().unwrap().find(&self.micro_service.openapi, &self.schema_name, &fields, &order_by).await?;
         println!("[RequestFilter.process_query] : returning {} registers.", list.len());
-        tide::Response::builder(200).body(Value::Array(list)).build()
+        Ok(Value::Array(list))
     }
 
-    pub async fn check_authorization<State>(&mut self, req: &Request<State>) -> Result<bool, Error> {
+    pub async fn check_authorization<State>(&mut self, headers: &HashMap<String, String>) -> Result<bool, Box<dyn std::error::Error + Sync + Send>> {
         fn check_mask(mask: u64, method: &str) -> bool {
             let list = vec!["get", "post", "put", "patch", "delete", "query"];
 
@@ -274,10 +239,9 @@ impl<'a> RequestFilter<'a> {
             }
         }
 
-        for security_item in self.micro_service.micro_service_server.openapi.security.as_ref().unwrap() {
+        for security_item in self.micro_service.openapi.security.as_ref().unwrap() {
             for (security_name, _) in security_item {
                 let security_scheme = self.micro_service
-                    .micro_service_server
                     .openapi
                     .components
                     .as_ref()
@@ -296,12 +260,9 @@ impl<'a> RequestFilter<'a> {
                     openapiv3::SecurityScheme::APIKey { location, name, description: _ } => match &location {
                         openapiv3::APIKeyLocation::Query => todo!(),
                         openapiv3::APIKeyLocation::Header => {
-                            for header_name in req.header_names() {
-                                if header_name.as_str().to_lowercase() == name.to_lowercase() {
-                                    let header_array = req.header(header_name).unwrap();
-                                    let token_raw = header_array.last().as_str();
-
-                                    if let Some(_user) = self.micro_service.db_adapter_file.find_one(&self.micro_service.micro_service_server.openapi, "rufsUser", &json!({ "password": token_raw })).await.take() {
+                            for (map_name, token_raw) in headers {
+                                if map_name.as_str().to_lowercase() == name.to_lowercase() {
+                                    if let Some(_user) = self.micro_service.db_adapter_file.find_one(&self.micro_service.openapi, "rufsUser", &json!({ "password": token_raw })).await.unwrap().take() {
                                         //let x = serde_json::from_value(user.clone()).unwrap();
                                         //self.token_payload = x;
                                     } else {
@@ -321,7 +282,7 @@ impl<'a> RequestFilter<'a> {
                     } => {
                         if scheme == "bearer" && bearer_format.as_ref().unwrap() == "JWT" {
                             let authorization_header_prefix = "Bearer ";
-                            let token_raw = req.header("Authorization").unwrap().last().as_str();
+                            let token_raw = headers.get(&"Authorization".to_lowercase()).ok_or("Missing header Authorization")?;
 
                             if token_raw.starts_with(authorization_header_prefix) {
                                 let token_raw = &token_raw[authorization_header_prefix.len()..];
@@ -347,15 +308,12 @@ impl<'a> RequestFilter<'a> {
                 Ok(false)
             }
         } else {
-            Err(Error::from_str(
-                StatusCode::Unauthorized,
-                format!("[RequestFilter.CheckAuthorization] missing service {}.{} in authorized roles", self.path, self.method),
-            ))
+            Err(format!("404-[RequestFilter.CheckAuthorization] missing service {}.{} in authorized roles", self.path, self.method))?
         }
     }
 
-    pub async fn process_request(&mut self) -> tide::Response {
-        //let schema_response = self.micro_service.micro_service_server.openapi.get_schema(&self.path, &self.method, "responseObject").unwrap();
+    pub async fn process_request(&mut self) -> Result<Value, Box<dyn std::error::Error>> {
+        //let schema_response = self.micro_service.openapi.get_schema(&self.path, &self.method, "responseObject").unwrap();
         println!("[RequestFilter.process_request] : {} {}", self.path, self.method);
 
         if self.method == "get" {
@@ -373,13 +331,13 @@ impl<'a> RequestFilter<'a> {
         } else if self.method == "delete" {
             return self.process_delete().await;
         } else {
-            return tide::Response::builder(tide::StatusCode::BadRequest).body(format!("[RequsetFilter.ProcessRequest] : unknow route for {}", self.path)).build();
+            return Err(format!("400-[RequsetFilter.ProcessRequest] : unknow route for {}", self.path))?;
         }
     }
 
     fn notify(&self, obj :&Value, is_remove :bool) {
         let micro_service = self.micro_service;
-        let openapi = &micro_service.micro_service_server.openapi;
+        let openapi = &micro_service.openapi;
         let parameters = openapi.copy_fields(&self.path, &self.method, &SchemaPlace::Schemas, false, obj, false, false, true).unwrap();
         let mut msg = NotifyMessage{service: self.schema_name.to_string(), action: "notify".to_string(), primary_key: parameters};
 
@@ -391,9 +349,12 @@ impl<'a> RequestFilter<'a> {
         let obj_rufs_group_owner = openapi.get_primary_key_foreign(&self.schema_name, "rufsGroupOwner", obj).unwrap();
         let rufs_group = openapi.get_primary_key_foreign(&self.schema_name, "rufsGroup", obj).unwrap();
         println!("[RequestFilter.notify] broadcasting {:?} ...", msg);
-        let map = micro_service.ws_server_connections.read().unwrap();
+        #[cfg(feature = "tide")]
+        let map = micro_service.ws_server_connections_tide.read().unwrap();
+        #[cfg(feature = "warp")]
+        let mut map = micro_service.ws_server_connections_warp.write().unwrap();
 
-        for (token_string, ws_server_connection) in map.iter() {
+        for (token_string, ws_server_connection) in map.iter_mut() {
             // enviar somente para os clients de "rufsGroupOwner"
             let key = &token_string.clone();
             let map = micro_service.ws_server_connections_tokens.read().unwrap();
@@ -424,9 +385,18 @@ impl<'a> RequestFilter<'a> {
                         if (role.mask & 0x01) != 0 {
                             println!("[RequestFilter.notify] send to client {}", token_data.name);
                             let rt = tokio::runtime::Runtime::new().unwrap();
-
+                            #[cfg(feature = "tide")]
                             if let Err(error) = rt.block_on(ws_server_connection.send_string(msg.to_string())) {
                                 println!("[RequestFilter.notify] send to client : {}", error);
+                            }
+                            #[cfg(feature = "warp")]
+                            {
+                                use futures_util::SinkExt;
+                                use warp::ws::Message;
+
+                                if let Err(error) = rt.block_on(ws_server_connection.send(Message::text(msg.to_string()))) {
+                                    println!("[RequestFilter.notify] send to client : {}", error);
+                                }
                             }
                         }
                     }
