@@ -1,4 +1,3 @@
-use anyhow::{anyhow, Context};
 use chrono::{DateTime, Datelike, Days, Local, Months, NaiveDateTime, TimeZone, Timelike, Utc};
 use convert_case::Casing;
 use indexmap::IndexMap;
@@ -176,6 +175,7 @@ pub struct Service {
     primary_keys: Vec<String>,
     list: Vec<Value>,
     list_str: Vec<String>,
+    map_list: IndexMap<String, usize>,
 }
 
 impl Service {
@@ -189,32 +189,50 @@ impl Service {
             short_description_list,
             list: vec![],
             list_str: vec![],
+            map_list: IndexMap::default()
         })
     }
 
     pub fn get_primary_key(&self, obj: &Value) -> Option<Value> {
-        // private, projected for extract primaryKey and uniqueKeys
-        fn copy_fields_from_list(data_in: &Value, field_names: &Vec<String>, retutn_null_if_any_empty: bool) -> Option<Value> {
-            let mut ret = json!({});
+        let mut ret = json!({});
 
-            for field_name in field_names {
-                if let Some(value) = data_in.get(field_name) {
-                    ret[field_name] = value.clone();
-                } else {
-                    if retutn_null_if_any_empty == true {
-                        return None;
-                    }
-                }
-            }
-
-            Some(ret)
+        for field_name in &self.primary_keys {
+            let value = obj.get(field_name)?;
+            ret[field_name] = value.clone();
         }
 
-        copy_fields_from_list(obj, &self.primary_keys, true)
+        Some(ret)
     }
 
-    async fn query_remote(&self, server_connection: &ServerConnection, params: &Value) -> Result<(Vec<Value>, Vec<String>), Box<dyn std::error::Error>> {
-        let access = server_connection.login_response.roles.iter().find(|role| role.path == self.path).unwrap().mask;
+    pub fn get_primary_key_hash(&self, obj: &Value) -> Result<String, Box<dyn std::error::Error>> {
+        let mut list = Vec::with_capacity(self.primary_keys.len());
+
+        for field_name in &self.primary_keys {
+            let value = obj.get(field_name).ok_or_else(|| format!("get_primary_key_hash : broken param"))?;
+            list.push(value.to_string());
+        }
+
+        Ok(list.join("-"))
+    }
+
+    async fn query_remote(&self, server_connection: &ServerConnection, params: &Value) -> Result<(IndexMap<String, usize>, Vec<Value>, Vec<String>), Box<dyn std::error::Error>> {
+        fn build_list_str(service: &Service, server_connection: &ServerConnection, list: &Vec<Value>) -> Result<(IndexMap<String, usize>, Vec<String>), Box<dyn std::error::Error>> {
+            let mut list_str = Vec::with_capacity(list.len());
+            let mut map_list = IndexMap::with_capacity(list.len());
+            let mut index = 0;
+    
+            for item in list {
+                let str = service.build_item_str(server_connection, item)?;
+                let primary_key_hash = service.get_primary_key_hash(item)?;
+                map_list.insert(primary_key_hash, index);
+                list_str.push(str);
+                index += 1;
+            }
+    
+            Ok((map_list, list_str))
+        }
+    
+        let access = server_connection.login_response.roles.iter().find(|role| role.path == self.path).ok_or_else(|| format!("query_remote broken role."))?.mask;
 
         if access & 1 != 0 {
             //console.log("[ServerConnection] loading", service.label, "...");
@@ -230,7 +248,7 @@ impl Service {
                 Value::Object(_) => todo!(),
             };
 
-            let list_str = self.build_list_str(server_connection, &list)?;
+            let (map_list, list_str) = build_list_str(self, server_connection, &list)?;
             /*
             let dependents = server_connection.login_response.openapi.get_dependents(&self.name, false);
             let mut list_processed = vec![];
@@ -244,83 +262,15 @@ impl Service {
                 }
             }
             */
-
-            if list.len() != list_str.len() {
-                println!("[DEBUG - query_remote - {} - list.len({}) != list_str.len({})]", self.path, list.len(), list_str.len());
-            }
-
-            return Ok((list, list_str));
+            return Ok((map_list, list, list_str));
         }
 
-        Ok((vec![], vec![]))
+        Ok((IndexMap::default(), vec![], vec![]))
     }
 
-    //find<'a>(list: &'a Vec<Value>, filter: &'a Value) -> Vec<&'a Value>
-    pub fn find<'a>(&'a self, params: &'a Value) -> Vec<&'a Value> {
-        Filter::find(&self.list, params).unwrap()
-    }
-
-    pub fn find_pos(&self, key: &Value) -> Option<usize> {
-        Filter::find_index(&self.list, key).unwrap()
-    }
-
-    pub fn find_one(&self, key: &Value) -> Option<&Value> {
-        if let Some(pos) = self.find_pos(key) {
-            self.list.get(pos)
-        } else {
-            None
-        }
-    }
-    // private, use in get, save, update and remove
-    pub fn update_list(&mut self, value: Value, pos: Option<usize>) -> Result<usize, Box<dyn std::error::Error>> {
-        #[cfg(debug_assertions)]
-        if value.is_array() {
-            for value in &self.list {
-                println!("[DEBUG - {:?} - {:?}]", self.get_primary_key(value), value);
-            }
-        }
-
-        let ret = if let Some(pos) = pos {
-            self.list[pos] = value;
-
-            if self.list.len() > self.list_str.len() + 1 {
-                println!("[DEBUG - update_list - {} - 1 - rufs_service.list.len({}) != rufs_service.list_str.len({})]", self.path, self.list.len(), self.list_str.len());
-            }
-
-            pos
-        } else {
-            if let Some(key) = self.get_primary_key(&value) {
-                if let Some(pos) = self.find_pos(&key) {
-                    self.list[pos] = value;
-
-                    if self.list.len() > self.list_str.len() + 1 {
-                        println!("[DEBUG - update_list - {} - 2 - rufs_service.list.len({}) != rufs_service.list_str.len({})]", self.path, self.list.len(), self.list_str.len());
-                    }
-
-                    pos
-                } else {
-                    #[cfg(debug_assertions)]
-                    if self.list.len() > self.list_str.len() {
-                        for _value in &self.list {
-                            println!("[DEBUG - {:?} - {:?}]", self.get_primary_key(&value), value);
-                        }
-                    }
-
-                    self.list.push(value);
-                    self.list.len() - 1
-                }
-            } else {
-                self.list.push(value);
-
-                if self.list.len() > self.list_str.len() + 1 {
-                    println!("[DEBUG - update_list - {} - 4 - rufs_service.list.len({}) != rufs_service.list_str.len({})]", self.path, self.list.len(), self.list_str.len());
-                }
-
-                self.list.len() - 1
-            }
-        };
-
-        Ok(ret)
+    pub fn find_pos(&self, primary_key: &Value) -> Result<Option<usize>, Box<dyn std::error::Error>> {
+        let primary_key = self.get_primary_key_hash(primary_key)?;
+        Ok(self.map_list.get(&primary_key).copied())
     }
 
     fn build_field_str(server_connection: &ServerConnection, parent_name: &Option<String>, schema_name: &str, field_name: &str, obj: &Value) -> Result<String, Box<dyn std::error::Error>> {
@@ -331,11 +281,17 @@ impl Service {
                 return Ok("".to_string());
             }
 
-            let service = server_connection.service_map.get(&item.schema).context(format!("Don't found service {}", item.schema))?;
+            let service = server_connection.service_map.get(&item.schema).ok_or_else(|| format!("[build_field_reference] Don't found service {}", item.schema))?;
             let primary_key = item.primary_key;
-            let pos = service
-                .find_pos(&primary_key)
-                .context(format!("Don't found item {} in service {}.\ncandidates:{:?}\n", primary_key, item.schema, service.list))?;
+/*
+            let debug_now = std::time::SystemTime::now();
+ */
+            let pos = service.find_pos(&primary_key)?.ok_or_else(|| format!("[build_field_reference] Don't found item for primary_key {}.\nOptions : {:?}", primary_key, service.map_list))?;
+/*
+            if schema_name == "request" {
+                println!("{:9} [DEBUG - build_field_str] {}.{} : {}.", debug_now.elapsed()?.as_millis(), schema_name, field_name, primary_key);
+            }
+ */
             let str = service.list_str[pos].clone();
             Ok(str)
         }
@@ -367,12 +323,10 @@ impl Service {
             return Ok("".to_string());
         };
 
-        let properties = server_connection
-            .login_response
-            .openapi
+        let properties = server_connection.login_response.openapi
             .get_properties_from_schema_name(parent_name, schema_name, &SchemaPlace::Schemas)
-            .context(format!("Missing properties in openapi schema {:?}.{}", parent_name, schema_name))?;
-        let field = properties.get(field_name).context(format!("Don't found field {} in properties", field_name))?;
+            .ok_or_else(|| format!("Missing properties in openapi schema {:?}.{}", parent_name, schema_name))?;
+        let field = properties.get(field_name).ok_or_else(|| format!("Don't found field {} in properties", field_name))?;
 
         match &field {
             ReferenceOr::Reference { reference } => {
@@ -407,12 +361,7 @@ impl Service {
 
         Ok(str)
     }
-    // Instance section
-    /*
-        async fn request(&self, server_connection: &mut ServerConnection, path :&str, method :Method, params :&Value, obj_send :&Value) -> Result<Value, anyhow::Error> {
-            server_connection.http_rest.request(&format!("{}/{}", self.path, path), method, params, obj_send).await
-        }
-    */
+
     fn build_item_str(&self, server_connection: &ServerConnection, item: &Value) -> Result<String, Box<dyn std::error::Error>> {
         let mut string_buffer = vec![];
 
@@ -425,56 +374,6 @@ impl Service {
         Ok(str)
     }
 
-    fn build_list_str(&self, server_connection: &ServerConnection, list: &Vec<Value>) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-        let mut list_out = vec![];
-
-        for item in list {
-            let str = self.build_item_str(server_connection, item)?;
-
-            if let Some(pos) = list_out.iter().position(|s| s == &str) {
-                println!("already str in list, position {}", pos);
-                println!("item = {}", item);
-                println!("item[{}] = {}", pos, list[pos]);
-                self.build_item_str(server_connection, item)?;
-                todo!()
-            }
-
-            list_out.push(str);
-        }
-
-        if self.list.len() != self.list_str.len() {
-            println!("[DEBUG - build_list_str - {} - rufs_service.list.len({}) != rufs_service.list_str.len({})]", self.schema_name, self.list.len(), self.list_str.len());
-        }
-
-        Ok(list_out)
-    }
-
-    fn remove_internal(&mut self, primary_key: &Value) -> Result<Option<usize>, Box<dyn std::error::Error>> {
-        let index = self.find_pos(primary_key);
-
-        // for listener in self.remote_listeners {
-        //     listener.on_notify(schema_name, primary_key, "delete");
-        // }
-
-        //console.log("DataStore.removeInternal : pos = ", pos, ", data :", service.list[pos]);
-        if let Some(index) = &index {
-            //let value = &service.list[pos];
-            //service.update_list(value, Some(pos));
-            //service.update_list_str(response);
-            if *index >= self.list.len() {
-                return Err(anyhow!(format!("[remove_internal({}, {})] index {} out of service.list.len {}", self.path, primary_key, index, self.list.len())))?;
-            }
-
-            if *index >= self.list_str.len() {
-                return Err(anyhow!(format!("[remove_internal({}, {})] index {} out of service.list_str.len {}", self.path, primary_key, index, self.list_str.len())))?;
-            }
-
-            self.list.remove(*index);
-            self.list_str.remove(*index);
-        }
-
-        Ok(index)
-    }
 }
 
 #[derive(Serialize, Default, Debug)]
@@ -575,7 +474,7 @@ impl HtmlElementId {
     }
 
     fn new_with_regex(cap: &regex::Captures) -> Result<Self, Box<dyn std::error::Error>> {
-        let schema = cap.name("name").context("context name")?.as_str();
+        let schema = cap.name("name").ok_or_else(|| format!("context name"))?.as_str();
 
         let form_type = match cap.name("form_type") {
             Some(form_type) => FormType::from_str(form_type.as_str())?,
@@ -742,8 +641,8 @@ impl DataView {
     }
 
     pub fn clear(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        self.original.as_object_mut().context("broken original")?.clear();
-        self.params.instance.as_object_mut().context("broken params.instance")?.clear();
+        self.original.as_object_mut().ok_or_else(|| format!("broken original"))?.clear();
+        self.params.instance.as_object_mut().ok_or_else(|| format!("broken params.instance"))?.clear();
         self.instance_flags.clear();
         self.field_external_references_str.clear();
         Ok(())
@@ -779,7 +678,7 @@ impl DataView {
         let mut hmtl_fields = vec![];
 
         for (field_name, field) in &data_view.properties {
-            let field = field.as_item().context("field is reference")?;
+            let field = field.as_item().ok_or_else(|| format!("field is reference"))?;
             let extension = &field.schema_data.extensions;
             let hidden = extension.get("x-hidden").unwrap_or(&Value::Bool(false)).as_bool().unwrap_or(false);
 
@@ -898,7 +797,7 @@ impl DataView {
             };
 
             let (html_external_search, html_references) = if let Some(_reference) = extension.get("x-$ref") {
-                //let reference = reference.as_str().context("not string content")?;
+                //let reference = reference.as_str().ok_or_else(|| format!("not string content"))?;
                 let mut list = vec![];
                 list.push(format!(
                     r##"<div class="col-1"><a id="reference-view--{form_id}--{field_name}" name="reference-view-{field_name}" class="btn btn-secondary" href="#"><i class="bi bi-eye-fill"></i></a></div>"##
@@ -921,12 +820,12 @@ impl DataView {
             };
 
             let html_flags = if let Some(flags) = extension.get("x-flags") {
-                let flags = flags.as_array().context(format!("Not array content in extension 'x-flags' of field {}, content : {}", field_name, flags))?;
+                let flags = flags.as_array().ok_or_else(|| format!("Not array content in extension 'x-flags' of field {}, content : {}", field_name, flags))?;
                 let mut list = vec![];
                 let mut index = 0;
 
                 for label in flags {
-                    let label = label.as_str().context("not string content")?;
+                    let label = label.as_str().ok_or_else(|| format!("not string content"))?;
 
                     list.push(format!(
                         r##"
@@ -1217,8 +1116,10 @@ impl DataView {
     fn build_table(data_view_manager: &DataViewManager, data_view: &DataView, params_search: &DataViewParams) -> Result<String, Box<dyn std::error::Error>> {
         fn build_href(data_view_manager: &DataViewManager, data_view: &DataView, item: &Value, action: &DataViewProcessAction) -> Result<String, Box<dyn std::error::Error>> {
             let str = if data_view.path.is_some() {
-                let service = data_view_manager.server_connection.service_map.get(&data_view.data_view_id.schema_name).context("Missing service")?;
-                let primary_key = &service.get_primary_key(item).context(format!("Missing primary key"))?;
+                let service = data_view_manager.server_connection.service_map.get(&data_view.data_view_id.schema_name).ok_or_else(|| format!("Missing service"))?;
+                let primary_key = &service.get_primary_key(item).ok_or_else(|| {
+                    format!("[DataView.build_table] {} : Missing primary key", service.path)                    
+                })?;
                 DataView::build_location_hash(&data_view.data_view_id.form_id, action, primary_key)?
             } else {
                 "".to_string()
@@ -1233,7 +1134,7 @@ impl DataView {
             &data_view.filter_results
         } else {
             let schema_name = &data_view.data_view_id.schema_name;
-            let service = data_view_manager.server_connection.service_map.get(schema_name).context("broken service")?;
+            let service = data_view_manager.server_connection.service_map.get(schema_name).ok_or_else(|| format!("broken service"))?;
             &service.list
         };
 
@@ -1273,7 +1174,14 @@ impl DataView {
         let mut item_index = 0;
 
         for index in offset_ini..offset_end {
-            let item = list.get(index).context(format!("Broken: missing item at index"))?;
+            let item = list.get(index).ok_or_else(|| format!("Broken: missing item at index"))?;
+
+            if let Some(obj) = item.as_object() {
+                if obj.is_empty() {
+                    continue;
+                }
+            }
+            
             let mut html_cols = vec![];
 
             for field_name in &data_view.fields_table {
@@ -1428,7 +1336,7 @@ impl DataView {
     */
     // Aggregate Section
     fn clear_aggregate(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        self.params.aggregate.as_object_mut().context("broken obj")?.clear();
+        self.params.aggregate.as_object_mut().ok_or_else(|| format!("broken obj"))?.clear();
         self.aggregate_results.clear();
         Ok(())
     }
@@ -1458,7 +1366,7 @@ impl DataView {
             list.join("")
         }
 
-        if !aggregate.as_object().context("broken ok")?.is_empty() {
+        if !aggregate.as_object().ok_or_else(|| format!("broken ok"))?.is_empty() {
             self.params.aggregate = aggregate.clone();
         }
 
@@ -1467,14 +1375,14 @@ impl DataView {
         let list = if self.path.is_none() || self.filter_results.len() > 0 {
             &self.filter_results
         } else {
-            let service = server_connection.service_map.get(&self.data_view_id.schema_name).context("Missing service in service_map")?;
+            let service = server_connection.service_map.get(&self.data_view_id.schema_name).ok_or_else(|| format!("Missing service in service_map"))?;
             &service.list
         };
 
         for item in list {
             let mut list_label = vec![];
 
-            for (field_name, range) in self.params.aggregate.as_object().context("broken ok")? {
+            for (field_name, range) in self.params.aggregate.as_object().ok_or_else(|| format!("broken ok"))? {
                 let Some(value) = item.get(field_name) else {
                     continue;
                 };
@@ -1490,7 +1398,7 @@ impl DataView {
                 let extension = &field.schema_data.extensions;
 
                 let str = if let Some(_ref) = extension.get("x-$ref") {
-                    let service = server_connection.service_map.get(&self.data_view_id.schema_name).context("[set_value_process] Missing service")?;
+                    let service = server_connection.service_map.get(&self.data_view_id.schema_name).ok_or_else(|| format!("[set_value_process] Missing service"))?;
                     Service::build_field_str(server_connection, &None, &service.schema_name, field_name, item)?
                 } else {
                     match &field.schema_kind {
@@ -1564,17 +1472,17 @@ impl DataView {
     // Filter section
     fn clear_filter(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         // hora corrente, hora anterior, uma hora, hoje, ontem, um dia, semana corrente, semana anterior, uma semana, quinzena corrente, quinzena anterior, 15 dias, mês corrente, mês anterior, 30 dias, ano corrente, ano anterior, 365 dias
-        self.params.filter.as_object_mut().context("broken ok")?.clear();
-        self.params.filter_range.as_object_mut().context("broken ok")?.clear();
-        self.params.filter_range_min.as_object_mut().context("broken ok")?.clear();
-        self.params.filter_range_max.as_object_mut().context("broken ok")?.clear();
+        self.params.filter.as_object_mut().ok_or_else(|| format!("broken ok"))?.clear();
+        self.params.filter_range.as_object_mut().ok_or_else(|| format!("broken ok"))?.clear();
+        self.params.filter_range_min.as_object_mut().ok_or_else(|| format!("broken ok"))?.clear();
+        self.params.filter_range_max.as_object_mut().ok_or_else(|| format!("broken ok"))?.clear();
         self.clear()?;
         Ok(())
     }
 
     fn apply_filter(&mut self, list: &Vec<Value>) {
         fn match_object(expected_fields: &Value, actual_object: &Value, match_string_partial: bool, recursive: bool, compare_type: i8) -> Result<bool, Box<dyn std::error::Error>> {
-            for (key, expected_property) in expected_fields.as_object().context("broken")? {
+            for (key, expected_property) in expected_fields.as_object().ok_or_else(|| format!("broken"))? {
                 let Some(actual_property) = actual_object.get(key) else {
                     return Ok(false);
                 };
@@ -1896,7 +1804,7 @@ impl DataView {
         ) -> Result<(Value, Value, Value), Box<dyn std::error::Error>> {
             let value_old = data_view.get_form_type_instance(&element_id.form_type, &element_id.form_type_ext)?.get(field_name).unwrap_or(&Value::Null).clone();
 
-            let field = match data_view.properties.get(field_name).context(format!("set_value_process : missing field {} in data_view {}", field_name, data_view.data_view_id.form_id))? {
+            let field = match data_view.properties.get(field_name).ok_or_else(|| format!("set_value_process : missing field {} in data_view {}", field_name, data_view.data_view_id.form_id))? {
                 ReferenceOr::Reference { reference: _ } => todo!(),
                 ReferenceOr::Item(schema) => schema.as_ref(),
             };
@@ -1910,7 +1818,7 @@ impl DataView {
                     if force_enable_null || field.schema_data.nullable {
                         value
                     } else {
-                        return None.context(format!(
+                        return None.ok_or_else(|| format!(
                             "set_value_process 2 : received value null in {}.{}, force_enable_null = {}, field.schema_data.nullable = {}, data_view.action = {}",
                             data_view.data_view_id.form_id, field_name, force_enable_null, field.schema_data.nullable, data_view.action
                         ))?;
@@ -1928,7 +1836,7 @@ impl DataView {
                 if value.is_null() {
                     data_view.field_external_references_str.insert(field_name.to_string(), "".to_string());
                 } else {
-                    let service = server_connection.service_map.get(&data_view.data_view_id.schema_name).context("[set_value_process] Missing service")?;
+                    let service = server_connection.service_map.get(&data_view.data_view_id.schema_name).ok_or_else(|| format!("[set_value_process] Missing service"))?;
                     let mut obj = data_view.get_form_type_instance(&element_id.form_type, &element_id.form_type_ext)?.clone();
                     obj[field_name] = value.clone();
                     let external_references_str = Service::build_field_str(server_connection, &None, &service.schema_name, field_name, &obj)?;
@@ -2001,10 +1909,10 @@ impl DataView {
                 let field = data_view
                     .properties
                     .get(field_name)
-                    .context(format!("Missing field {} in data_view {}", field_name, data_view.data_view_id.schema_name))?;
+                    .ok_or_else(|| format!("Missing field {} in data_view {}", field_name, data_view.data_view_id.schema_name))?;
                 let schema = field
                     .as_item()
-                    .context(format!("field {} in data_view {} is reference", field_name, data_view.data_view_id.schema_name))?;
+                    .ok_or_else(|| format!("field {} in data_view {} is reference", field_name, data_view.data_view_id.schema_name))?;
                 let extension = &schema.schema_data.extensions;
                 let hidden = extension.get("x-hidden").unwrap_or(&Value::Bool(false)).as_bool().unwrap_or(false);
 
@@ -2097,7 +2005,7 @@ impl DataView {
     pub async fn save(&self, server_connection: &mut ServerConnection) -> Result<Value, Box<dyn std::error::Error>> {
         let path = match &self.path {
             Some(path) => path,
-            None => None.context("Missing path information")?,
+            None => None.ok_or_else(|| format!("Missing path information"))?,
         };
 
         if self.action == DataViewProcessAction::New {
@@ -2114,10 +2022,10 @@ impl DataView {
 
     fn build_go_to_field(server_connection: &ServerConnection, element_id: &HtmlElementId, obj: &Value) -> Result<Option<String>, Box<dyn std::error::Error>> {
         let schema_name = &element_id.data_view_id.schema_name;//reference.as_str().unwrap();
-        let field_name = element_id.field_name.as_ref().context("broken field_name")?;
+        let field_name = element_id.field_name.as_ref().ok_or_else(|| format!("broken field_name"))?;
 
         if let Some(item) = server_connection.login_response.openapi.get_primary_key_foreign(schema_name, field_name, obj)? {
-            let action = element_id.action.as_ref().context("broken action")?;
+            let action = element_id.action.as_ref().ok_or_else(|| format!("broken action"))?;
             let mut query_obj = json!({});
 
             if action == &DataViewProcessAction::Search {
@@ -2159,18 +2067,14 @@ impl DataView {
         }
     }
 
-    fn get_child_mut(&mut self, child_name: &str) -> Result<&mut DataView, anyhow::Error> {
+    fn get_child_mut(&mut self, child_name: &str) -> Result<&mut DataView, Box<dyn std::error::Error>> {
         let list: Vec<String> = self.childs.
             iter().
             map(|data_view| data_view.data_view_id.schema_name.clone()).
             collect();
 
         let list = list.join(",");
-
-        match self.childs.iter_mut().find(|data_view| &data_view.data_view_id.schema_name == child_name) {
-            Some(data_view) => Ok(data_view),
-            None => None.context(format!("Missing child {} in {}, options : {}", child_name, self.data_view_id.form_id, list)),
-        }
+        Ok(self.childs.iter_mut().find(|data_view| &data_view.data_view_id.schema_name == child_name).ok_or_else(|| format!("Missing child {} in {}, options : {}", child_name, self.data_view_id.form_id, list))?)
     }
 
 }
@@ -2219,10 +2123,29 @@ impl ServerConnection {
         }
     }
 
-    // ignoreCache is used in websocket notifications
+    pub fn update_list(&mut self, schema_name: &str, primary_key: &Value, value: Value) -> Result<usize, Box<dyn std::error::Error>> {
+        let service = self.service_map.get(schema_name).ok_or_else(|| format!("Missing service {} in service_map", schema_name))?;
+        let str = service.build_item_str(self, &value)?;
+
+        if let Some(pos) = service.find_pos(&primary_key)? {
+            let service = self.service_map.get_mut(schema_name).ok_or_else(|| format!("Missing service {} in service_map", schema_name))?;
+            service.list_str[pos] = str;
+            service.list[pos] = value;
+            Ok(pos)
+        } else {
+            let primary_key_hash = service.get_primary_key_hash(&value)?;
+            let service = self.service_map.get_mut(schema_name).ok_or_else(|| format!("Missing service {} in service_map", schema_name))?;
+            let pos = service.list.len();
+            service.list_str.push(str);
+            service.list.push(value);
+            service.map_list.insert(primary_key_hash, pos);
+            Ok(pos)
+        }
+    }
+
     async fn get(&mut self, schema_name: &str, primary_key: &Value) -> Result<&Value, Box<dyn std::error::Error>> {
-        let service = self.service_map.get_mut(schema_name).context(format!("Missing service {} in service_map", schema_name))?;
-        let pos = service.find_pos(primary_key);
+        let service = self.service_map.get(schema_name).ok_or_else(|| format!("Missing service {} in service_map", schema_name))?;
+        let pos = service.find_pos(primary_key)?;
 
         let pos = if let Some(pos) = pos {
             pos
@@ -2233,56 +2156,12 @@ impl ServerConnection {
                 return Err(format!("Missing parameter {} in query string {}.", "primary_key", ""))?;
             }
 
-            service.update_list(data, None)?
+            self.update_list(schema_name, primary_key, data)?
         };
 
+        let service = self.service_map.get(schema_name).ok_or_else(|| format!("Missing service {} in service_map", schema_name))?;
         let ret = service.list.get(pos).unwrap();
         Ok(ret)
-    }
-    /*
-        async fn query_remote(&mut self, server_connection: &ServerConnection, schema_name: &str, params :&Value) -> Result<(), Box<std::error::Error>> {
-            if let Some(data_view) = self.service_map.get_mut(schema_name) {
-                data_view.query_remote(server_connection, self, params).await?;
-            }
-
-            Ok(())
-        }
-    */
-    fn update_list_str(&mut self, schema_name: &str, data: &Value, old_pos: Option<usize>, new_pos: usize) -> Result<(), Box<dyn std::error::Error>> {
-        fn assert_exists(list: &Vec<String>, str: &str, _old_pos: Option<usize>, new_pos: usize) -> Result<(), anyhow::Error> {
-            let pos = list.iter().position(|s| s == str);
-
-            if let Some(pos) = pos {
-                if pos != new_pos {
-                    //println!("[DEBUG] assert_exists(str: {}, old_pos: {:?}, new_pos: {})", str, _old_pos, new_pos);
-                    todo!()
-                }
-            }
-
-            Ok(())
-        }
-
-        let data_view = self.service_map.get(schema_name).unwrap();
-        let str = data_view.build_item_str(self, data)?;
-        let data_view = self.service_map.get_mut(schema_name).unwrap();
-
-        if let Some(old_pos) = old_pos {
-            if new_pos == old_pos {
-                // replace
-                assert_exists(&data_view.list_str, &str, Some(old_pos), new_pos)?;
-                data_view.list_str[new_pos] = str;
-            } else {
-                // remove and add
-                data_view.list_str.remove(old_pos);
-                assert_exists(&data_view.list_str, &str, Some(old_pos), new_pos)?;
-                data_view.list_str[new_pos] = str;
-            }
-        } else {
-            assert_exists(&data_view.list_str, &str, None, new_pos)?;
-            data_view.list_str.push(str);
-        }
-
-        Ok(())
     }
 
     async fn save(&mut self, path: &str, item_send: &Value) -> Result<Value, Box<dyn std::error::Error>> {
@@ -2290,25 +2169,14 @@ impl ServerConnection {
         let service = self
             .service_map
             .get_mut(schema_name)
-            .context(format!("[ServerConnection.save({})] missing service {}", schema_name, schema_name))?;
+            .ok_or_else(|| format!("[ServerConnection.save({})] missing service {}", schema_name, schema_name))?;
         let schema_place = SchemaPlace::Request; //data_view.schema_place
         let method = "post"; //data_view.method
         let data_out = self.login_response.openapi.copy_fields(&service.path, method, &schema_place, false, item_send, false, false, false)?;
-        let data = self.http_rest.save(&service.path, &data_out).await?;
-        let new_pos = service.update_list(data.clone(), None)?;
-        self.update_list_str(schema_name, &data, None, new_pos)?;
-        let service = self.service_map.get(schema_name).unwrap();
-
-        if service.list.len() != service.list_str.len() {
-            println!(
-                "[DEBUG - {} - service.list.len({}) != service.list_str.len({})]",
-                service.schema_name,
-                service.list.len(),
-                service.list_str.len()
-            );
-        }
-
-        Ok(data)
+        let data_in = self.http_rest.save(&service.path, &data_out).await?;
+        let primary_key = &service.get_primary_key(&data_in).ok_or_else(|| format!("[ServerConnection.save] {}  - data_in : Missing primary key", schema_name))?;
+        self.update_list(schema_name, primary_key, data_in.clone())?;
+        Ok(data_in)
     }
 
     async fn update(&mut self, path: &str, item_send: &Value) -> Result<Value, Box<dyn std::error::Error>> {
@@ -2317,33 +2185,18 @@ impl ServerConnection {
         let schema_place = SchemaPlace::Request; //data_view.schema_place
         let method = "put"; //data_view.method
         let data_out = self.login_response.openapi.copy_fields(&service.path, method, &schema_place, false, item_send, false, false, false)?;
-        let primary_key = &service.get_primary_key(&data_out).context(format!("Missing primary key"))?;
-        let data = self.http_rest.update(&service.path, primary_key, &data_out).await?;
-        let old_pos = service.find_pos(primary_key);
-        let new_pos = service.update_list(data.clone(), old_pos)?;
-        self.update_list_str(schema_name, &data, old_pos, new_pos)?;
-        let service = self.service_map.get(schema_name).unwrap();
-
-        if service.list.len() != service.list_str.len() {
-            println!(
-                "[DEBUG - {} - service.list.len({}) != service.list_str.len({})]",
-                service.schema_name,
-                service.list.len(),
-                service.list_str.len()
-            );
-        }
-
-        Ok(data)
+        let primary_key = &service.get_primary_key(&data_out).ok_or_else(|| format!("[ServerConnection.update] {}  - data_out : Missing primary key", schema_name))?;
+        let data_in = self.http_rest.update(&service.path, primary_key, &data_out).await?;
+        let primary_key = &service.get_primary_key(&data_in).ok_or_else(|| format!("[ServerConnection.update] {} - data_in : Missing primary key", schema_name))?;
+        self.update_list(schema_name, primary_key, data_in.clone())?;
+        Ok(data_in)
     }
 
-    async fn remove(&mut self, schema_name: &str, primary_key: &Value) -> Result<Value, Box<dyn std::error::Error>> {
-        let service = self.service_map.get_mut(schema_name).context(format!("Missing service {} in service_map", schema_name))?;
-        let old_value = self.http_rest.remove(&service.path, primary_key).await?;
-        //#[cfg(test)]
-        service.remove_internal(primary_key)?;
-        //.then(data => self.serverConnection.remove_internal(self.name, primaryKey))
-        //.then(response => self.updateListStr(response));
-        Ok(old_value)
+    async fn remove(&mut self, schema_name: &str, primary_key: &Value) -> Result<(), Box<dyn std::error::Error>> {
+        let service = self.service_map.get_mut(schema_name).ok_or_else(|| format!("Missing service {} in service_map", schema_name))?;
+        let _res_data = self.http_rest.remove(&service.path, primary_key).await?;
+        self.update_list(schema_name, primary_key, json!({}))?;
+        Ok(())
     }
     /*
         async fn patch(&self, item_send :&Value) -> Value {
@@ -2604,13 +2457,9 @@ impl ServerConnection {
             let service = self.service_map.get(&schema_name);
 
             if let Some(service) = service {
-                let (list, list_str) = service.query_remote(self, &Value::Null).await?;
-
-                if list.len() != list_str.len() {
-                    println!("[DEBUG - {} - list.len({}) != list_str.len({})]", schema_name, list.len(), list_str.len());
-                }
-
+                let (map_list, list, list_str) = service.query_remote(self, &Value::Null).await?;
                 let service = self.service_map.get_mut(&schema_name).unwrap();
+                service.map_list = map_list;
                 service.list = list;
                 println!("login 1.1 : service {}, list_str.len = {}", schema_name, list_str.len());
                 service.list_str = list_str;
@@ -2682,17 +2531,17 @@ macro_rules! data_view_get {
             let data_view = $data_view_manager
                 .data_view_map
                 .get(&$element_id.data_view_id.form_id_parent)
-                .context(format!("Missing parent schema {} in data_view_manager", $element_id.data_view_id.form_id_parent))?;
+                .ok_or_else(|| format!("Missing parent schema {} in data_view_manager", $element_id.data_view_id.form_id_parent))?;
             data_view
                 .childs
                 .iter()
                 .find(|item| item.data_view_id.schema_name == $element_id.data_view_id.schema_name)
-                .context(format!("Missing item {} in data_view {}", $element_id.data_view_id.schema_name, parent.as_str()))?
+                .ok_or_else(|| format!("Missing item {} in data_view {}", $element_id.data_view_id.schema_name, parent.as_str()))?
         } else {
             $data_view_manager
                 .data_view_map
                 .get(&$element_id.data_view_id.form_id)
-                .context(format!("[process_click_target] Missing form {} in data_view_manager (2).", $element_id.data_view_id.form_id))?
+                .ok_or_else(|| format!("[process_click_target] Missing form {} in data_view_manager (2).", $element_id.data_view_id.form_id))?
         };
 
         data_view
@@ -2706,17 +2555,17 @@ macro_rules! data_view_get_mut {
             let data_view = $data_view_manager
                 .data_view_map
                 .get_mut(&$element_id.data_view_id.form_id_parent)
-                .context(format!("Missing parent schema {} in data_view_manager", $element_id.data_view_id.form_id_parent))?;
+                .ok_or_else(|| format!("Missing parent schema {} in data_view_manager", $element_id.data_view_id.form_id_parent))?;
             data_view
                 .childs
                 .iter_mut()
                 .find(|item| item.data_view_id.schema_name == $element_id.data_view_id.schema_name)
-                .context(format!("Missing item {} in data_view {}", $element_id.data_view_id.schema_name, parent.as_str()))?
+                .ok_or_else(|| format!("Missing item {} in data_view {}", $element_id.data_view_id.schema_name, parent.as_str()))?
         } else {
             $data_view_manager
                 .data_view_map
                 .get_mut(&$element_id.data_view_id.form_id)
-                .context(format!("[process_click_target] Missing form {} in data_view_manager (2).", $element_id.data_view_id.form_id))?
+                .ok_or_else(|| format!("[process_click_target] Missing form {} in data_view_manager (2).", $element_id.data_view_id.form_id))?
         };
 
         let func_name = function!();
@@ -2728,7 +2577,7 @@ macro_rules! data_view_get_mut {
 #[macro_export]
 macro_rules! data_view_get_parent_mut {
     ($data_view_manager:tt, $element_id:tt) => {{
-        let data_view = $data_view_manager.data_view_map.get_mut(&$element_id.data_view_id.form_id_parent).context(format!("Missing parent schema {} in data_view_manager", $element_id.data_view_id.form_id_parent))?;
+        let data_view = $data_view_manager.data_view_map.get_mut(&$element_id.data_view_id.form_id_parent).ok_or_else(|| format!("Missing parent schema {} in data_view_manager", $element_id.data_view_id.form_id_parent))?;
         println!("[data_view_get_parent_mut] : {:?}", $element_id);
         data_view
     }};
@@ -2836,13 +2685,13 @@ impl DataViewManager<'_> {
                 let extensions = &field.schema_data.extensions;
 
                 let (list, list_str) = if let Some(reference) = extensions.get("x-$ref") {
-                    let reference = reference.as_str().context("reference is not string")?;
+                    let reference = reference.as_str().ok_or_else(|| format!("reference is not string"))?;
 
                     if let Some(_service_ref) = server_connection.service_map.get(reference) {
                         //data_view.serverConnection.getDocuments(service_ref, service.list).await;
                     }
 
-                    let service = server_connection.service_map.get(&data_view.data_view_id.schema_name).context(format!(
+                    let service = server_connection.service_map.get(&data_view.data_view_id.schema_name).ok_or_else(|| format!(
                         "[build_field_filter_results] Missing service {} in server_connection.service_map.",
                         data_view.data_view_id.schema_name
                     ))?;
@@ -2854,7 +2703,7 @@ impl DataViewManager<'_> {
                             json!({})
                         };
 
-                        if filter.as_object().context("filter is not object")?.is_empty() {
+                        if filter.as_object().ok_or_else(|| format!("filter is not object"))?.is_empty() {
                             if let Some(pos) = reference.chars().position(|c| c == '?') {
                                 let primary_key = queryst::parse(&reference[pos..]).unwrap();
 
@@ -2862,7 +2711,8 @@ impl DataViewManager<'_> {
                                     if let Some(value) = value.as_str() {
                                         if value.starts_with("*") {
                                             let value = json!(value[1..]);
-                                            let field = data_view.properties.get(field_name).context("process 1 : context")?.as_item().context("as_ref")?;
+                                            let field = data_view.properties.get(field_name).ok_or_else(|| format!("[build_field_filter_results]"))?;
+                                            let field = field.as_item().ok_or_else(|| format!("as_ref"))?;
                                             filter[field_name] = server_connection.login_response.openapi.copy_value_field(field, true, &value).unwrap();
                                         }
                                     }
@@ -2870,7 +2720,7 @@ impl DataViewManager<'_> {
                             }
                         }
 
-                        if filter.as_object().context("filter is not object")?.is_empty() == false {
+                        if filter.as_object().ok_or_else(|| format!("filter is not object"))?.is_empty() == false {
                             let list = vec![];
                             let list_str = vec![];
 
@@ -2891,7 +2741,7 @@ impl DataViewManager<'_> {
                         (vec![], vec![])
                     }
                 } else if let Some(enumeration) = extensions.get("x-enum") {
-                    let enumeration = enumeration.as_array().context("x-enum is not array")?;
+                    let enumeration = enumeration.as_array().ok_or_else(|| format!("x-enum is not array"))?;
 
                     let list_str = if let Some(enum_labels) = extensions.get("x-enumLabels") {
                         enum_labels.as_array().unwrap().iter().map(|s| s.as_str().unwrap().to_string()).collect()
@@ -2915,10 +2765,10 @@ impl DataViewManager<'_> {
             let service = server_connection
                 .service_map
                 .get(&data_view.data_view_id.schema_name)
-                .context(format!("[data_view_get] Missing service {} in server_connection.service_map.", data_view.data_view_id.schema_name))?;
+                .ok_or_else(|| format!("[data_view_get] Missing service {} in server_connection.service_map.", data_view.data_view_id.schema_name))?;
             let primary_key = service
                 .get_primary_key(primary_key)
-                .context(format!("wrong primary key {} for service {}", primary_key, service.schema_name))?;
+                .ok_or_else(|| format!("wrong primary key {} for service {}", primary_key, service.schema_name))?;
             let value = server_connection.get(&data_view.data_view_id.schema_name, &primary_key).await?.clone();
             let dependents = server_connection.login_response.openapi.get_dependents(&data_view.data_view_id.schema_name, false);
 
@@ -2927,13 +2777,13 @@ impl DataViewManager<'_> {
                     continue;
                 };
 
-                let foreign_key = server_connection.login_response.openapi.get_foreign_key(&item.schema, &item.field, &primary_key)?.context("Missing foreign value.")?;
+                let foreign_key = server_connection.login_response.openapi.get_foreign_key(&item.schema, &item.field, &primary_key)?.ok_or_else(|| format!("Missing foreign value."))?;
 
                 for (field_name, value) in foreign_key.as_object().unwrap() {
                     let property = data_view_item
                         .properties
                         .get_mut(field_name)
-                        .context(format!("Missing field {} in {}", field_name, data_view.data_view_id.schema_name))?;
+                        .ok_or_else(|| format!("Missing field {} in {}", field_name, data_view.data_view_id.schema_name))?;
 
                     match property {
                         ReferenceOr::Reference { reference: _ } => todo!(),
@@ -2981,13 +2831,13 @@ impl DataViewManager<'_> {
                         continue;
                     }
 
-                    let field = field.as_item().context("data_view_get 1 : context")?;
+                    let field = field.as_item().ok_or_else(|| format!("data_view_get 1 : context"))?;
 
                     match &field.schema_kind {
                         SchemaKind::Type(typ) => match &typ {
                             Type::Array(array) => {
-                                let field = array.items.as_ref().context("data_view_get 2 : context")?;
-                                let field = field.as_item().context("data_view_get 3 : context")?;
+                                let field = array.items.as_ref().ok_or_else(|| format!("data_view_get 2 : context"))?;
+                                let field = field.as_item().ok_or_else(|| format!("data_view_get 3 : context"))?;
 
                                 match &field.schema_kind {
                                     SchemaKind::Type(typ) => match typ {
@@ -3062,7 +2912,7 @@ impl DataViewManager<'_> {
                 {
                     let mut have_filter = false;
 
-                    for (field_name, value) in params_search.filter_range.as_object().context("broken obj")? {
+                    for (field_name, value) in params_search.filter_range.as_object().ok_or_else(|| format!("broken obj"))? {
                         have_filter = true;
                         
                         if let Some(value) = value.as_str() {
@@ -3072,28 +2922,28 @@ impl DataViewManager<'_> {
                         }
                     }
 
-                    if params_search.filter.as_object().context("bron obj")?.is_empty() == false {
+                    if params_search.filter.as_object().ok_or_else(|| format!("bron obj"))?.is_empty() == false {
                         have_filter = true;
                         data_view.params.filter = params_search.filter.clone();
                     }
 
-                    if params_search.filter_range_min.as_object().context("broken ok")?.is_empty() == false {
+                    if params_search.filter_range_min.as_object().ok_or_else(|| format!("broken ok"))?.is_empty() == false {
                         have_filter = true;
                         data_view.params.filter_range_min = params_search.filter_range_min.clone();
                     }
 
-                    if params_search.filter_range_max.as_object().context("broken ok")?.is_empty() == false {
+                    if params_search.filter_range_max.as_object().ok_or_else(|| format!("broken ok"))?.is_empty() == false {
                         have_filter = true;
                         data_view.params.filter_range_max = params_search.filter_range_max.clone();
                     }
 
                     if have_filter {
-                        let service = self.server_connection.service_map.get(&data_view.data_view_id.schema_name).context("Missing service in service_map")?;
+                        let service = self.server_connection.service_map.get(&data_view.data_view_id.schema_name).ok_or_else(|| format!("Missing service in service_map"))?;
                         data_view.apply_filter(&service.list);
                     }
                 }
 
-                if params_search.aggregate.as_object().context("broken obj")?.is_empty() == false {
+                if params_search.aggregate.as_object().ok_or_else(|| format!("broken obj"))?.is_empty() == false {
                     data_view.apply_aggregate(&self.server_connection, &params_search.aggregate)?;
                 }
 
@@ -3103,7 +2953,7 @@ impl DataViewManager<'_> {
                 }
             }
             DataViewProcessAction::New => {
-                if params_search.instance.as_object().context("broken obj")?.is_empty() == false {
+                if params_search.instance.as_object().ok_or_else(|| format!("broken obj"))?.is_empty() == false {
                     data_view.set_values(&self.server_connection, &self.watcher, &params_search.instance, element_id)?;
                 } else {
                     data_view.set_values(&self.server_connection, &self.watcher, params_extra, element_id)?;
@@ -3161,8 +3011,8 @@ impl DataViewManager<'_> {
             let primary_key = data_view.params
                 .primary_key
                 .as_ref()
-                .context(format!("don't opened item in form_id {}", data_view.data_view_id.form_id))?;
-            let _old_value = self.server_connection.remove(&data_view.data_view_id.schema_name, primary_key).await?;
+                .ok_or_else(|| format!("don't opened item in form_id {}", data_view.data_view_id.form_id))?;
+            self.server_connection.remove(&data_view.data_view_id.schema_name, primary_key).await?;
             let params_search = DataViewParams { ..Default::default() };
             let params_extra = json!({});
             return self.process_data_view_action(&element_id, &DataViewProcessAction::Search, &params_search, &params_extra).await;
@@ -3256,18 +3106,18 @@ impl DataViewManager<'_> {
                 let list = if data_view.path.is_none() || data_view.filter_results.len() > 0 {
                     &data_view.filter_results
                 } else {
-                    let service = self.server_connection.service_map.get(schema_name).context("broken service")?;
+                    let service = self.server_connection.service_map.get(schema_name).ok_or_else(|| format!("broken service"))?;
                     &service.list
                 };
         
                 data_view.active_index = Some(active_index);
-                list.get(active_index).context(format!("Missing {}.filter_results[{}], size = {}", schema_name, active_index, list.len()))?.clone()
+                list.get(active_index).ok_or_else(|| format!("Missing {}.filter_results[{}], size = {}", schema_name, active_index, list.len()))?.clone()
             } else {
                 data_view.params.instance.clone()
             };
 
             let params_search = DataViewParams { ..Default::default() };
-            let action = element_id.action.context("Missing action")?;
+            let action = element_id.action.ok_or_else(|| format!("Missing action"))?;
             return self.process_data_view_action(&element_id, &action, &params_search, &instance).await;
         }
 
@@ -3276,10 +3126,10 @@ impl DataViewManager<'_> {
         if let Some(cap) = re.captures(target) {
             let element_id = HtmlElementId::new_with_regex(&cap)?;
             let data_view = data_view_get_mut!(self, element_id);
-            let field_name = element_id.field_name.as_ref().context("broken field_name")?;
-            let field = data_view.params.sort.get_mut(field_name).context(format!("Missing field sort : {}", field_name))?;
+            let field_name = element_id.field_name.as_ref().ok_or_else(|| format!("broken field_name"))?;
+            let field = data_view.params.sort.get_mut(field_name).ok_or_else(|| format!("Missing field sort : {}", field_name))?;
 
-            match cap.name("act").context("broken")?.as_str() {
+            match cap.name("act").ok_or_else(|| format!("broken"))?.as_str() {
                 "sort_left" => field.order_index -= 1,
                 "sort_rigth" => field.order_index += 1,
                 _ => {
@@ -3288,7 +3138,7 @@ impl DataViewManager<'_> {
             }
 
             if data_view.filter_results.is_empty() {
-                let service = self.server_connection.service_map.get(&data_view.data_view_id.schema_name).context("Missing service in service_map")?;
+                let service = self.server_connection.service_map.get(&data_view.data_view_id.schema_name).ok_or_else(|| format!("Missing service in service_map"))?;
                 data_view.filter_results = service.list.clone();
             }
 
@@ -3307,7 +3157,7 @@ impl DataViewManager<'_> {
         if let Some(cap) = re.captures(target) {
             let element_id = HtmlElementId::new_with_regex(&cap)?;
             let data_view = data_view_get_mut!(self, element_id);
-            data_view.params.page = element_id.index.context("broken index")?;
+            data_view.params.page = element_id.index.ok_or_else(|| format!("broken index"))?;
             let params_search = DataViewParams { ..Default::default() };
             let mut data_view_response = DataViewResponse { ..Default::default() };
             data_view_response.tables = json!({});
@@ -3325,26 +3175,26 @@ impl DataViewManager<'_> {
 
             if let Some(origin) = &data_view.params.origin {
                 let obj = {
-                    let index = element_id.index.context("Missing index")?;
+                    let index = element_id.index.ok_or_else(|| format!("Missing index"))?;
 
                     let list = if data_view.path.is_none() || data_view.filter_results.len() > 0 {
                         &data_view.filter_results
                     } else {
                         let schema_name = &data_view.data_view_id.schema_name;
-                        let service = self.server_connection.service_map.get(schema_name).context("broken service")?;
+                        let service = self.server_connection.service_map.get(schema_name).ok_or_else(|| format!("broken service"))?;
                         &service.list
                     };
             
-                    list.get(index).context("List broken of index")?    
+                    list.get(index).ok_or_else(|| format!("List broken of index"))?    
                 };
 
                 let re = regex::Regex::new(r"(?P<form_type>instance|filter|aggregate|sort)--((?P<parent>\pL[\w_]+)-)?(?P<name>\pL[\w_]+)--(?P<field_name>\pL[\w_]+)(?P<form_type_ext>@min|@max)?(-(?P<index>\d+))?")?;
-                let cap = re.captures(origin).context("broken origin")?;
+                let cap = re.captures(origin).ok_or_else(|| format!("broken origin"))?;
                 let element_id_origin = &HtmlElementId::new_with_regex(&cap)?;
-                let field_name = element_id_origin.field_name.as_ref().context("missing field_name")?;
+                let field_name = element_id_origin.field_name.as_ref().ok_or_else(|| format!("missing field_name"))?;
                 let data_view_origin = data_view_get!(self, element_id_origin);               
-                let foreign_key = self.server_connection.login_response.openapi.get_foreign_key(&data_view_origin.data_view_id.schema_name, field_name, obj)?.context("Missing foreign value.")?;
-                let value = foreign_key.get(field_name).context("Missing field")?;
+                let foreign_key = self.server_connection.login_response.openapi.get_foreign_key(&data_view_origin.data_view_id.schema_name, field_name, obj)?.ok_or_else(|| format!("Missing foreign value."))?;
+                let value = foreign_key.get(field_name).ok_or_else(|| format!("Missing field"))?;
                 let data_view_origin = data_view_get_parent_mut!(self, element_id_origin);
                 data_view_origin.set_value(&self.server_connection, self.watcher.as_ref(), field_name, &value, element_id_origin)?;
                 let mut data_view_response = DataViewResponse { changes: json!({}), forms: json!({}), ..Default::default() };
@@ -3417,32 +3267,32 @@ impl DataViewManager<'_> {
                 json!({})
             };
 
-            let action = &element_id.action.context("broken")?;
+            let action = &element_id.action.ok_or_else(|| format!("broken"))?;
             return self.process_data_view_action(&element_id, action, &params_search, &params_extra).await;
         }
 
-        None.context("unknow click taget")?
+        None.ok_or_else(|| format!("unknow click taget"))?
     }
 
     async fn process_edit_target(&mut self, target: &str, value: &str) -> Result<DataViewResponse, Box<dyn std::error::Error>> {
         fn parse_value_process(data_view: &DataView, server_connection: &ServerConnection, element_id: &HtmlElementId, value: &str) -> Result<(Value, bool), Box<dyn std::error::Error>> {
             //data_view.field_external_references_str.insert(field_name.to_string(), value.to_string());
             let Some(field_name) = &element_id.field_name else {
-                return None.context("[process_edit_target] missing field field_name")?;
+                return None.ok_or_else(|| format!("[process_edit_target] missing field field_name"))?;
             };
 
             let field = data_view
                 .properties
                 .get(field_name)
-                .context(format!("[process_edit_target.parse_value()] Missing field {}.{}", data_view.data_view_id.schema_name, field_name))?;
-            let field = field.as_item().context("[process_edit_target.parse_value({})] broken")?;
+                .ok_or_else(|| format!("[process_edit_target.parse_value()] Missing field {}.{}", data_view.data_view_id.schema_name, field_name))?;
+            let field = field.as_item().ok_or_else(|| format!("[process_edit_target.parse_value({})] broken", value))?;
             let extensions = &field.schema_data.extensions;
             let mut is_flags = false;
 
             let value = if let Some(_) = extensions.get("x-flags") {
-                let index = element_id.index.context("Missing flag_index")?;
+                let index = element_id.index.ok_or_else(|| format!("Missing flag_index"))?;
                 let field_value = data_view.get_form_type_instance(&element_id.form_type, &element_id.form_type_ext)?.get(field_name).unwrap_or(&Value::Null);
-                let field_value = field_value.as_u64().context("Is not u64")?;
+                let field_value = field_value.as_u64().ok_or_else(|| format!("Is not u64"))?;
 
                 let bit_mask = if ["true", "on"].contains(&value) {
                     field_value | (1 << index)
@@ -3454,28 +3304,28 @@ impl DataViewManager<'_> {
                 json!(bit_mask)
             } else if let Some(_reference) = extensions.get("x-$ref") {
                 if value.len() > 0 {
-                    let field_results = data_view.field_results.get(field_name).context("Missing field_results")?;
-                    let field_results_str = data_view.field_results_str.get(field_name).context("value not found in field_results_str")?;
+                    let field_results = data_view.field_results.get(field_name).ok_or_else(|| format!("Missing field_results"))?;
+                    let field_results_str = data_view.field_results_str.get(field_name).ok_or_else(|| format!("value not found in field_results_str"))?;
                     let pos = field_results_str
                         .iter()
                         .position(|s| s.as_str() == value)
-                        .context(format!("Missing foreign description {} in {}.", value, field_name))?;
-                    let foreign_data = field_results.get(pos).context("broken 1 in parse_value")?;
+                        .ok_or_else(|| format!("Missing foreign description {} in {}.", value, field_name))?;
+                    let foreign_data = field_results.get(pos).ok_or_else(|| format!("broken 1 in parse_value"))?;
                     let foreign_key = server_connection
                         .login_response
                         .openapi
                         .get_foreign_key(&data_view.data_view_id.schema_name, field_name, foreign_data)
                         .unwrap()
                         .unwrap();
-                    foreign_key.get(field_name).context("broken 1 in parse_value")?.clone()
+                    foreign_key.get(field_name).ok_or_else(|| format!("broken 1 in parse_value"))?.clone()
                 } else {
                     Value::Null
                 }
             } else if let Some(enumeration) = extensions.get("x-enum") {
-                let enumeration = enumeration.as_array().context("is not array")?;
+                let enumeration = enumeration.as_array().ok_or_else(|| format!("is not array"))?;
 
                 if let Some(enum_labels) = extensions.get("x-enumLabels") {
-                    let enum_labels = enum_labels.as_array().context("is not array")?;
+                    let enum_labels = enum_labels.as_array().ok_or_else(|| format!("is not array"))?;
                     let pos = enum_labels
                         .iter()
                         .position(|item| {
@@ -3489,9 +3339,9 @@ impl DataViewManager<'_> {
                                 false
                             }
                         })
-                        .context(format!("Missing foreign description {} in {}.", value, field_name))?;
+                        .ok_or_else(|| format!("Missing foreign description {} in {}.", value, field_name))?;
 
-                    enumeration.get(pos).context("expected value at pos")?.clone()
+                    enumeration.get(pos).ok_or_else(|| format!("expected value at pos"))?.clone()
                 } else {
                     json!(value)
                 }
@@ -3507,7 +3357,7 @@ impl DataViewManager<'_> {
 
         if let Some(cap) = re.captures(target) {
             let element_id = &HtmlElementId::new_with_regex(&cap)?;
-            let field_name = element_id.field_name.as_ref().context("missing field_name")?;
+            let field_name = element_id.field_name.as_ref().ok_or_else(|| format!("missing field_name"))?;
             let data_view = data_view_get!(self, element_id);
             let (value, is_flags) = parse_value_process(data_view, &self.server_connection, element_id, value)?;
             let data_view_parent = data_view_get_parent_mut!(self, element_id);
@@ -3535,7 +3385,7 @@ impl DataViewManager<'_> {
             }
         }
 
-        None.context("unknow edit taget")?
+        None.ok_or_else(|| format!("unknow edit taget"))?
     }
 
     pub async fn process(&mut self, params: Value) -> Result<Value, Box<dyn std::error::Error>> {
@@ -3553,8 +3403,8 @@ impl DataViewManager<'_> {
         } else {
             let mut ret = DataViewResponse { ..Default::default() };
 
-            for (target, value) in params.data.as_object().context("Param 'data' is not object ")? {
-                ret = self.process_edit_target(target, value.as_str().context("not string")?).await?;
+            for (target, value) in params.data.as_object().ok_or_else(|| format!("Param 'data' is not object "))? {
+                ret = self.process_edit_target(target, value.as_str().ok_or_else(|| format!("not string"))?).await?;
             }
 
             ret
@@ -3567,7 +3417,7 @@ impl DataViewManager<'_> {
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 
-use crate::{openapi::{SchemaPlace, RufsOpenAPI, Role}, data_store::Filter};
+use crate::openapi::{SchemaPlace, RufsOpenAPI, Role};
 
 #[cfg(target_arch = "wasm32")]
 pub struct DataViewManagerWrapper<'a> {
@@ -3602,7 +3452,6 @@ impl DataViewManagerWrapper<'_> {
 #[cfg(not(target_arch = "wasm32"))]
 #[cfg(feature = "test-selelium")]
 pub mod tests {
-    use anyhow::{anyhow, Context};
     use serde::Deserialize;
     use serde_json::{json, Value};
     use std::fs;
@@ -3761,15 +3610,15 @@ pub mod tests {
                                         .server_connection
                                         .service_map
                                         .get(&data_view.data_view_id.schema_name)
-                                        .context("Missing service in service_map")?;
+                                        .ok_or_else(|| format!("Missing service in service_map"))?;
                                     &service.list
                                 };
 
                                 let index = index.as_str().parse::<usize>()?;
-                                let value = list.get(index).context(format!("Don't found value of index {} in {}", index, data_view.data_view_id.form_id))?;
+                                let value = list.get(index).ok_or_else(|| format!("Don't found value of index {} in {}", index, data_view.data_view_id.form_id))?;
                                 value
                                     .get(field_name)
-                                    .context(format!(
+                                    .ok_or_else(|| format!(
                                         "[{}] target = {} : Don't found field {} in data_view {}, json = {}",
                                         command.command.as_str(),
                                         target,
@@ -3800,7 +3649,7 @@ pub mod tests {
                             } else {
                                 let empty_list = vec![];
                                 let options = data_view.field_results_str.get(field_name).unwrap_or(&empty_list).join("\n");
-                                return Err(anyhow!(
+                                return Err(format!(
                                     "[{}({})] : In schema {}, field {}, value of instance ({}) don't match with expected ({}).\nfield_results_str:\n{}",
                                     command.command.as_str(),
                                     target,
@@ -3852,10 +3701,10 @@ pub mod tests {
                                         .server_connection
                                         .service_map
                                         .get(&data_view.data_view_id.schema_name)
-                                        .context(format!("Missing service {}", &data_view.data_view_id.schema_name))?;
+                                        .ok_or_else(|| format!("Missing service {}", &data_view.data_view_id.schema_name))?;
 
-                                    if let Some(value) = service.find_one(primary_key) {
-                                        println!("Unexpected existence of item in service.list : {}", value);
+                                    if let Some(value) = service.find_pos(primary_key)? {
+                                        println!("Unexpected existence of item in service.list : pos = {}", value);
                                         true
                                     } else {
                                         false

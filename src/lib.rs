@@ -6,11 +6,11 @@ pub mod data_store;
 pub mod db_adapter_file;
 
 #[cfg(not(target_arch = "wasm32"))]
-#[cfg(feature = "postgres")]
+#[cfg(any(feature = "postgres", feature = "firebird"))]
 pub mod db_adapter_postgres;
 
 #[cfg(not(target_arch = "wasm32"))]
-#[cfg(any(feature = "db_file_json", feature = "postgres"))]
+#[cfg(any(feature = "db_file_json", feature = "postgres", feature = "firebird"))]
 pub mod entity_manager;
 
 #[cfg(not(target_arch = "wasm32"))]

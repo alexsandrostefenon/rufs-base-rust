@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 
-use anyhow::Context;
 use indexmap::IndexMap;
 use jsonwebtoken::{decode, DecodingKey, Validation};
 use openapiv3::{ReferenceOr, Schema};
@@ -10,7 +9,7 @@ use crate::openapi::{RufsOpenAPI, SchemaPlace};
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{
-    entity_manager::{EntityManager},
+    entity_manager::EntityManager,
     rufs_micro_service::{Claims, RufsMicroService},
 };
 
@@ -136,7 +135,7 @@ impl<'a> RequestFilter<'a> {
         println!("[RequestFilter.get_object({})] : {}", self.schema_name, key);
         let entity_manager = self.entity_manager.as_ref().unwrap();
         let openapi = &self.micro_service.openapi;
-        let obj = entity_manager.find_one(openapi, &self.schema_name, &key).await.context(format!("Missing data in {} for key {}", self.schema_name, key))?;
+        let obj = entity_manager.find_one(openapi, &self.schema_name, &key).await?.ok_or_else(|| format!("Missing data in {} for key {}", self.schema_name, key))?;
 
         if use_document != true {
             return Ok(obj);
@@ -224,7 +223,7 @@ impl<'a> RequestFilter<'a> {
             _ => todo!(),
         };
 
-        let list = self.entity_manager.as_ref().unwrap().find(&self.micro_service.openapi, &self.schema_name, &fields, &order_by).await;
+        let list = self.entity_manager.as_ref().unwrap().find(&self.micro_service.openapi, &self.schema_name, &fields, &order_by).await?;
         println!("[RequestFilter.process_query] : returning {} registers.", list.len());
         Ok(Value::Array(list))
     }
@@ -263,7 +262,7 @@ impl<'a> RequestFilter<'a> {
                         openapiv3::APIKeyLocation::Header => {
                             for (map_name, token_raw) in headers {
                                 if map_name.as_str().to_lowercase() == name.to_lowercase() {
-                                    if let Some(_user) = self.micro_service.db_adapter_file.find_one(&self.micro_service.openapi, "rufsUser", &json!({ "password": token_raw })).await.take() {
+                                    if let Some(_user) = self.micro_service.db_adapter_file.find_one(&self.micro_service.openapi, "rufsUser", &json!({ "password": token_raw })).await.unwrap().take() {
                                         //let x = serde_json::from_value(user.clone()).unwrap();
                                         //self.token_payload = x;
                                     } else {
@@ -283,7 +282,7 @@ impl<'a> RequestFilter<'a> {
                     } => {
                         if scheme == "bearer" && bearer_format.as_ref().unwrap() == "JWT" {
                             let authorization_header_prefix = "Bearer ";
-                            let token_raw = headers.get(&"Authorization".to_lowercase()).context("Missing header Authorization")?;
+                            let token_raw = headers.get(&"Authorization".to_lowercase()).ok_or("Missing header Authorization")?;
 
                             if token_raw.starts_with(authorization_header_prefix) {
                                 let token_raw = &token_raw[authorization_header_prefix.len()..];

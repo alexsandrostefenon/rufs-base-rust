@@ -5,11 +5,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value,json};
 use openapiv3::{OpenAPI,SecurityRequirement};
 use jsonwebtoken::{encode, EncodingKey, Header};
-use anyhow::Context;
 use async_std::path::PathBuf;
 use async_trait::async_trait;
 
-use crate::{db_adapter_file::DbAdapterFile,db_adapter_postgres::DbAdapterPostgres,entity_manager::EntityManager,openapi::{FillOpenAPIOptions, RufsOpenAPI, Role}};
+use crate::{db_adapter_file::DbAdapterFile,db_adapter_postgres::DbAdapterSql,entity_manager::EntityManager,openapi::{FillOpenAPIOptions, RufsOpenAPI, Role}};
 
 #[derive(Deserialize, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -132,7 +131,7 @@ impl Default for RufsParams {
 pub struct RufsMicroService<'a> {
     pub params: RufsParams,
     pub openapi: OpenAPI,
-    pub entity_manager: DbAdapterPostgres<'a>,
+    pub entity_manager: DbAdapterSql<'a>,
     pub db_adapter_file: DbAdapterFile<'a>,
     pub ws_server_connections_tokens : Arc<RwLock<HashMap<String, Claims>>>,
     pub watcher: &'static Box<dyn DataViewWatch>,
@@ -209,11 +208,11 @@ impl RufsMicroService<'_> {
             let default_group_owner_admin: serde_json::Value = serde_json::from_str(DEFAULT_GROUP_OWNER_ADMIN_STR).unwrap();
             let default_user_admin: serde_json::Value = serde_json::from_str(DEFAULT_USER_ADMIN_STR).unwrap();
 
-            if rms.entity_manager.find_one(openapi_rufs, "rufsGroupOwner", &json!({"name": "admin"})).await.is_none() {
+            if rms.entity_manager.find_one(openapi_rufs, "rufsGroupOwner", &json!({"name": "admin"})).await?.is_none() {
                 rms.entity_manager.insert(openapi_rufs, "rufsGroupOwner", &default_group_owner_admin).await?;
             }
 
-            if rms.entity_manager.find_one(openapi_rufs, "rufsUser", &json!({"name": "admin"})).await.is_none() {
+            if rms.entity_manager.find_one(openapi_rufs, "rufsUser", &json!({"name": "admin"})).await?.is_none() {
                 rms.entity_manager.insert(openapi_rufs, "rufsUser", &default_user_admin).await?;
             }
 
@@ -259,8 +258,7 @@ impl RufsMicroService<'_> {
             }
 
             let old_version = get_version(&rms.openapi.info.version)?;
-
-            let files = fs::read_dir(migration_path).context("Broken migration path.")?;
+            let files = fs::read_dir(migration_path)?;
             let mut list: Vec<String> = vec![];
 
             for file_info in files {
@@ -289,7 +287,7 @@ impl RufsMicroService<'_> {
             params, 
             watcher,
             openapi: Default::default(),
-            entity_manager: DbAdapterPostgres::default(),
+            entity_manager: DbAdapterSql::default(),
             db_adapter_file: DbAdapterFile::default(),
             ws_server_connections_tokens: Arc::default(),
             #[cfg(feature = "tide")]
@@ -315,7 +313,7 @@ impl RufsMicroService<'_> {
         rufs.entity_manager.update_open_api(&mut rufs.openapi, &mut options).await?;
         let mut options = FillOpenAPIOptions::default();
         options.security = SecurityRequirement::from([("jwt".to_string(), vec![])]);
-        options.schemas = openapi_rufs.components.context("missing section components")?.schemas.clone();
+        options.schemas = openapi_rufs.components.ok_or("missing section components")?.schemas.clone();
         options.request_body_content_type = rufs.params.request_body_content_type.clone();
         rufs.openapi.fill(&mut options)?;
         rufs.store_open_api("")?;
@@ -339,14 +337,14 @@ impl Authenticator for RufsMicroService<'_> {
             &self.entity_manager as &(dyn EntityManager + Sync + Send)
         };
 
-        let user = entity_manager.find_one(&self.openapi, "rufsUser", &json!({ "name": user_name })).await.context("Fail to find user.")?;
+        let user = entity_manager.find_one(&self.openapi, "rufsUser", &json!({ "name": user_name })).await?.ok_or("Fail to find user.")?;
         let user = RufsUser::deserialize(*user)?;
 
         if user.password.len() > 0 && user.password != user_password {
             return Err("Don't match user and password.")?;
         }
 
-        let list_in = entity_manager.find(&self.openapi, "rufsGroupUser", &json!({"rufsUser": user.id}), &vec![]).await;
+        let list_in = entity_manager.find(&self.openapi, "rufsGroupUser", &json!({"rufsUser": user.id}), &vec![]).await?;
         let mut list_out: Vec<u64> = vec![];
 
         for item in list_in {
@@ -413,11 +411,11 @@ async fn wasm_process(token_raw: &str, data_in: Value) -> Result<Value, Box<dyn 
     let jwt = if token_raw.starts_with(authorization_header_prefix) {
         &token_raw[authorization_header_prefix.len()..]
     } else {
-        return None.context("broken token")?;
+        return Err("broken token")?;
     };
 
     let mut data_view_manager_map = DATA_VIEW_MANAGER_MAP.lock().await;
-    let data_view_manager = data_view_manager_map.get_mut(jwt).context("Missing session")?;
+    let data_view_manager = data_view_manager_map.get_mut(jwt).ok_or("Missing session")?;
     data_view_manager.process(data_in).await
 }
 
@@ -658,7 +656,7 @@ pub async fn rufs_warp(rufs: RufsMicroService<'static>) -> impl warp::Filter<Ext
     async fn handle_api(rufs: Arc<Mutex<RufsMicroService<'static>>>, method: Method, path: FullPath, headers: HeaderMap, query: String, obj_in: Value) -> Result<impl Reply, Infallible> {
         let method = method.to_string().to_lowercase();
         let path = path.as_str();
-        let header = warp_try!(headers.get("Authorization").context("400-Missing Authorization header."));
+        let header = warp_try!(headers.get("Authorization").ok_or("400-Missing Authorization header."));
         let auth = warp_try!(header.to_str());
 
         let query = if !query.is_empty() {
@@ -749,7 +747,7 @@ pub async fn rufs_warp(rufs: RufsMicroService<'static>) -> impl warp::Filter<Ext
     let route_wasm_login = warp::path("wasm_ws").and(warp::path("login")).and(with_rufs(rufs.clone())).and(warp::body::json()).and(warp::addr::remote()).and_then(wasm_login_warp);
 
     async fn handle_login(rufs: Arc<Mutex<RufsMicroService<'static>>>, login_request: LoginRequest, remote: Option<std::net::SocketAddr>) -> Result<impl Reply, Infallible> {
-        let remote = warp_try!(remote.context("400-Missing remote address."));
+        let remote = warp_try!(remote.ok_or("400-Missing remote address."));
         let rufs = &rufs.lock().unwrap().to_owned();
         let ret = warp_try!(rufs.authenticate_user(&login_request.user, &login_request.password, &remote.to_string()).await);
         Ok(Box::new(warp::reply::json(&ret)))
@@ -758,7 +756,7 @@ pub async fn rufs_warp(rufs: RufsMicroService<'static>) -> impl warp::Filter<Ext
     let route_login = warp::path(api_path).and(warp::path("login")).and(with_rufs(rufs.clone())).and(warp::body::json()).and(warp::addr::remote()).and_then(handle_login);
     
     async fn wasm_process_warp(headers: HeaderMap, obj_in: Value) -> Result<impl Reply, Infallible> {
-        let token_raw = warp_try!(warp_try!(headers.get("Authorization").context("Missing header Authorization")).to_str());
+        let token_raw = warp_try!(warp_try!(headers.get("Authorization").ok_or("Missing header Authorization")).to_str());
         let ret = warp_try!(wasm_process(token_raw, obj_in).await);
         Ok(Box::new(warp::reply::json(&ret)))
     }

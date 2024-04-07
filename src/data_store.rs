@@ -1,88 +1,14 @@
 use serde_json::Value;
-use anyhow::{Context};
 
-/*
-struct DataStore  {
-    name:   String,
-    schema: &Schema
-}
-
-struct DataStoreManager  {
-    openapi: &OpenApi
-}
-
-impl DataStoreManager {
-
-    fn setSchemas(&self, list: [Schema], openapi: &OpenApi) {
-        fn removeBrokenRefs(schema: &Schema, openapi: &OpenApi) {
-            for _, field := range schema.Properties {
-                if field.Ref != "" {
-                    ref := OpenApiGetSchemaName(field.Ref)
-                    if _, ok := openapi.Components.Schemas[ref]; !ok {
-                        field.Ref = ""
-                    }
-                }
-            }
-        }
-
-        self.openapi = openapi;
-
-        if openapi == nil {
-            return
-        }
-
-        for _, schema := range openapi.Components.Schemas {
-            removeBrokenRefs(schema, openapi)
-        }
-
-        for _, requestBody := range openapi.Components.RequestBodies {
-            for _, mediaTypeObject := range requestBody.Content {
-                if mediaTypeObject.Schema.Properties != nil {
-                    removeBrokenRefs(mediaTypeObject.Schema, openapi)
-                }
-            }
-        }
-    }
-
-    fn DataStoreManagerNew(list: [&Schema], openapi: &OpenApi) -> DataStoreManager {
-        let self = &DataStoreManager{};
-        self.setSchemas(list, openapi);
-        self
-    }
-
-}
-*/
 pub struct Filter;
 
 impl Filter {
+    
     fn check_match_exact(item: &Value, key: &Value) -> Result<bool, Box<dyn std::error::Error>> {
         let mut _match = Ok(true);
 
-        for (field_name, expected_value) in key.as_object().unwrap() {
-            /*
-                        let value = item[fieldName].clone();
-
-                        if expected.is_null() && value.is_null() {
-                            continue;
-                        }
-
-                        if expected.is_null() || value.is_null() {
-                            _match = false;
-                            break;
-                        }
-
-                        switch expected.(type) {
-                        case string:
-                            expected = strings.TrimRight(expected.(string), " ")
-                        }
-
-                        switch value.(type) {
-                        case string:
-                            value = strings.TrimRight(value.(string), " ")
-                        }
-            */
-
-            let item_value = item.get(field_name).context(format!("[check_match_exact] Missing field {} in {}", field_name, item))?;
+        for (field_name, expected_value) in key.as_object().ok_or("[check_match_exact] broken key.as_object().")? {
+            let item_value = item.get(field_name).ok_or("[check_match_exact] Missing field.")?;
 
             let item_value = if let Some(str) = item_value.as_str() {
                 str.to_string()
@@ -114,7 +40,4 @@ impl Filter {
         Ok(list.iter().position(|item| Self::check_match_exact(item, key).unwrap()))
     }
 
-    pub fn find_one<'a>(list: &'a Vec<Value>, key: &Value) -> Result<Option<&'a Value>, Box<dyn std::error::Error>> {
-        Ok(list.iter().find(|item| Self::check_match_exact(*item, key).unwrap()))
-    }
 }

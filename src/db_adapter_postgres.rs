@@ -1,4 +1,4 @@
-use std::{io::{Error}, sync::{Arc}, collections::HashMap};
+use std::{io::Error, sync::Arc, collections::HashMap};
 
 use async_trait::async_trait;
 use chrono::NaiveDateTime;
@@ -7,42 +7,22 @@ use indexmap::IndexMap;
 use openapiv3::{OpenAPI, Schema, ReferenceOr, ObjectType, SchemaData, SchemaKind, VariantOrUnknownOrEmpty, StringFormat};
 use serde::Deserialize;
 use serde_json::{Value, Number, json};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "postgres")]
 use rust_decimal::{Decimal, prelude::ToPrimitive};
-use anyhow::Context;
-#[cfg(not(target_arch = "wasm32"))]
-use crate::{entity_manager::EntityManager};
+use crate::entity_manager::EntityManager;
 
-#[cfg(not(target_arch = "wasm32"))]
-use tokio_postgres::{Client, Row, types::{ToSql}};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "postgres")]
+use tokio_postgres::types::ToSql;
+
+#[cfg(feature = "firebird")]
+use rsfbclient::prelude::*;
+#[cfg(feature = "firebird")]
+use rsfbclient::Connection;
+#[cfg(feature = "firebird")]
+use rsfbclient_core::FirebirdClient;
+
 use crate::openapi::{RufsOpenAPI, FillOpenAPIOptions, ForeignKey};
 
-/*
-type DbConfig struct {
-	driverName             string
-	host                   string
-	port                   int
-	database               string
-	user                   string
-	password               string
-	connectionString       string
-	limitQuery             int
-	limitQueryExceptions   []string
-	requestBodyContentType string
-}
-
-type DbClientSql struct {
-	dbConfig                   *DbConfig
-	openapi                    *OpenApi
-	client                     *sql.DB
-	sqlTypes                   []string
-	rufsTypes                  []string
-}
-*/
-
-
-#[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone)]
 struct DbConfig {
 	driver_name: String,
@@ -50,77 +30,79 @@ struct DbConfig {
 	limit_query_exceptions: Vec<String>,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl Default for DbConfig {
     fn default() -> Self {
         Self { driver_name: Default::default(), limit_query: 10000, limit_query_exceptions: Default::default() }
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone,Default)]
-pub struct DbAdapterPostgres<'a> {
-    pub openapi    : Option<&'a OpenAPI>,
+pub struct DbAdapterSql<'a> {//pub struct DbAdapterSql<'a, C> {
+	pub openapi    : Option<&'a OpenAPI>,
 	db_config: DbConfig,
 	alias_map: HashMap<String, String>,
 	alias_map_external_to_internal :HashMap<String, String>,
 	missing_primary_keys: HashMap<String, Vec<String>>,
 	missing_foreign_keys: HashMap<String, Vec<ForeignKey>>,
-    client: Option<Arc<Client>>,
+	#[cfg(feature = "postgres")]
+    client: Option<Arc<tokio_postgres::Client>>,
+	#[cfg(feature = "firebird")]
+    client: Option<Arc<Connection<C>>>,
     //client: Option<Arc<RwLock<Client>>>,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-impl DbAdapterPostgres<'_> {
-    fn get_json(&self, row: &Row, _debug: bool) -> Value {
-        let mut obj = json!({});
+impl DbAdapterSql<'_> {//impl<C> DbAdapterSql<'_, C> {
+	//#[cfg(feature = "postgres")]
+	//type Row = tokio_postgres::Row;
 
-        for idx in 0..row.len() {
-            let column = &row.columns()[idx];
-            let name = column.name();
-            let typ = column.type_();
+	#[cfg(feature = "firebird")]
+	type Row = rsfbclient::Row;
 
-            let value : Value = match *typ {
-                tokio_postgres::types::Type::VARCHAR | tokio_postgres::types::Type::TEXT | tokio_postgres::types::Type::BPCHAR => {
+	//#[cfg(feature = "postgres")]
+	//type Rows = Vec<Self::Row>;
+
+	#[cfg(feature = "firebird")]
+	type Rows = Box<dyn Iterator<Item = Result<rsfbclient::Row, rsfbclient::FbError>>>;
+
+	//#[cfg(feature = "postgres")]
+	//type Params = Vec<&'a (dyn ToSql + Sync)>;
+
+	#[cfg(feature = "firebird")]
+	type Params = rsfbclient::IntoParams;
+
+	#[cfg(feature = "postgres")]
+	fn get_json(row: &tokio_postgres::Row) -> Result<Value, Box<dyn std::error::Error>> {
+		let mut obj = json!({});
+
+		for idx in 0..row.len() {
+			let column = &row.columns()[idx];
+			let name = column.name();
+			let typ = column.type_();
+
+			let value : Value = match *typ {
+				tokio_postgres::types::Type::VARCHAR | tokio_postgres::types::Type::TEXT | tokio_postgres::types::Type::BPCHAR => {
 					if let Some(value) = row.get(idx) {
 						Value::String(value)
 					} else {
 						Value::Null
 					}
 				},
-                tokio_postgres::types::Type::INT4 => {
+				tokio_postgres::types::Type::INT4 => {
 					if let Some(value) = row.get::<_, Option<i32>>(idx) {
 						Value::Number(Number::from(value))
 					} else {
 						Value::Null
 					}
 				},
-                tokio_postgres::types::Type::INT8 => {
+				tokio_postgres::types::Type::INT8 => {
 					if let Some(value) = row.get::<usize, Option<i64>>(idx) {
 						Value::Number(Number::from(value))
 					} else {
 						Value::Null
 					}
 				},
-                tokio_postgres::types::Type::TIMESTAMP => {
+				tokio_postgres::types::Type::TIMESTAMP => {
 					if let Some(value) = row.get::<usize, Option<NaiveDateTime>>(idx) {
-/*
-						let fmt = value.format("%+");
-						println!("{}", fmt);
-						let str = fmt.to_string();
-						println!("{}", str);
-						let fmt = value.format("%Y-%m-%dT%H:%M:%S%.f%:z");
-						println!("{}", fmt);
-						let str = fmt.to_string();
-						println!("{}", str);
-						let fmt = value.format("%Y-%m-%dT%H:%M:%S%.fZ");
-						println!("{}", fmt);
-						let str = fmt.to_string();
-						println!("{}", str);
-						 */
-						//let str = format!("{}.000Z", value);
-						//2018-05-18 20:08:34
-						//2018-05-18T20:08:34
 						let str = value.to_string();
 						let left = &str[..10];
 						let right = &str[11..];
@@ -130,58 +112,102 @@ impl DbAdapterPostgres<'_> {
 						Value::Null
 					}
 				},
-                tokio_postgres::types::Type::NUMERIC => {
-					let value : Decimal = row.get(idx);
-
-					if value.scale() == 0 {
-						if let Some(value) = value.to_i64() {
-							Value::Number(Number::from(value))
+				tokio_postgres::types::Type::NUMERIC => {
+					if let Some(value) = row.get::<usize, Option<Decimal>>(idx) {
+						if value.scale() == 0 {
+							if let Some(value) = value.to_i64() {
+								Value::Number(Number::from(value))
+							} else {
+								Value::Null
+							}
 						} else {
-							Value::Null
+							if let Some(value) = value.to_f64() {
+								Value::Number(Number::from_f64(value).unwrap())
+							} else {
+								Value::Null
+							}
 						}
 					} else {
-						if let Some(value) = value.to_f64() {
-							Value::Number(Number::from_f64(value).unwrap())
-						} else {
-							Value::Null
-						}
+						Value::Null
 					}
 				},
-                tokio_postgres::types::Type::JSONB => {
+				tokio_postgres::types::Type::JSONB => {
 					row.get(idx)
 				},
-                tokio_postgres::types::Type::JSONB_ARRAY => {
-                    let list = row.get::<_, Vec<Value>>(idx);
-                    Value::Array(list)
-                },
-                _ => row.get(idx)
-            };
+				tokio_postgres::types::Type::JSONB_ARRAY => {
+					let list = row.get::<_, Vec<Value>>(idx);
+					Value::Array(list)
+				},
+				tokio_postgres::types::Type::BOOL => {
+					if let Some(value) = row.get::<_, Option<bool>>(idx) {
+						Value::Bool(value)
+					} else {
+						Value::Null
+					}
+				},
+				_ => row.get(idx)
+			};
 
-            obj[name.to_case(convert_case::Case::Camel)] = value;
-        }
+			obj[name.to_case(convert_case::Case::Camel)] = value;
+		}
 
-        obj
-    }
+		Ok(obj)
+	}
 
-    fn get_json_list(&self, rows: &Vec<Row>, debug: bool) -> Vec<Value> {
-        let mut list = vec![];
+/*
+pub enum SqlType {
+    Text(String),
+
+    Integer(i64),
+
+    Floating(f64),
+
+    Timestamp(chrono::NaiveDateTime),
+
+    Binary(Vec<u8>),
+
+    /// Only works in fb >= 3.0
+    Boolean(bool),
+
+    Null,
+}
+*/
+
+	fn get_json_list(&self, rows: &Vec<tokio_postgres::Row>) -> Result<Vec<Value>, Box<dyn std::error::Error>> {
+		let mut list = vec![];
 
         for row in rows {
-            list.push(self.get_json(row, debug));
+			#[cfg(feature = "postgres")]
+			#[cfg(not(feature = "firebird"))]
+            list.push(Self::get_json(row)?);
+			#[cfg(feature = "firebird")]
+			#[cfg(not(feature = "postgres"))]
+            list.push(Self::get_json(row?));
         }
 
-        list
+        Ok(list)
     }
 
     pub async fn connect(&mut self, uri :&str) -> Result<(), Box<dyn std::error::Error>> {
-        println!("[DbAdapterPostgres] connect({})", uri);
-        let (client, connection) = tokio_postgres::connect(uri, tokio_postgres::NoTls).await?;
+		println!("[DbAdapterSql] connect({})", uri);
 
-        tokio::spawn(async move {
-            if let Err(e) = connection.await {
-                eprintln!("connection error: {}", e);
-            }
-        });
+		#[cfg(feature = "firebird")]
+		let client = {
+			rsfbclient::builder_native().from_string("firebird://SYSDBA:masterkey@localhost:3050//var/lib/firebird/3.0/data/CLIPP-3.fdb?charset=ISO8859_1")?.connect()?
+		};
+
+		#[cfg(feature = "postgres")]
+		let client = {
+			let (client, connection) = tokio_postgres::connect(uri, tokio_postgres::NoTls).await?;
+
+			tokio::spawn(async move {
+				if let Err(e) = connection.await {
+					eprintln!("connection error: {}", e);
+				}
+			});
+	
+			client
+		};	
 
         //let client = RwLock::new(client);
         let client = Arc::new(client);
@@ -268,41 +294,39 @@ impl DbAdapterPostgres<'_> {
 		}
     }
 
-	async fn query(&self, sql: &str, params: &[&(dyn ToSql + Sync)]) -> Vec<Value> {
-		println!("[DbAdapterPostgres.query] {} - {:?}", sql.replace("\n", " "), params);
+	async fn query(&self, sql: &str, params: &[&(dyn ToSql + Sync)]) -> Result<Vec<Value>, Box<dyn std::error::Error>> {
+		println!("[DbAdapterSql.query] {} - {:?}", sql.replace("\n", " "), params);
 		
 		let list = match self.client.as_ref().unwrap().query(sql, params).await {
 			Ok(list) => list,
 			Err(err) => {
-				println!("[DbAdapterPostgres.query] : {}", err);
+				println!("[DbAdapterSql.query] : {}", err);
 				vec![]
 			},
 		};
 
-		self.get_json_list(&list, false)
+		self.get_json_list(&list)
 	}
 
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 #[async_trait]
-impl EntityManager for DbAdapterPostgres<'_> {
+impl EntityManager for DbAdapterSql<'_> {
 	async fn exec(&self, sql: &str) -> Result<(), Box<dyn std::error::Error>> {
 		self.client.as_ref().unwrap().batch_execute(sql).await?;
 		Ok(())
 	}
 
     async fn insert(&self, openapi: &OpenAPI, schema_name :&str, obj :&Value) -> Result<Value, Box<dyn std::error::Error>> {
-        println!("[DbAdapterPostgres.find({}, {})]", schema_name, obj.to_string());
 		let table_name = schema_name.to_case(convert_case::Case::Snake);
 		let mut params: Vec<&(dyn ToSql + Sync)> = vec![];
 		let mut str_fields = vec![];
 		let mut str_values = vec![];
 		let mut count = 1;
-		let properties = openapi.get_properties_from_schema_name(&None, schema_name, &crate::openapi::SchemaPlace::Schemas).context(format!("EntityManager.insert({}) : Missing porperties for schema", schema_name))?;
+		let properties = openapi.get_properties_from_schema_name(&None, schema_name, &crate::openapi::SchemaPlace::Schemas).ok_or_else(|| format!("EntityManager.insert({}) : Missing porperties for schema", schema_name))?;
 
 		for (field_name, field) in properties {
-			let field = field.as_item().context(format!("EntityManager.insert({}) : field {} must be item, not reference", schema_name, field_name))?;
+			let field = field.as_item().ok_or_else(|| format!("EntityManager.insert({}) : field {} must be item, not reference", schema_name, field_name))?;
 			let value = obj.as_object().unwrap().get(field_name);
 			let value = match value {
 				Some(value) => value,
@@ -328,25 +352,31 @@ impl EntityManager for DbAdapterPostgres<'_> {
 				},
 				Value::String(value) => {
 					match &field.schema_kind {
-						SchemaKind::Type(typ) => match typ {
-							openapiv3::Type::String(string_type) => {
-								match &string_type.format {
-									VariantOrUnknownOrEmpty::Item(string_format) => match string_format {
-										StringFormat::DateTime => {
-											str_values.push(format!("'{}'", value));
+						SchemaKind::Type(typ)=> {
+							match typ {
+								openapiv3::Type::String(typ)=> {
+									match &typ.format {
+										VariantOrUnknownOrEmpty::Item(string_format) => match string_format {
+											StringFormat::DateTime => {
+												str_values.push(format!("'{}'", value));
+											},
+											_ => todo!(),
 										},
-										_ => todo!(),
-									},
-									_ => {
-										str_values.push(format!("${}", count));
-										params.push(value);
-										count += 1;
-									},
-								}
-							},
-							_ => todo!()
+										_ => {
+											str_values.push(format!("${}", count));
+											params.push(value);
+											count += 1;
+										},
+									}
+								},
+								_ => {
+									str_values.push(format!("${}", count));
+									params.push(value);
+									count += 1;
+								}, 
+							}							
 						},
-						_ => todo!()
+						_ => todo!(),
 					}
 				},
 				Value::Array(value) => {
@@ -365,14 +395,21 @@ impl EntityManager for DbAdapterPostgres<'_> {
 		}
 
 		let sql = format!("INSERT INTO {} ({}) VALUES ({}) RETURNING *", table_name, str_fields.join(","), str_values.join(","));
-		println!("[DbAdapterPostgres.insert] : {}", sql);
 		let params = params.as_slice();
-		let list = self.client.as_ref().unwrap().query(&sql, params).await?;
-		println!("[DbAdapterPostgres.insert] : returning* = {:?}", list);
-		Ok(self.get_json_list(&list, true).get(0).unwrap().clone())
+
+		let list = match self.client.as_ref().unwrap().query(&sql, params).await {
+			Ok(list) => list,
+			Err(err) => {
+				println!("[DbAdapterSql.insert] {} : \n{}\n{}\n{}", schema_name, err, sql, serde_json::to_string_pretty(&obj)?);
+				return Err(err)?;
+			},
+		};
+		
+		let obj = list.get(0).ok_or("Missing response data")?;
+		Self::get_json(obj)
 	}
 
-	async fn find(&self, openapi: &OpenAPI, schema_name: &str, query_params: &Value, order_by: &Vec<String>) -> Vec<Value> {
+	async fn find(&self, openapi: &OpenAPI, schema_name: &str, query_params: &Value, order_by: &Vec<String>) -> Result<Vec<Value>, Box<dyn std::error::Error>> {
 		let table_name = schema_name.to_case(convert_case::Case::Snake);
 		let mut params = vec![];
 		let sql_query = self.build_query(query_params, &mut params, order_by);
@@ -419,32 +456,33 @@ impl EntityManager for DbAdapterPostgres<'_> {
 		self.query(&sql, params).await
 	}
 
-	async fn find_one(&self, openapi: &OpenAPI, table: &str, key: &Value) -> Option<Box<Value>> {
-		println!("[DbAdapterPostgres.find_one({}, {})]", table, key);
-		let list = self.find(openapi, table, key, &vec![]).await;
+	async fn find_one(&self, openapi: &OpenAPI, table: &str, key: &Value) -> Result<Option<Box<Value>>, Box<dyn std::error::Error>> {
+		println!("[DbAdapterSql.find_one({}, {})]", table, key);
+		let list = self.find(openapi, table, key, &vec![]).await?;
 
 		if list.len() == 0 {
-			None
+			Ok(None)
 		} else {
 			if list.len() > 1 {
-				println!("[DbAdapterPostgres.find_one({}, {})] Error : expected one, found {} registers.", table, key, list.len());
+				Err(format!("[DbAdapterSql.find_one({}, {})] Error : expected one, found {} registers.", table, key, list.len()))?;
 			}
 
-			Some(Box::new(list.get(0).unwrap().clone()))
+			let obj = list.get(0).ok_or("broken")?;
+			Ok(Some(Box::new(obj.clone())))
 		}
 	}
 
 	async fn update(&self, openapi: &OpenAPI, schema_name :&str, query_params :&Value, obj :&Value) -> Result<Value, Box<dyn std::error::Error>> {
-        println!("[DbAdapterPostgres.update({}, {})]", schema_name, obj.to_string());
+        println!("[DbAdapterSql.update({}, {})]", schema_name, obj.to_string());
 		let table_name = schema_name.to_case(convert_case::Case::Snake);
 		let mut params: Vec<&(dyn ToSql + Sync)> = vec![];
 		let mut str_values = vec![];
 		let mut count = 1;
-		let properties = openapi.get_properties_from_schema_name(&None, schema_name, &crate::openapi::SchemaPlace::Schemas).context(format!("EntityManager.update({}) : Missing porperties for schema", schema_name))?;
+		let properties = openapi.get_properties_from_schema_name(&None, schema_name, &crate::openapi::SchemaPlace::Schemas).ok_or_else(|| format!("EntityManager.update({}) : Missing porperties for schema", schema_name))?;
 
-		for (field_name, value) in obj.as_object().context(format!("EntityManager.update({}) : value must be json object", schema_name))? {
-			let field = properties.get(field_name).context(format!("EntityManager.update({}) : field {} missing in schema definition", schema_name, field_name))?;
-			let field = field.as_item().context(format!("EntityManager.insert({}) : field {} must be item, not reference", schema_name, field_name))?;
+		for (field_name, value) in obj.as_object().ok_or_else(|| format!("EntityManager.update({}) : value must be json object", schema_name))? {
+			let field = properties.get(field_name).ok_or_else(|| format!("EntityManager.update({}) : field {} missing in schema definition", schema_name, field_name))?;
+			let field = field.as_item().ok_or_else(|| format!("EntityManager.insert({}) : field {} must be item, not reference", schema_name, field_name))?;
 			let field_name = field_name.to_case(convert_case::Case::Snake);
 
 			match value {
@@ -495,27 +533,27 @@ impl EntityManager for DbAdapterPostgres<'_> {
 
 		let sql_query = self.build_query(query_params, &mut params, &vec![]);
 		let sql = format!("UPDATE {} SET {} {} RETURNING *", table_name, str_values.join(","), sql_query);
-		println!("[DbAdapterPostgres.update()] : {}", sql);
+		println!("[DbAdapterSql.update()] : {}", sql);
 		let params = params.as_slice();
 		let list = self.client.as_ref().unwrap().query(&sql, params).await.unwrap();
-		println!("[DbAdapterPostgres.update] : returning* = {:?}", list);
-		Ok(self.get_json_list(&list, true).get(0).unwrap().clone())
+		println!("[DbAdapterSql.update] : returning* = {:?}", list);
+		Ok(self.get_json_list(&list)?.get(0).ok_or("broken")?.clone())
 	}
 
 	async fn delete_one(&self, _openapi: &OpenAPI, schema_name: &str, query_params: &Value) -> Result<(), Box<dyn std::error::Error>> {
-		println!("[DbAdapterPostgres.delete_one({}, {})]", schema_name, query_params);
+		println!("[DbAdapterSql.delete_one({}, {})]", schema_name, query_params);
 		let table_name = schema_name.to_case(convert_case::Case::Snake);
 		let mut params: Vec<&(dyn ToSql + Sync)> = vec![];
 		let sql_query = self.build_query(query_params, &mut params, &vec![]);
 		let sql = format!("DELETE FROM {} {}", table_name, sql_query);
 		let params = params.as_slice();
-		println!("[DbAdapterPostgres.delete_one({})] : {} , {:?}", query_params, sql, params);
+		println!("[DbAdapterSql.delete_one({})] : {} , {:?}", query_params, sql, params);
 		let _count = self.client.as_ref().unwrap().execute(&sql, params).await.unwrap();
 		Ok(())
 	}
 
 	async fn update_open_api(&mut self, openapi: &mut OpenAPI, options :&mut FillOpenAPIOptions) -> Result<(), Box<dyn std::error::Error>> {
-		fn get_field_name(adapter :&mut DbAdapterPostgres, column_name :&str, schema_data :Option<&mut SchemaData>) -> String {
+		fn get_field_name(adapter :&mut DbAdapterSql, column_name :&str, schema_data :Option<&mut SchemaData>) -> String {
 			let mut field_name = column_name.to_case(convert_case::Case::Camel);
 			let field_name_lower_case = field_name.to_lowercase();
 
@@ -550,13 +588,13 @@ impl EntityManager for DbAdapterPostgres<'_> {
 			}
 		}
 
-		async fn process_constraints(adapter :&mut DbAdapterPostgres<'_>, schemas :&mut IndexMap<String, ReferenceOr<Schema>>) -> Result<(), Box<dyn std::error::Error>> {
+		async fn process_constraints(adapter :&mut DbAdapterSql<'_>, schemas :&mut IndexMap<String, ReferenceOr<Schema>>) -> Result<(), Box<dyn std::error::Error>> {
 			let sql_info_constraints = "SELECT table_name::text,constraint_name::text,constraint_type::text FROM information_schema.table_constraints ORDER BY table_name,constraint_name";
 			let sql_info_constraints_fields = "SELECT constraint_name::text,column_name::text,ordinal_position FROM information_schema.key_column_usage ORDER BY constraint_name,ordinal_position";
 			let sql_info_constraints_fields_ref = "SELECT constraint_name::text,table_name::text,column_name::text FROM information_schema.constraint_column_usage";
-			let result = &adapter.query(sql_info_constraints, &[]).await;
-			let result_fields = &adapter.query(sql_info_constraints_fields, &[]).await;
-			let result_fields_ref = &adapter.query(sql_info_constraints_fields_ref, &[]).await;
+			let result = &adapter.query(sql_info_constraints, &[]).await?;
+			let result_fields = &adapter.query(sql_info_constraints_fields, &[]).await?;
+			let result_fields_ref = &adapter.query(sql_info_constraints_fields_ref, &[]).await?;
 
 			for (schema_name, schema) in schemas {
 				let schema = if let ReferenceOr::Item(schema) = schema {
@@ -627,7 +665,7 @@ impl EntityManager for DbAdapterPostgres<'_> {
 
 					if constraint_type == "FOREIGN KEY" {
 						if list.len() != list_ref.len() {
-							println!("[DbAdapterPostgres.update_open_api.process_constraints.FOREIGN KEY] not same size of lists :\n{:?}\n{:?}", list, list_ref);
+							println!("[DbAdapterSql.update_open_api.process_constraints.FOREIGN KEY] not same size of lists :\n{:?}\n{:?}", list, list_ref);
 							continue;
 						}
 
@@ -644,7 +682,7 @@ impl EntityManager for DbAdapterPostgres<'_> {
 							if foreign_key.table_ref == "" || foreign_key.table_ref == table_ref {
 								foreign_key.table_ref = table_ref;
 							} else {
-								println!("[DbAdapterPostgres.update_open_api.process_constraints.FOREIGN KEY] not same table_ref :\n{}\n{}", foreign_key.table_ref, table_ref);
+								println!("[DbAdapterSql.update_open_api.process_constraints.FOREIGN KEY] not same table_ref :\n{}\n{}", foreign_key.table_ref, table_ref);
 							}
 						}
 
@@ -708,7 +746,7 @@ impl EntityManager for DbAdapterPostgres<'_> {
 
 						match foreign_key.get("tableRef") {
 							Some(table_ref) => set_ref(&mut object_type.properties, &candidates[0], table_ref.as_str().unwrap()),
-							None => println!("[DbAdapterPostgres.update_open_api.process_constraints] : missing table_ref from {}.", name),													
+							None => println!("[DbAdapterSql.update_open_api.process_constraints] : missing table_ref from {}.", name),													
 						}
 					}
 				}
@@ -764,7 +802,7 @@ impl EntityManager for DbAdapterPostgres<'_> {
 			description :String
 		}
 
-		async fn process_columns(adapter :&mut DbAdapterPostgres<'_>, schemas :&mut IndexMap<String, ReferenceOr<Schema>>) -> Result<(), Box<dyn std::error::Error>> {
+		async fn process_columns(adapter :&mut DbAdapterSql<'_>, schemas :&mut IndexMap<String, ReferenceOr<Schema>>) -> Result<(), Box<dyn std::error::Error>> {
 			let sql_types = ["boolean", "character varying", "character", "integer", "jsonb", "jsonb array", "numeric", "timestamp without time zone", "timestamp with time zone", "time without time zone", "bigint", "smallint", "text", "date", "double precision", "bytea"];
 			let rufs_types = ["boolean", "string", "string", "integer", "object", "array", "number", "date-time", "date-time", "date-time", "integer", "integer", "string", "date-time", "number", "string"];
 			let sql_info_tables = "
@@ -786,7 +824,7 @@ impl EntityManager for DbAdapterPostgres<'_> {
 			right outer join information_schema.columns c on (pgd.objsubid=c.ordinal_position and c.table_schema=st.schemaname and c.table_name=st.relname)
 			where table_schema = 'public' order by c.table_name,c.ordinal_position
 			";
-			let rows = adapter.query(sql_info_tables, &[]).await;
+			let rows = adapter.query(sql_info_tables, &[]).await?;
 
 			for row in rows {
 				let rec: SqlInfoTables = serde_json::from_value(row)?;
@@ -873,12 +911,18 @@ impl EntityManager for DbAdapterPostgres<'_> {
 					_ => SchemaKind::Type(openapiv3::Type::String(openapiv3::StringType { format: VariantOrUnknownOrEmpty::Empty, pattern: None, enumeration: vec![], min_length: None, max_length })), 
 				};
 
-
 				if rec.column_default.is_empty() == false {
 					schema_data.default = match rufs_type {
 						"integer" => Some(Value::Number(Number::from(rec.column_default.parse::<i64>().unwrap()))),
 						"number" => Some(Value::Number(Number::from_f64(rec.column_default.parse::<f64>().unwrap()).unwrap())),
-						_ => Some(Value::String(rec.column_default.replace("'", ""))), // TODO : usar regexp ^'(.*)'$ // 'pt-br'::character varying,
+						_ => {
+							// TODO : usar regexp ^'(.*)'$ // 'pt-br'::character varying,
+							let str = rec.column_default;
+							let str = str.replace("'", "");
+							let re = regex::Regex::new(r"([^:]*)(::.*)?")?;
+							let str = re.replace(&str, "$1").to_string();
+							Some(Value::String(str))
+						}, 
 					}
 				}
 
@@ -970,7 +1014,7 @@ impl EntityManager for DbAdapterPostgres<'_> {
 		for (field_name, field) in properties {
 			match field {
 				ReferenceOr::Reference { reference } => {
-					println!("[DbAdapterPostgres.create_table] : {}", reference);
+					println!("[DbAdapterSql.create_table] : {}", reference);
 					todo!()
 				},
 				ReferenceOr::Item(field) => {
@@ -1002,7 +1046,7 @@ impl EntityManager for DbAdapterPostgres<'_> {
 
 		let table_name = name.to_case(convert_case::Case::Snake);
 		let sql = format!("CREATE TABLE IF NOT EXISTS {} ({}, PRIMARY KEY({}))", table_name, list.join(", "), list_primary_keys.join(", "));
-		println!("[DbAdapterPostgres.create_table] : {}", sql);
+		println!("[DbAdapterSql.create_table] : {}", sql);
 		self.exec(&sql).await?;
 		//self.update_open_api(self.openapi, FillOpenApiOptions{request_body_content_type: self.db_config.request_body_content_type})?;
 		Ok(())

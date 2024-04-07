@@ -1,13 +1,10 @@
-use std::{collections::HashMap};
-
-use anyhow::Context;
+use std::collections::HashMap;
+use std::fmt;
 use convert_case::{Case, Casing};
 use indexmap::IndexMap;
 use openapiv3::*;
 use serde::{Serialize, Deserialize};
 use serde_json::{Value, json};
-
-use std::fmt;
 
 #[derive(Clone)]
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -16,29 +13,6 @@ pub struct Role {
     pub path: String,
     pub mask: u64,
 }
-
-#[derive(Debug)]
-pub struct Error {
-    msg :String
-}
-
-impl Error {
-
-    pub fn new(msg: String) -> Self {
-        Self {msg}
-    }
-
-}
-
-impl fmt::Display for Error {
-
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", &self.msg)
-    }
-
-}
-
-impl std::error::Error for Error {}
 
 #[derive(PartialEq, Debug, Clone)]
 pub enum SchemaPlace {Request, Response, Parameter, Schemas}
@@ -94,22 +68,22 @@ pub struct PrimaryKeyForeign {
 pub trait RufsOpenAPI {
     fn get_schema_name_from_ref(reference: &str) -> String;
     fn create(&mut self, security: &str);
-    fn copy_value_field(&self, field: &Schema, essential: bool, value :&Value) -> Result<Value, Error>;
-    fn copy_value(&self, path :&str, method :&str, schema_place :&SchemaPlace, may_be_array: bool, property_name :&str, value :&Value) -> Result<Value, Error>;
+    fn copy_value_field(&self, field: &Schema, essential: bool, value :&Value) -> Result<Value, Box<dyn std::error::Error>>;
+    fn copy_value(&self, path :&str, method :&str, schema_place :&SchemaPlace, may_be_array: bool, property_name :&str, value :&Value) -> Result<Value, Box<dyn std::error::Error>>;
     fn get_value_from_properties<'a>(&'a self, properties: &IndexMap<String, ReferenceOr<Box<Schema>>>, property_name :&str, obj: &'a Value) -> Option<&'a Value>;    
     fn get_value_from_schema<'a>(&'a self, schema :&Schema, property_name :&str, obj: &'a Value) -> Option<&Value>;
-    fn copy_fields_using_properties(&self, properties: &IndexMap<String, ReferenceOr<Box<Schema>>>, extensions: &IndexMap<String, Value>, may_be_array: bool, data_in: &Value, ignore_null: bool, ignore_hidden: bool, only_primary_keys: bool) -> Result<Value, Error>;    
-    fn copy_fields(&self, path :&str, method :&str, schema_place :&SchemaPlace, may_be_array: bool, data_in: &Value, ignorenil: bool, ignore_hidden: bool, only_primary_keys: bool) -> Result<Value, Error>;
-    fn fill(&mut self, options: &mut FillOpenAPIOptions) -> Result<(), Error>;
-    fn get_schema_from_schemas(&self, reference :&str) -> Option<&Schema>;
+    fn copy_fields_using_properties(&self, properties: &IndexMap<String, ReferenceOr<Box<Schema>>>, extensions: &IndexMap<String, Value>, may_be_array: bool, data_in: &Value, ignore_null: bool, ignore_hidden: bool, only_primary_keys: bool) -> Result<Value, Box<dyn std::error::Error>>;    
+    fn copy_fields(&self, path :&str, method :&str, schema_place :&SchemaPlace, may_be_array: bool, data_in: &Value, ignorenil: bool, ignore_hidden: bool, only_primary_keys: bool) -> Result<Value, Box<dyn std::error::Error>>;
+    fn fill(&mut self, options: &mut FillOpenAPIOptions) -> Result<(), Box<dyn std::error::Error>>;
+    fn get_schema_from_schemas(&self, reference :&str) -> Result<Option<&Schema>, Box<dyn std::error::Error>>;
     fn get_schema_from_request_bodies(&self, schema_name: &str, may_be_array: bool) -> Option<&Schema>;
     fn get_schema_from_responses(&self, schema_name: &str, may_be_array: bool) -> Option<&Schema>;
-    fn get_schema_from_operation_object_parameters<'a>(&'a self, operation_object: &'a Operation, may_be_array: bool) -> Result<&Schema, Error>;
-    fn get_schema_from_parameters(&self, path: &str, method: &str, may_be_array: bool) -> Result<&Schema, Error>;
-    fn get_schema(&self, path :&str, method :&str, schema_place :&SchemaPlace, may_be_array: bool) -> Result<&Schema, Error>;
-    fn get_schema_from_ref(&self, reference: &str, may_be_array: bool) -> Result<&Schema, Error>;
-    fn get_path_params(&self, uri: &str, params: &Value) -> Result<String, Error>;
-    fn get_schema_name(&self, path: &str, method: &str, may_be_array: bool) -> Result<String, Error>;
+    fn get_schema_from_operation_object_parameters<'a>(&'a self, operation_object: &'a Operation, may_be_array: bool) -> Result<&Schema, Box<dyn std::error::Error>>;
+    fn get_schema_from_parameters(&self, path: &str, method: &str, may_be_array: bool) -> Result<&Schema, Box<dyn std::error::Error>>;
+    fn get_schema(&self, path :&str, method :&str, schema_place :&SchemaPlace, may_be_array: bool) -> Result<&Schema, Box<dyn std::error::Error>>;
+    fn get_schema_from_ref(&self, reference: &str, may_be_array: bool) -> Result<&Schema, Box<dyn std::error::Error>>;
+    fn get_path_params(&self, uri: &str, params: &Value) -> Result<String, Box<dyn std::error::Error>>;
+    fn get_schema_name(&self, path: &str, method: &str, may_be_array: bool) -> Result<String, Box<dyn std::error::Error>>;
     fn get_properties_from_schema_name<'a>(&'a self, parent_name: &Option<String>, schema_name :&str, schema_place :&SchemaPlace) -> Option<&'a IndexMap<String, ReferenceOr<Box<Schema>>>>;
     fn get_properties_with_extensions(&self, path: &str, method: &str, schema_place: &SchemaPlace) -> Result<(Vec<String>, Vec<String>, IndexMap<String, ReferenceOr<Box<Schema>>>), Box<dyn std::error::Error>>;
     fn get_properties_from_schema<'a>(&'a self, schema :&'a Schema) -> Option<&'a IndexMap<String, ReferenceOr<Box<Schema>>>>;
@@ -122,9 +96,9 @@ pub trait RufsOpenAPI {
     //fn get_properties_with_ref(&self, schema_name :&str, reference :&str) -> Vec<PropertiesWithRef>;
     fn get_dependencies(&self, schema_name: &str, list: &mut Vec<String>);
     fn get_dependents(&self, schema_name_target: &str, only_in_document :bool) -> Vec<Dependent>;
-    fn get_foreign_key_description(&self, schema :&str, field_name: &str) -> Result<Option<ForeignKeyDescription>, Error>;
-    fn get_foreign_key(&self, schema: &str, field_name: &str, obj: &Value) -> Result<Option<Value>, Error>;
-    fn get_primary_key_foreign(&self, schema_name :&str, field_name :&str, obj :&Value) -> Result<Option<PrimaryKeyForeign>, Error>;
+    fn get_foreign_key_description(&self, schema :&str, field_name: &str) -> Result<Option<ForeignKeyDescription>, Box<dyn std::error::Error>>;
+    fn get_foreign_key(&self, schema: &str, field_name: &str, obj: &Value) -> Result<Option<Value>, Box<dyn std::error::Error>>;
+    fn get_primary_key_foreign(&self, schema_name :&str, field_name :&str, obj :&Value) -> Result<Option<PrimaryKeyForeign>, Box<dyn std::error::Error>>;
 }
 
 #[derive(Debug)]
@@ -159,18 +133,18 @@ impl std::fmt::Display for FillOpenAPIOptions {
 }
 /*
 pub trait RufsSchema {
-    fn set_extension(&self, field_name :&str, value :Value) -> Result<(), Error>;
+    fn set_extension(&self, field_name :&str, value :Value) -> Result<(), Box<dyn std::error::Error>>;
     //fn get_extension_mut(&self, field_name :&str, default :Value) -> ;
-    fn as_object_type(&self) -> Result<ObjectType, Error>;
+    fn as_object_type(&self) -> Result<ObjectType, Box<dyn std::error::Error>>;
 }
 
 impl RufsSchema for Schema {
 
-    fn set_extension(&self, field_name :&str, value :Value) -> Result<(), Error> {
+    fn set_extension(&self, field_name :&str, value :Value) -> Result<(), Box<dyn std::error::Error>> {
         todo!()        
     }
 
-    fn as_object_type(&self) -> Result<ObjectType, Error> {
+    fn as_object_type(&self) -> Result<ObjectType, Box<dyn std::error::Error>> {
         todo!()        
     }
 
@@ -178,11 +152,11 @@ impl RufsSchema for Schema {
 
 impl RufsSchema for ReferenceOr<Schema> {
 
-    fn set_extension(&self, field_name :&str, value :Value) -> Result<(), Error> {
+    fn set_extension(&self, field_name :&str, value :Value) -> Result<(), Box<dyn std::error::Error>> {
         todo!()        
     }
 
-    fn as_object_type(&self) -> Result<ObjectType, Error> {
+    fn as_object_type(&self) -> Result<ObjectType, Box<dyn std::error::Error>> {
         todo!()        
     }
 
@@ -190,11 +164,11 @@ impl RufsSchema for ReferenceOr<Schema> {
 
 impl RufsSchema for ReferenceOr<Box<Schema>> {
 
-    fn set_extension(&self, field_name :&str, value :Value) -> Result<(), Error> {
+    fn set_extension(&self, field_name :&str, value :Value) -> Result<(), Box<dyn std::error::Error>> {
         todo!()        
     }
     
-    fn as_object_type(&self) -> Result<ObjectType, Error> {
+    fn as_object_type(&self) -> Result<ObjectType, Box<dyn std::error::Error>> {
         todo!()        
     }
     
@@ -335,7 +309,7 @@ func (self *OpenAPI) convertStandartToRufs() {
     }
 }
 */
-    fn copy_value_field(&self, field: &Schema, essential: bool, value :&Value) -> Result<Value, Error> {
+    fn copy_value_field(&self, field: &Schema, essential: bool, value :&Value) -> Result<Value, Box<dyn std::error::Error>> {
         if value.is_null() && essential && !field.schema_data.nullable {
             match &field.schema_kind {
                 SchemaKind::Type(typ) => {
@@ -402,7 +376,7 @@ func (self *OpenAPI) convertStandartToRufs() {
         }
     }
 
-    fn copy_value(&self, path :&str, method :&str, schema_place :&SchemaPlace, may_be_array: bool, property_name :&str, value :&Value) -> Result<Value, Error> {
+    fn copy_value(&self, path :&str, method :&str, schema_place :&SchemaPlace, may_be_array: bool, property_name :&str, value :&Value) -> Result<Value, Box<dyn std::error::Error>> {
         let schema = self.get_schema(path, method, schema_place, may_be_array).unwrap();
         let field = self.get_property_from(path, method, schema_place, may_be_array, property_name).unwrap();
         let property_name = &property_name.to_string();
@@ -462,7 +436,7 @@ func (self *OpenAPI) convertStandartToRufs() {
         }
     }
 
-    fn copy_fields_using_properties(&self, properties: &IndexMap<String, ReferenceOr<Box<Schema>>>, extensions: &IndexMap<String, Value>, _may_be_array: bool, data_in: &Value, ignore_null: bool, ignore_hidden: bool, only_primary_keys: bool) -> Result<Value, Error> {
+    fn copy_fields_using_properties(&self, properties: &IndexMap<String, ReferenceOr<Box<Schema>>>, extensions: &IndexMap<String, Value>, _may_be_array: bool, data_in: &Value, ignore_null: bool, ignore_hidden: bool, only_primary_keys: bool) -> Result<Value, Box<dyn std::error::Error>> {
         let mut data_out = json!({});
 
         for (field_name, field) in properties {
@@ -500,21 +474,21 @@ func (self *OpenAPI) convertStandartToRufs() {
                     }
                 }
 
-                return Err(Error::new(format!("[RufsOpenAPI.copy_fields] field {} is null", field_name)));
+                return Err(format!("[RufsOpenAPI.copy_fields] field {} is null", field_name))?;
             }
         }
 
         Ok(data_out)
     }
 
-    fn copy_fields(&self, path :&str, method :&str, schema_place :&SchemaPlace, may_be_array: bool, data_in: &Value, ignore_null: bool, ignore_hidden: bool, only_primary_keys: bool) -> Result<Value, Error> {
+    fn copy_fields(&self, path :&str, method :&str, schema_place :&SchemaPlace, may_be_array: bool, data_in: &Value, ignore_null: bool, ignore_hidden: bool, only_primary_keys: bool) -> Result<Value, Box<dyn std::error::Error>> {
         let schema = self.get_schema(path, method, schema_place, may_be_array).unwrap();
         let extensions = &schema.schema_data.extensions;
         let properties = self.get_properties_from_schema(schema).unwrap();
         self.copy_fields_using_properties(properties, extensions, may_be_array, data_in, ignore_null, ignore_hidden, only_primary_keys)
     }
 
-    fn fill(&mut self, options: &mut FillOpenAPIOptions) -> Result<(), Error> {
+    fn fill(&mut self, options: &mut FillOpenAPIOptions) -> Result<(), Box<dyn std::error::Error>> {
         self.create("jwt");
         let force_generate_path = options.request_schemas.is_empty() && options.parameter_schemas.is_empty();
 
@@ -906,14 +880,15 @@ func (self *OpenAPI) convertStandartToRufs() {
         Ok(())
     }
 
-    fn get_schema_from_schemas(&self, reference :&str) -> Option<&Schema> {
+    fn get_schema_from_schemas(&self, reference :&str) -> Result<Option<&Schema>, Box<dyn std::error::Error>> {
         let schema_name = OpenAPI::get_schema_name_from_ref(reference);
         //println!("[OpenAPI.get_schema_from_schemas({reference})] : {}", schema_name);
-        let schema = self.components.as_ref().unwrap().schemas.get(&schema_name)?;
+        let components = self.components.as_ref().ok_or("Missing 'components' in OpenAPI.")?;
+        let schema = components.schemas.get(&schema_name).ok_or_else(|| format!("Missing schema {} in components.schemas.", schema_name))?;
 
         return match schema {
-            ReferenceOr::Item(schema) => Some(schema),
-            _ => None,
+            ReferenceOr::Item(schema) => Ok(Some(schema)),
+            _ => Ok(None),
         };
     }
 
@@ -996,7 +971,7 @@ func (self *OpenAPI) convertStandartToRufs() {
         None
     }
 
-    fn get_schema_from_ref(&self, reference: &str, may_be_array: bool) -> Result<&Schema, Error> {
+    fn get_schema_from_ref(&self, reference: &str, may_be_array: bool) -> Result<&Schema, Box<dyn std::error::Error>> {
         let openapi = self;
         let schema_name = OpenAPI::get_schema_name_from_ref(reference);
         //println!("[OpenAPI.get_schema_from_ref({reference})]");
@@ -1021,9 +996,7 @@ func (self *OpenAPI) convertStandartToRufs() {
                     },
                 }
             } else {
-                return Err(Error::new(
-                    format!("[OpenAPI.get_schema_from_parameters] don't find schema from {}", reference),
-                ));
+                return Err(format!("[OpenAPI.get_schema_from_parameters] don't find schema from {}", reference))?;
             }
         } else if reference.starts_with("#/components/schemas/") {
             let aux = openapi.components.as_ref().unwrap().schemas.get(&schema_name).unwrap();
@@ -1032,9 +1005,7 @@ func (self *OpenAPI) convertStandartToRufs() {
             let aux = openapi.components.as_ref().unwrap().responses.get(&schema_name).unwrap().as_item().unwrap().content.first().unwrap().1.schema.as_ref().unwrap();
             aux
         } else {
-            return Err(Error::new(
-                format!("[OpenAPI.get_schema_from_parameters] don't find schema from {}", reference),
-            ));
+            return Err(format!("[OpenAPI.get_schema_from_parameters] don't find schema from {}", reference))?;
         };
 
         match schema {
@@ -1071,7 +1042,7 @@ func (self *OpenAPI) convertStandartToRufs() {
         }
     }
 
-    fn get_path_params(&self, uri: &str, _params: &Value) -> Result<String, Error> {
+    fn get_path_params(&self, uri: &str, _params: &Value) -> Result<String, Box<dyn std::error::Error>> {
         let openapi = self;
         let uri_segments: Vec<&str> = uri.split('/').collect();
 
@@ -1097,10 +1068,10 @@ func (self *OpenAPI) convertStandartToRufs() {
             }
         }
 
-        Err(Error::new("Not found".to_string()))
+        Err("Not found")?
     }
 
-    fn get_schema_from_operation_object_parameters<'a>(&'a self, operation_object: &'a Operation, may_be_array: bool) -> Result<&Schema, Error> {
+    fn get_schema_from_operation_object_parameters<'a>(&'a self, operation_object: &'a Operation, may_be_array: bool) -> Result<&Schema, Box<dyn std::error::Error>> {
         for parameter_object in &operation_object.parameters {
             match &parameter_object {
                 ReferenceOr::Reference { reference } => {
@@ -1137,10 +1108,10 @@ func (self *OpenAPI) convertStandartToRufs() {
             }
         }
 
-        Err(Error::new(format!("[OpenAPI.get_schema_from_operation_object_parameters] don't find schema parameter from {:?}", operation_object)))
+        Err(format!("[OpenAPI.get_schema_from_operation_object_parameters] don't find schema parameter from {:?}", operation_object))?
     }
 
-    fn get_schema_from_parameters(&self, path: &str, method: &str, may_be_array: bool) -> Result<&Schema, Error> {
+    fn get_schema_from_parameters(&self, path: &str, method: &str, may_be_array: bool) -> Result<&Schema, Box<dyn std::error::Error>> {
         if let Some(path_item_object) = self.paths.paths.get(path) {
             let path_item_object = match path_item_object {
                 ReferenceOr::Reference { reference: _ } => todo!(),
@@ -1154,11 +1125,11 @@ func (self *OpenAPI) convertStandartToRufs() {
             }
         }
 
-        Err(Error::new(format!("[OpenAPI.get_schema_from_parameters] don't find schema parameter from {}", path)))
+        Err(format!("[OpenAPI.get_schema_from_parameters] don't find schema parameter from {}", path))?
     }
 
-    fn get_schema(&self, path :&str, method :&str, schema_place :&SchemaPlace, may_be_array: bool) -> Result<&Schema, Error> {
-        fn get_schema_from_content<'a>(openapi: &'a OpenAPI, content :&'a Content, may_be_array: bool) -> Result<&'a Schema, Error> {
+    fn get_schema(&self, path :&str, method :&str, schema_place :&SchemaPlace, may_be_array: bool) -> Result<&Schema, Box<dyn std::error::Error>> {
+        fn get_schema_from_content<'a>(openapi: &'a OpenAPI, content :&'a Content, may_be_array: bool) -> Result<&'a Schema, Box<dyn std::error::Error>> {
             for (_, media_type_object) in content {
                 match media_type_object.schema.as_ref().unwrap() {
                     ReferenceOr::Reference { reference } => {
@@ -1179,7 +1150,7 @@ func (self *OpenAPI) convertStandartToRufs() {
                 };
             }
 
-            Err(Error::new(format!("Not found")))
+            Err("Not found")?
         }
 
         if let Some(path_item_object) = self.paths.paths.get(path) {
@@ -1200,12 +1171,12 @@ func (self *OpenAPI) convertStandartToRufs() {
                                     if let Some(schema) = self.get_schema_from_request_bodies(reference, may_be_array) {
                                         return Ok(schema);
                                     } else {
-                                        return Err(Error::new(format!("[get_schema({}, {}, {:?}, {})] : get_schema_from_requests not found schema {} from requests. operation object : {:?}", path, method, schema_place, may_be_array, reference, operation_object)));
+                                        return Err(format!("[get_schema({}, {}, {:?}, {})] : get_schema_from_requests not found schema {} from requests. operation object : {:?}", path, method, schema_place, may_be_array, reference, operation_object))?;
                                     }
                                 },
                             };
                         } else {
-                            return Err(Error::new(format!("Not found reference object from status code 200. operation object : {:?}", operation_object)));
+                            return Err(format!("Not found reference object from status code 200. operation object : {:?}", operation_object))?;
                         }
                     },
                     SchemaPlace::Response => {
@@ -1216,30 +1187,31 @@ func (self *OpenAPI) convertStandartToRufs() {
                                     if let Some(schema) = self.get_schema_from_responses(reference, may_be_array) {
                                         return Ok(schema);
                                     } else {
-                                        return Err(Error::new(format!("[get_schema({}, {}, {:?}, {})] : get_schema_from_responses not found schema {} from responses. operation object : {:?}", path, method, schema_place, may_be_array, reference, operation_object)));
+                                        return Err(format!("[get_schema({}, {}, {:?}, {})] : get_schema_from_responses not found schema {} from responses. operation object : {:?}", path, method, schema_place, may_be_array, reference, operation_object))?;
                                     }
                                 },
                             };
                         } else {
-                            return Err(Error::new(format!("Not found reference object from status code 200. operation object : {:?}", operation_object)));
+                            return Err(format!("Not found reference object from status code 200. operation object : {:?}", operation_object))?;
                         }
                     },
                     SchemaPlace::Parameter => {
                         return self.get_schema_from_operation_object_parameters(operation_object, may_be_array);
                     },
                     SchemaPlace::Schemas => {
-                        return Ok(self.get_schema_from_schemas(path).unwrap());
+                        let schema = self.get_schema_from_schemas(path)?.ok_or("[OpenAPI.get_schema] Missing schema")?;
+                        return Ok(schema);
                     },
                 }
             } else {
-                return Err(Error::new(format!("[OpenAPI.get_response_schema] missing OperationObject 1 {} {}", path, method)));
+                return Err(format!("[OpenAPI.get_response_schema] missing OperationObject 1 {} {}", path, method))?;
             }
         } else {
-            return Err(Error::new(format!("[OpenAPI.get_response_schema] missing PathItemObject 2 {}", path)));
+            return Err(format!("[OpenAPI.get_response_schema] missing PathItemObject 2 {}", path))?;
         }
     }
 
-    fn get_schema_name(&self, path: &str, method: &str, may_be_array: bool) -> Result<String, Error> {
+    fn get_schema_name(&self, path: &str, method: &str, may_be_array: bool) -> Result<String, Box<dyn std::error::Error>> {
         let path_item_object = self.paths.paths.get(path).unwrap().as_item().unwrap();
         let method = method.to_lowercase();
         let operation_object = path_item_object.iter().find(|item| item.0 == method).unwrap().1;
@@ -1289,7 +1261,7 @@ func (self *OpenAPI) convertStandartToRufs() {
             }
         }
 
-        Err(Error::new("NotFound".to_string()))
+        Err("NotFound")?
     }
 
     fn get_properties_from_schema<'a>(&'a self, schema :&'a Schema) -> Option<&'a IndexMap<String, ReferenceOr<Box<Schema>>>> {
@@ -1326,7 +1298,15 @@ func (self *OpenAPI) convertStandartToRufs() {
         let schema = match schema_place {
             SchemaPlace::Request => self.get_schema_from_request_bodies(main_schema_name, false)?,
             SchemaPlace::Response => self.get_schema_from_responses(main_schema_name, false)?,
-            SchemaPlace::Schemas => self.get_schema_from_schemas(main_schema_name)?,
+            SchemaPlace::Schemas => {
+                match self.get_schema_from_schemas(main_schema_name) {
+                    Ok(schema) => schema?,
+                    Err(err) => {
+                        println!("[OpenAPI.get_properties_from_schema_name] : {}", err);
+                        return None;
+                    },
+                }
+            },
             SchemaPlace::Parameter => todo!(),
         };
 
@@ -1390,7 +1370,7 @@ func (self *OpenAPI) convertStandartToRufs() {
                         SchemaKind::Type(typ) => {
                             match typ {
                                 Type::Array(array) => {
-                                    let field = array.items.as_mut().context("data_view_get 2 : context")?;
+                                    let field = array.items.as_mut().ok_or("data_view_get 2 : context")?;
 
                                     let field = match field {
                                         ReferenceOr::Reference { reference: _ } => continue,
@@ -1453,7 +1433,7 @@ func (self *OpenAPI) convertStandartToRufs() {
         }
 
         let schema = self.get_schema(path, method, schema_place, false)?;
-        let mut properties = anyhow::Context::context(self.get_properties_from_schema(schema), "Missing properties")?.clone();
+        let mut properties = self.get_properties_from_schema(schema).ok_or("Missing properties")?.clone();
         let extensions = &schema.schema_data.extensions;
         //self.foreignKeys = self.schema["x-foreignKeys"] || {};
         //self.primaryKeys = self.schema["x-primaryKeys"] || [];
@@ -1564,7 +1544,14 @@ func (self *OpenAPI) convertStandartToRufs() {
     }
 
     fn get_property_from_schemas<'a>(&'a self, schema_name: &str, property_name :&'a str) -> Option<&Schema> {
-        let schema = self.get_schema_from_schemas(schema_name)?;
+        let schema = match self.get_schema_from_schemas(schema_name) {
+            Ok(schema) => schema?,
+            Err(err) => {
+                println!("[OpenAPI.get_property_from_schemas] : {}", err);
+                return None;
+            },
+        };
+
         self.get_property_from_schema(schema, property_name)
     }
 
@@ -1765,7 +1752,7 @@ func (self *OpenAPI) convertStandartToRufs() {
 	}
 
     // (service, (service.field|foreign_table_name)
-    fn get_foreign_key_description(&self, schema :&str, field_name: &str) -> Result<Option<ForeignKeyDescription>, Error> {
+    fn get_foreign_key_description(&self, schema :&str, field_name: &str) -> Result<Option<ForeignKeyDescription>, Box<dyn std::error::Error>> {
         // TODO : primeiro procurar em foreign_keys
         // let foreign_keys = schema.extensions.get("x-foreignKeys").context("context")?;
         let field = self.get_property(schema, field_name);
@@ -1783,10 +1770,10 @@ func (self *OpenAPI) convertStandartToRufs() {
         }
 
         let reference = reference.unwrap().as_str().unwrap();
-        let service_ref = self.get_schema_from_schemas(reference);
+        let service_ref = self.get_schema_from_schemas(reference)?;
 
         if service_ref.is_none() {
-            return Err(Error::new(format!("Don't found schema {}", reference)));
+            return Err(format!("Don't found schema {}", reference))?;
         }
 
         let mut ret = ForeignKeyDescription{
@@ -1816,14 +1803,14 @@ func (self *OpenAPI) convertStandartToRufs() {
             }
     
             if ret.fields_ref.len() != primary_keys.len() {
-                return Err(Error::new(format!("[OpenAPI.getForeignKeyDescription({}, {})] : don't full fields key {:?} : {:?}", schema, field_name, primary_keys, ret.fields_ref)));
+                return Err(format!("[OpenAPI.getForeignKeyDescription({}, {})] : don't full fields key {:?} : {:?}", schema, field_name, primary_keys, ret.fields_ref))?;
             }
         }
 
         Ok(Some(ret))
     }
 
-	fn get_foreign_key(&self, schema: &str, property_name: &str, obj: &Value) -> Result<Option<Value>, Error> {
+	fn get_foreign_key(&self, schema: &str, property_name: &str, obj: &Value) -> Result<Option<Value>, Box<dyn std::error::Error>> {
         if let Some(foreign_key_description) = self.get_foreign_key_description(schema, property_name)? {
             let mut key = json!({});
 
@@ -1838,8 +1825,8 @@ func (self *OpenAPI) convertStandartToRufs() {
         }
 	}
 
-    fn get_primary_key_foreign(&self, schema_name :&str, field_name :&str, obj :&Value) -> Result<Option<PrimaryKeyForeign>, Error> {
-        fn process(openapi :&OpenAPI, schema :&Schema, schema_name :&str, field_name :&str, obj :&Value) -> Result<Option<PrimaryKeyForeign>, Error> {
+    fn get_primary_key_foreign(&self, schema_name :&str, field_name :&str, obj :&Value) -> Result<Option<PrimaryKeyForeign>, Box<dyn std::error::Error>> {
+        fn process(openapi :&OpenAPI, schema :&Schema, schema_name :&str, field_name :&str, obj :&Value) -> Result<Option<PrimaryKeyForeign>, Box<dyn std::error::Error>> {
             let foreign_key_description = openapi.get_foreign_key_description(schema_name, field_name)?;
 
             if foreign_key_description.is_none() {
@@ -1880,11 +1867,11 @@ func (self *OpenAPI) convertStandartToRufs() {
             return process(self, schema, &schema_name, field_name, obj);
         }
 
-        if let Some(schema) = self.get_schema_from_schemas(&schema_name) {
+        if let Some(schema) = self.get_schema_from_schemas(&schema_name)? {
             return process(self, schema, &schema_name, field_name, obj);
         }
 
-        Err(Error::new(format!("[OpenAPI.get_primary_key_foreign({}, {})] : don't find schema.", schema_name, field_name)))
+        Err(format!("[OpenAPI.get_primary_key_foreign({}, {})] : don't find schema.", schema_name, field_name))?
     }
 
 }

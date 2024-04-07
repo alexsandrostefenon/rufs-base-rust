@@ -3,7 +3,7 @@ use openapiv3::{OpenAPI, Schema};
 use std::{collections::HashMap, fs, sync::{RwLock, LockResult, RwLockReadGuard, RwLockWriteGuard, Arc}};
 use serde_json::{Value, Number};
 #[cfg(not(target_arch = "wasm32"))]
-use crate::{entity_manager::EntityManager};
+use crate::entity_manager::EntityManager;
 use crate::openapi::RufsOpenAPI;
 use crate::openapi::FillOpenAPIOptions;
 
@@ -72,7 +72,7 @@ impl EntityManager for DbAdapterFile<'_> {
         return Ok(obj.clone());
     }
 
-    async fn find(&self, _openapi: &OpenAPI, table: &str, key: &Value, _order_by: &Vec<String>) -> Vec<Value> {
+    async fn find(&self, _openapi: &OpenAPI, table: &str, key: &Value, _order_by: &Vec<String>) -> Result<Vec<Value>, Box<dyn std::error::Error>> {
         let tables: LockResult<RwLockReadGuard<HashMap<String, Value>>> = self.tables.read();
         let tables: RwLockReadGuard<HashMap<String, Value>> = tables.unwrap();
         let list = tables.get(table).unwrap().as_array().unwrap();
@@ -83,15 +83,16 @@ impl EntityManager for DbAdapterFile<'_> {
             list_out.push(item.clone());
         }
 
-        list_out
+        Ok(list_out)
     }
 
-    async fn find_one(&self, _openapi: &OpenAPI, table: &str, key: &Value) -> Option<Box<Value>> {
+    async fn find_one(&self, _openapi: &OpenAPI, table: &str, key: &Value) -> Result<Option<Box<Value>>, Box<dyn std::error::Error>> {
         let tables: LockResult<RwLockReadGuard<HashMap<String, Value>>> = self.tables.read();
         let tables: RwLockReadGuard<HashMap<String, Value>> = tables.unwrap();
         let list = tables.get(table).unwrap().as_array().unwrap();
-        let obj = crate::data_store::Filter::find_one(list, key).unwrap().unwrap();
-        Some(Box::new(obj.clone()))
+        let index = crate::data_store::Filter::find_index(list, key)?.ok_or("[DbAdapterFile.find_one] Missing item for key")?;
+        let obj = list.get(index).ok_or("[DbAdapterFile.find_one] Missing item for key")?;
+        Ok(Some(Box::new(obj.clone())))
     }
 
     async fn update(&self, _openapi: &OpenAPI, table_name :&str, key :&Value, obj :&Value) -> Result<Value, Box<dyn std::error::Error>> {
