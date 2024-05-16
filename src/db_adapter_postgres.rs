@@ -10,6 +10,7 @@ use serde_json::{Value, Number, json};
 #[cfg(feature = "postgres")]
 use rust_decimal::{Decimal, prelude::ToPrimitive};
 use crate::entity_manager::EntityManager;
+use crate::openapi::SchemaProperties;
 
 #[cfg(feature = "postgres")]
 use tokio_postgres::types::ToSql;
@@ -112,6 +113,14 @@ impl DbAdapterSql<'_> {//impl<C> DbAdapterSql<'_, C> {
 						Value::Null
 					}
 				},
+				tokio_postgres::types::Type::DATE => {
+					if let Some(value) = row.get::<usize, Option<chrono::NaiveDate>>(idx) {
+						let str = value.to_string();
+						Value::String(str)
+					} else {
+						Value::Null
+					}
+				},
 				tokio_postgres::types::Type::NUMERIC => {
 					if let Some(value) = row.get::<usize, Option<Decimal>>(idx) {
 						if value.scale() == 0 {
@@ -199,13 +208,20 @@ pub enum SqlType {
 		#[cfg(feature = "postgres")]
 		let client = {
 			let (client, connection) = tokio_postgres::connect(uri, tokio_postgres::NoTls).await?;
+			//let _res = connection.await?;
 
-			tokio::spawn(async move {
+			let _res = tokio::spawn(async move {
 				if let Err(e) = connection.await {
 					eprintln!("connection error: {}", e);
+					std::process::exit(1);
 				}
 			});
-	
+/*
+			for i in 0..10 {
+				sleep(std::time::Duration::from_secs(1)).await;
+				let _res = res..await?;
+			}
+*/
 			client
 		};	
 
@@ -580,7 +596,7 @@ impl EntityManager for DbAdapterSql<'_> {
 			return field_name;
 		}
 
-		fn set_ref(properties: &mut IndexMap<String, ReferenceOr<Box<Schema>>>, field_name :&str, table_ref :&str) {
+		fn set_ref(properties: &mut SchemaProperties, field_name :&str, table_ref :&str) {
 			if let Some(field) = properties.get_mut(field_name) {
 				if let ReferenceOr::Item(field) = field {
 					field.schema_data.extensions.insert("x-$ref".to_string(), Value::String(format!("#/components/schemas/{}", table_ref)));
@@ -912,18 +928,35 @@ impl EntityManager for DbAdapterSql<'_> {
 				};
 
 				if rec.column_default.is_empty() == false {
-					schema_data.default = match rufs_type {
-						"integer" => Some(Value::Number(Number::from(rec.column_default.parse::<i64>().unwrap()))),
-						"number" => Some(Value::Number(Number::from_f64(rec.column_default.parse::<f64>().unwrap()).unwrap())),
-						_ => {
-							// TODO : usar regexp ^'(.*)'$ // 'pt-br'::character varying,
-							let str = rec.column_default;
-							let str = str.replace("'", "");
-							let re = regex::Regex::new(r"([^:]*)(::.*)?")?;
-							let str = re.replace(&str, "$1").to_string();
-							Some(Value::String(str))
-						}, 
-					}
+					// TODO : usar regexp ^'(.*)'$ // 'pt-br'::character varying,
+					let str = rec.column_default;
+					let str1 = str.replace("'", "");
+					let re = regex::Regex::new(r"([^:]*)(::.*)?")?;
+					let str2 = re.replace(&str1, "$1").to_string();
+
+					schema_data.default = if str2.to_uppercase() == "NULL" || str2.contains("nextval") {
+						None
+					} else {
+						match rufs_type {
+							"integer" => {
+								let re = regex::Regex::new(r"\d*")?;
+								match re.captures(&str2) {
+									Some(str) => {
+										match str.get(1) {
+											Some(str) => {
+												let str3 = str.as_str();
+												Some(Value::Number(Number::from(str3.parse::<i64>().unwrap())))
+											},
+											None => None,
+										}
+									},
+									None => None,
+								}
+							},
+							"number" => Some(Value::Number(Number::from_f64(str2.parse::<f64>().unwrap()).unwrap())),
+							_ => Some(Value::String(str2)), 
+						}
+					};
 				}
 
 				if ["number"].contains(&rufs_type) {

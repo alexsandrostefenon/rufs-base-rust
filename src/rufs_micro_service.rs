@@ -13,7 +13,6 @@ use crate::{db_adapter_file::DbAdapterFile,db_adapter_postgres::DbAdapterSql,ent
 #[derive(Deserialize, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 struct RufsGroupOwner {
-    id: u64,
     name: String,
 }
 
@@ -45,40 +44,33 @@ struct RufsUserPublic {
 #[derive(Deserialize, Serialize, Default)]
 #[serde(default)]
 #[serde(rename_all = "camelCase")]
-struct RufsUser {
-    //user_proteced: RufsUserProteced,
-    id: u64,
-    name: String,
-    rufs_group_owner: u64,
-    //groups:         Box<[u64]>,
-    roles: Box<[Role]>,
-    //user_public: RufsUserPublic,
-    routes: Box<[Route]>,
-    menu: Box<[MenuItem]>,
-    path: String,
-    //other
-    full_name: String,
-    password: String,
+pub struct RufsUser {
+    pub name: String,
+    pub rufs_group_owner: String,
+    pub groups: Box<[String]>,
+    pub roles: Vec<Role>,
+    pub routes: Box<[Route]>,
+    pub menu: Box<[MenuItem]>,
+    pub path: String,
+    pub full_name: String,
+    pub password: String,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LoginResponse<'a> {
-    //token_payload : TokenPayload,
-    //user_proteced: RufsUserProteced,
-    pub id: u64,
+    pub jwt_header: String,
+    pub openapi: &'a OpenAPI,
     pub name: String,
-    pub rufs_group_owner: u64,
-    pub groups: Box<[u64]>,
-    pub roles: Box<[Role]>,
+    pub rufs_group_owner: String,
+    pub groups: Box<[String]>,
+    pub roles: Vec<Role>,
     pub ip: String,
-    //user_public: RufsUserPublic,
+    pub path: String,
+    pub title: String,
     routes: Box<[Route]>,
     menu: Box<[MenuItem]>,
-    pub path: String,
-    pub jwt_header: String,
-    pub title: String,
-    pub openapi: &'a OpenAPI,
+    extra: Value
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -86,12 +78,12 @@ pub struct LoginResponse<'a> {
 pub struct Claims {
     sub: String,
     exp: usize,
-    id: u64,
     pub name: String,
-    pub rufs_group_owner: u64,
-    pub groups: Box<[u64]>,
-    pub roles: Box<[Role]>,
+    pub rufs_group_owner: String,
+    pub groups: Box<[String]>,
+    pub roles: Vec<Role>,
     ip: String,
+    pub extra: Value
 }
 
 #[derive(serde::Deserialize, Default)]
@@ -103,7 +95,7 @@ pub struct LoginRequest {
 
 #[async_trait]
 pub trait Authenticator {
-    async fn authenticate_user(&self, user_name: &str, user_password: &str, remote_addr: &str) -> Result<LoginResponse, Box<dyn std::error::Error>>;
+    async fn authenticate_user(&self, rufs: &RufsMicroService, user_name: &str, user_password: &str) -> Result<(RufsUser, Value, Value), Box<dyn std::error::Error>>;
 }
 
 #[derive(Clone)]
@@ -113,6 +105,7 @@ pub struct RufsParams {
     pub api_path: String,
     pub request_body_content_type: String,
     pub openapi_file_name : String,
+    pub password_md5: bool
 }
 
 impl Default for RufsParams {
@@ -123,6 +116,7 @@ impl Default for RufsParams {
             app_name: "base".to_string(),
             request_body_content_type: "application/json".to_string(),
             openapi_file_name: "".to_string(),
+            password_md5: true
         }
     }
 }
@@ -161,15 +155,9 @@ impl RufsMicroService<'_> {
         Ok(())
     }
     
-    pub fn store_open_api(&self, file_name :&str) -> Result<(), Box<dyn std::error::Error>> {
-        let file_name = if file_name.is_empty() {
-            &self.params.openapi_file_name
-        } else {
-            file_name
-        };
-
+    pub fn store_open_api(&self) -> Result<(), Box<dyn std::error::Error>> {
         let contents = serde_json::to_string_pretty(&self.openapi)?;
-        std::fs::write(file_name, contents)?;
+        std::fs::write(&self.params.openapi_file_name, contents)?;
         Ok(())
     }
 
@@ -184,9 +172,9 @@ impl RufsMicroService<'_> {
             }
     
             //RequestFilterUpdateRufsServices(rms.fileDbAdapter, rms.openapi)
-            let empty_list = serde_json::Value::default();
+            let empty_list = json!([]);
             load_table(rms, "rufsGroup", &empty_list)?;
-            load_table(rms, "rufsGroupUser", &empty_list)?;
+            //load_table(rms, "rufsGroupUser", &empty_list)?;
             let item: serde_json::Value = serde_json::from_str(DEFAULT_GROUP_OWNER_ADMIN_STR).unwrap();
             let list = serde_json::json!([item]);
             load_table(rms, "rufsGroupOwner", &list)?;
@@ -197,7 +185,7 @@ impl RufsMicroService<'_> {
         }
     
         async fn create_rufs_tables(rms: &RufsMicroService<'_>, openapi_rufs: &OpenAPI) -> Result<(), Box<dyn std::error::Error>> {
-            for name in ["rufsGroupOwner", "rufsUser", "rufsGroup", "rufsGroupUser"] {
+            for name in ["rufsGroupOwner", "rufsUser", "rufsGroup"] { // , "rufsGroupUser"
                 if rms.openapi.components.as_ref().unwrap().schemas.get(name).is_none() {
                     println!("don't matched schema {}, existents :\n{:?}", name, rms.openapi.components.as_ref().unwrap().schemas.keys());
                     let schema = openapi_rufs.components.as_ref().unwrap().schemas.get(name).unwrap().as_item().unwrap();
@@ -296,93 +284,104 @@ impl RufsMicroService<'_> {
             ws_server_connections_warp: Arc::default(),
         };
     
+        println!("[connect] : load_open_api...");        
         rufs.load_open_api()?;
+        println!("[connect] : entity_manager.connect...");        
         rufs.entity_manager.connect(db_uri).await?;
-        //self.entity_manager.UpdateOpenAPI(self.openapi, FillOpenAPIOptions{requestBodyContentType: self.requestBodyContentType};
+        println!("[connect] : parsing static openapi_rufs...");        
         let openapi_rufs = serde_json::from_str::<OpenAPI>(RUFS_MICRO_SERVICE_OPENAPI_STR)?;
 
         if rufs_tables_in_db {
+            println!("[connect] : create_rufs_tables...");        
             create_rufs_tables(&rufs, &openapi_rufs).await?;
         }
 
+        println!("[connect] : exec_migrations...");        
         exec_migrations(&mut rufs, migration_path).await?;
-        //rms.db_adapter_file.openapi = Some(&rms.openapi);
         let mut options = FillOpenAPIOptions::default();
         options.request_body_content_type = rufs.params.request_body_content_type.clone();
-        //self.micro_service_server.store_open_api("")?;
+        println!("[connect] : update_open_api...");        
         rufs.entity_manager.update_open_api(&mut rufs.openapi, &mut options).await?;
         let mut options = FillOpenAPIOptions::default();
         options.security = SecurityRequirement::from([("jwt".to_string(), vec![])]);
         options.schemas = openapi_rufs.components.ok_or("missing section components")?.schemas.clone();
         options.request_body_content_type = rufs.params.request_body_content_type.clone();
+        println!("[connect] : openapi.fill...");        
         rufs.openapi.fill(&mut options)?;
-        rufs.store_open_api("")?;
+        println!("[connect] : store_open_api...");        
+        rufs.store_open_api()?;
 
         if rufs_tables_in_db == false {
+            println!("[connect] : load_file_tables...");        
             load_file_tables(&mut rufs)?;
         }
 
         Ok(rufs)
     }
 
-}
-
-#[async_trait]
-impl Authenticator for RufsMicroService<'_> {
-
-    async fn authenticate_user(&self, user_name: &str, user_password: &str, remote_addr: &str) -> Result<LoginResponse, Box<dyn std::error::Error>> {
-        let entity_manager = if self.db_adapter_file.have_table("rufsUser") {
-            &self.db_adapter_file as &(dyn EntityManager + Sync + Send)
-        } else {
-            &self.entity_manager as &(dyn EntityManager + Sync + Send)
+    pub fn build_login_response(&self, user: RufsUser, remote_addr: &str, extra_claims: Value, extra: Value) -> Result<LoginResponse, Box<dyn std::error::Error>> {
+        let claims = Claims {
+            sub: "".to_string(),
+            exp: 10000000000,
+            name: user.name,
+            rufs_group_owner: user.rufs_group_owner.clone(),
+            groups: Box::new([]),//list_out.into_boxed_slice()
+            roles: user.roles,
+            ip: remote_addr.to_string(),
+            extra: extra_claims
         };
 
-        let user = entity_manager.find_one(&self.openapi, "rufsUser", &json!({ "name": user_name })).await?.ok_or("Fail to find user.")?;
+        let secret = std::env::var("RUFS_JWT_SECRET").unwrap_or("123456".to_string());
+        let jwt_header = encode(&Header::default(), &claims, &EncodingKey::from_secret(secret.as_ref()))?;
+
+        let login_response = LoginResponse {
+            jwt_header,
+            openapi: &self.openapi,
+            name: claims.name.clone(),
+            rufs_group_owner: claims.rufs_group_owner,
+            groups: claims.groups,
+            roles: claims.roles,
+            ip: claims.ip.clone(),
+            title: claims.name,
+            routes: user.routes,
+            menu: user.menu,
+            path: user.path.clone(),
+            extra
+        };
+
+        Ok(login_response)
+    }
+
+}
+
+#[derive(Clone)]
+pub struct RufsMicroServiceAuthenticator();
+
+#[async_trait]
+impl Authenticator for RufsMicroServiceAuthenticator {
+
+    async fn authenticate_user(&self, rufs: &RufsMicroService, user_name: &str, user_password: &str) -> Result<(RufsUser, Value, Value), Box<dyn std::error::Error>> {
+        let entity_manager = if rufs.db_adapter_file.have_table("rufsUser") {
+            &rufs.db_adapter_file as &(dyn EntityManager + Sync + Send)
+        } else {
+            &rufs.entity_manager as &(dyn EntityManager + Sync + Send)
+        };
+
+        let user = entity_manager.find_one(&rufs.openapi, "rufsUser", &json!({ "name": user_name })).await?.ok_or("Fail to find user.")?;
         let user = RufsUser::deserialize(*user)?;
 
         if user.password.len() > 0 && user.password != user_password {
             return Err("Don't match user and password.")?;
         }
-
-        let list_in = entity_manager.find(&self.openapi, "rufsGroupUser", &json!({"rufsUser": user.id}), &vec![]).await?;
-        let mut list_out: Vec<u64> = vec![];
+/*
+        let list_in = entity_manager.find(&self.openapi, "rufsGroupUser", &json!({"rufsUser": user.name}), &vec![]).await?;
+        let mut list_out: Vec<String> = vec![];
 
         for item in list_in {
-            println!("[RufsMicroService.authenticate_user] rufsGroupUser : {}", item);
-            list_out.push(item.get("rufsGroup").unwrap().as_u64().unwrap());
+            list_out.push(item.get("rufsGroup").unwrap().as_str().unwrap().to_string());
         }
-
-        let groups = list_out.into_boxed_slice();
-        //let user_proteced = RufsUserProteced { id: user.id, name: user.name.clone(), group_owner: user.group_owner, groups: user.groups, roles: user.roles};
-        //let token_payload = TokenPayload{user_proteced, ip: remote_addr.clone()};
-        //let user_public = RufsUserPublic{ routes: user.routes, menu: user.menu, path: user.path };
-        let claims = Claims {
-            sub: "".to_string(),
-            exp: 10000000000,
-            id: user.id,
-            name: user.name,
-            rufs_group_owner: user.rufs_group_owner,
-            groups,
-            roles: user.roles,
-            ip: remote_addr.to_string(),
-        };
-        let secret = std::env::var("RUFS_JWT_SECRET").unwrap_or("123456".to_string());
-        let jwt_header = encode(&Header::default(), &claims, &EncodingKey::from_secret(secret.as_ref()))?;
-        let login_response = LoginResponse {
-            id: user.id,
-            name: claims.name.clone(),
-            rufs_group_owner: user.rufs_group_owner,
-            groups: claims.groups,
-            roles: claims.roles,
-            ip: claims.ip.clone(),
-            routes: user.routes,
-            menu: user.menu,
-            path: user.path.clone(),
-            jwt_header,
-            title: claims.name,
-            openapi: &self.openapi,
-        };
-        Ok(login_response)
+*/
+        Ok((user, json!({}), json!({})))
     }
 
 }
@@ -396,16 +395,15 @@ lazy_static::lazy_static! {
     }; 
 }
 
-async fn wasm_login(rms: &RufsMicroService<'_>, data_in: Value) -> Result<Value, Box<dyn std::error::Error>> {
+async fn wasm_ws_login(rms: &RufsMicroService<'_>, server_url: &str, path: &str, data_in: Value) -> Result<Value, Box<dyn std::error::Error>> {
     let mut data_view_manager_map = DATA_VIEW_MANAGER_MAP.lock().await;
-    let path = format!("http://127.0.0.1:{}", rms.params.port);
-    let mut data_view_manager = crate::client::DataViewManager::new(&path, rms.watcher);
-    let data_out = data_view_manager.login(data_in).await?;
+    let mut data_view_manager = crate::client::DataViewManager::new(server_url, rms.watcher);
+    let data_out = data_view_manager.login(path, data_in, rms.params.password_md5).await?;
     data_view_manager_map.insert(data_view_manager.server_connection.login_response.jwt_header.clone(), data_view_manager);
     Ok(data_out.into())
 }
 
-async fn wasm_process(token_raw: &str, data_in: Value) -> Result<Value, Box<dyn std::error::Error>> {
+async fn wasm_ws_process(token_raw: &str, data_in: Value) -> Result<Value, Box<dyn std::error::Error>> {
     let authorization_header_prefix = "Bearer ";
 
     let jwt = if token_raw.starts_with(authorization_header_prefix) {
@@ -441,7 +439,6 @@ pub async fn rufs_tide(app: &mut Box<tide::Server<RufsMicroService<'static>>>) -
         let login_response = match rufs.authenticate_user(&login_request.user, &login_request.password, request.remote().unwrap()).await {
             Ok(login_response) => login_response,
             Err(error) => {
-                println!("[RufsMicroService.handle.login.authenticate_user] : {}", error);
                 let msg = error.to_string();
                 let response = Response::builder(tide::StatusCode::Unauthorized).body(msg).build();
                 return Ok(response);
@@ -570,7 +567,7 @@ pub async fn rufs_tide(app: &mut Box<tide::Server<RufsMicroService<'static>>>) -
         let data_in = req.body_json::<Value>().await?;
         let rms = req.state();
 
-        let data_out = match wasm_login(rms, data_in).await {
+        let data_out = match wasm_ws_login(rms, data_in).await {
             Ok(data_out) => data_out,
             Err(err) => {
                 let mut response = tide::Response::from(err.to_string());
@@ -588,7 +585,7 @@ pub async fn rufs_tide(app: &mut Box<tide::Server<RufsMicroService<'static>>>) -
         let token_raw = &req.header("Authorization").context("Missing header Authorization")?.last().as_str().to_string();
         let data_in = req.body_json::<Value>().await?;
 
-        let data_out = match wasm_process(token_raw, data_in).await {
+        let data_out = match wasm_ws_process(token_raw, data_in).await {
             Ok(data_out) => data_out,
             Err(err) => {
                 let mut response = tide::Response::from(err.to_string());
@@ -605,7 +602,7 @@ pub async fn rufs_tide(app: &mut Box<tide::Server<RufsMicroService<'static>>>) -
 }
 
 #[cfg(feature = "warp")]
-pub async fn rufs_warp(rufs: RufsMicroService<'static>) -> impl warp::Filter<Extract = (impl warp::Reply,), Error = warp::Rejection> + Clone {
+pub async fn rufs_warp<'a, T>(rufs: RufsMicroService<'static>, authenticator: &'a T) -> impl warp::Filter<Extract = (impl warp::Reply + 'a,), Error = warp::Rejection> + Clone + 'a where T : Authenticator + std::marker::Send + Sync {
     use std::{sync::Mutex, convert::Infallible};
     use jsonwebtoken::{decode, DecodingKey, Validation};
     use futures_util::StreamExt;
@@ -738,32 +735,44 @@ pub async fn rufs_warp(rufs: RufsMicroService<'static>) -> impl warp::Filter<Ext
 
     let route_websocket = warp::path("websocket").and(with_rufs(rufs.clone())).and(warp::ws()).and_then(handle_ws);
 
-    async fn wasm_login_warp(rufs: Arc<Mutex<RufsMicroService<'static>>>, data_in: Value, _remote: Option<std::net::SocketAddr>) -> Result<impl Reply, Infallible> {
+    async fn wasm_ws_login_warp(rufs: Arc<Mutex<RufsMicroService<'static>>>, full_path: FullPath, data_in: Value, _remote: Option<std::net::SocketAddr>) -> Result<impl Reply, Infallible> {
         let rufs = &rufs.lock().unwrap().to_owned();
-        let ret = warp_try!(wasm_login(rufs, data_in).await);
+        let full_path_str = full_path.as_str();
+
+        let path = if let Some(pos) = full_path_str.find("/wasm_ws/") {
+            &full_path_str[0..pos]
+        } else {
+            &full_path_str
+        };
+
+        let server_url = format!("http://localhost:{}{}", rufs.params.port, path);
+        let ret = warp_try!(wasm_ws_login(rufs, &server_url, "/login", data_in).await);
         Ok(Box::new(warp::reply::json(&ret)))
     }
         
-    let route_wasm_login = warp::path("wasm_ws").and(warp::path("login")).and(with_rufs(rufs.clone())).and(warp::body::json()).and(warp::addr::remote()).and_then(wasm_login_warp);
+    let route_wasm_login = warp::path("wasm_ws").and(warp::path("login")).and(with_rufs(rufs.clone())).and(warp::path::full()).and(warp::body::json()).and(warp::addr::remote()).and_then(wasm_ws_login_warp);
 
-    async fn handle_login(rufs: Arc<Mutex<RufsMicroService<'static>>>, login_request: LoginRequest, remote: Option<std::net::SocketAddr>) -> Result<impl Reply, Infallible> {
+    async fn handle_login<T>(rufs: Arc<Mutex<RufsMicroService<'static>>>, login_request: LoginRequest, remote: Option<std::net::SocketAddr>, authenticator: &T) -> Result<impl Reply, Infallible> where T : Authenticator + std::marker::Send + Sync {
+        let rufs = &rufs.lock().unwrap().to_owned();
+        let (user, extra_claims, extra) = warp_try!(authenticator.authenticate_user(rufs, &login_request.user, &login_request.password).await);
         let remote = warp_try!(remote.ok_or("400-Missing remote address."));
-        let rufs = &rufs.lock().unwrap().to_owned();
-        let ret = warp_try!(rufs.authenticate_user(&login_request.user, &login_request.password, &remote.to_string()).await);
-        Ok(Box::new(warp::reply::json(&ret)))
+        let login_response = warp_try!(rufs.build_login_response(user, &remote.to_string(), extra_claims, extra));
+        Ok(Box::new(warp::reply::json(&login_response)))
     }
     
-    let route_login = warp::path(api_path).and(warp::path("login")).and(with_rufs(rufs.clone())).and(warp::body::json()).and(warp::addr::remote()).and_then(handle_login);
+    let route_login = warp::path(api_path).and(warp::path("login")).and(with_rufs(rufs.clone())).and(warp::body::json()).and(warp::addr::remote()).and_then(|rufs: Arc<Mutex<RufsMicroService<'static>>>, login_request: LoginRequest, remote: Option<std::net::SocketAddr>| {
+        handle_login(rufs, login_request, remote, authenticator)
+    });
     
-    async fn wasm_process_warp(headers: HeaderMap, obj_in: Value) -> Result<impl Reply, Infallible> {
+    async fn wasm_ws_process_warp(headers: HeaderMap, obj_in: Value) -> Result<impl Reply, Infallible> {
         let token_raw = warp_try!(warp_try!(headers.get("Authorization").ok_or("Missing header Authorization")).to_str());
-        let ret = warp_try!(wasm_process(token_raw, obj_in).await);
+        let ret = warp_try!(wasm_ws_process(token_raw, obj_in).await);
         Ok(Box::new(warp::reply::json(&ret)))
     }
         
-    let route_wasm_process = warp::path("wasm_ws").and(warp::path("process")).and(warp::header::headers_cloned()).and(warp::body::json()).and_then(wasm_process_warp);
+    let route_wasm_ws_process = warp::path("wasm_ws").and(warp::path("process")).and(warp::header::headers_cloned()).and(warp::body::json()).and_then(wasm_ws_process_warp);
 
-    let routes = route_login.or(route_wasm_login).or(route_wasm_process).or(route_websocket).or(route_api_put).or(route_api_post).or(route_api_get_delete).or(route_api_list_all);
+    let routes = route_login.or(route_wasm_login).or(route_wasm_ws_process).or(route_websocket).or(route_api_put).or(route_api_post).or(route_api_get_delete).or(route_api_list_all);
     routes
 }
 
@@ -778,51 +787,50 @@ const RUFS_MICRO_SERVICE_OPENAPI_STR: &str = r##"{
 		"schemas": {
 			"rufsGroupOwner": {
 				"properties": {
-					"id":   {"type": "integer", "x-identityGeneration": "BY DEFAULT"},
-					"name": {"type": "string", "nullable": false, "unique": true}
+					"name": {"type": "string", "nullable": false}
 				},
-				"x-primaryKeys": ["id"]
+				"x-primaryKeys": ["name"]
 			},
 			"rufsUser": {
 				"properties": {
-					"id":             {"type": "integer", "x-identityGeneration": "BY DEFAULT"},
-					"rufsGroupOwner": {"type": "integer", "nullable": false, "x-$ref": "#/components/schemas/rufsGroupOwner"},
-					"name":           {"type": "string", "maxLength": 32, "nullable": false, "unique": true},
+					"rufsGroupOwner": {"type": "string", "nullable": false, "x-$ref": "#/components/schemas/rufsGroupOwner"},
+					"name":           {"type": "string", "maxLength": 32, "nullable": false},
 					"password":       {"type": "string", "nullable": false},
 					"path":           {"type": "string"},
 					"roles":          {"type": "array", "items": {"properties": {"path": {"type": "string", "default": ""}, "mask": {"type": "integer", "default": 0, "x-flags": ["get","post","put","delete","query"]}}}},
 					"routes":         {"type": "array", "items": {"properties": {"path": {"type": "string"}, "controller": {"type": "string"}, "templateUrl": {"type": "string"}}}},
 					"menu":           {"type": "array", "items": {"properties": {"group": {"type": "string", "default": "action"}, "label": {"type": "string"}, "path": {"type": "string", "default": "service/action?filter={}&aggregate={}"}}}}
 				},
-				"x-primaryKeys": ["id"],
+				"x-primaryKeys": ["rufsGroupOwner", "name"],
 				"x-uniqueKeys":  {}
 			},
 			"rufsGroup": {
 				"properties": {
-					"id":   {"type": "integer", "x-identityGeneration": "BY DEFAULT"},
-					"name": {"type": "string", "nullable": false, "unique": true}
+					"name": {"type": "string"}
 				},
-				"x-primaryKeys": ["id"]
-			},
-			"rufsGroupUser": {
-				"properties": {
-					"rufsUser":  {"type": "integer", "nullable": false, "x-$ref": "#/components/schemas/rufsUser"},
-					"rufsGroup": {"type": "integer", "nullable": false, "x-$ref": "#/components/schemas/rufsGroup"}
-				},
-				"x-primaryKeys": ["rufsUser", "rufsGroup"],
-				"x-uniqueKeys":  {}
+				"x-primaryKeys": ["name"]
 			}
 		}
 	}
 }"##;
-
+/*
+			"rufsGroupUser": {
+				"properties": {
+					"rufsUser":  {"type": "string", "nullable": false, "x-$ref": "#/components/schemas/rufsUser"},
+					"rufsGroup": {"type": "string", "nullable": false, "x-$ref": "#/components/schemas/rufsGroup"},
+					"rufsGroupOwner": {"type": "string", "nullable": false, "x-$ref": "#/components/schemas/rufsGroupOwner"}
+				},
+				"x-primaryKeys": ["rufsUser", "rufsGroup", "rufsGroupOwner"],
+				"x-uniqueKeys":  {}
+			}
+*/
 
 const DEFAULT_GROUP_OWNER_ADMIN_STR: &str = r#"{"name": "admin"}"#;
 
 
 const DEFAULT_USER_ADMIN_STR: &str = r#"{
     "name": "admin",
-    "rufsGroupOwner": 1,
+    "rufsGroupOwner": "admin",
     "password": "21232f297a57a5a743894a0e4a801fc3",
     "path": "rufs_user/search",
     "menu": [],
@@ -838,20 +846,13 @@ const DEFAULT_USER_ADMIN_STR: &str = r#"{
         {
             "mask": 31,
             "path": "/rufs_group"
-        },
+        }
+    ],
+    "routes": []
+}"#;
+/*
         {
             "mask": 31,
             "path": "/rufs_group_user"
         }
-    ],
-    "routes": [
-        {
-            "controller": "OpenApiOperationObjectController",
-            "path": "/app/rufs_service/:action"
-        },
-        {
-            "controller": "UserController",
-            "path": "/app/rufs_user/:action"
-        }
-    ]
-}"#;
+*/

@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use openapiv3::{OpenAPI, Schema};
 use std::{collections::HashMap, fs, sync::{RwLock, LockResult, RwLockReadGuard, RwLockWriteGuard, Arc}};
-use serde_json::{Value, Number};
+use serde_json::{json, Number, Value};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::entity_manager::EntityManager;
 use crate::openapi::RufsOpenAPI;
@@ -19,20 +19,29 @@ impl DbAdapterFile<'_> {
     }
 
     pub fn load(&mut self, name: &str, default_rows: &Value) -> Result<(), Box<dyn std::error::Error>> {
-        let file = fs::File::open(format!("{}.json", name))?;
-        let json = match serde_json::from_reader(file) {
-            Err(_error) => {
-                default_rows.clone()
-            }
-            Ok(value) => {
-                value
-            }
+        let file_name = format!("{}.json", name);
+        let json = match fs::File::open(file_name) {
+            Ok(file) => {
+                match serde_json::from_reader(file) {
+                    Err(_error) => {
+                        default_rows.clone()
+                    }
+                    Ok(value) => {
+                        value
+                    }
+                }
+            },
+            Err(_err) => default_rows.clone(),
         };
+
         self.tables.write().unwrap().insert(name.to_string(), json);
         Ok(())
     }
 
-    fn store(&self, name :&str, list: &Value) -> Result<(), Box<dyn std::error::Error>> {
+    fn store(&self, name :&str) -> Result<(), Box<dyn std::error::Error>> {
+        let empty_list = json!([]);
+        let table = self.tables.read().unwrap();
+        let list = table.get(name).unwrap_or(&empty_list);
         let path = format!("{}.json", name);
         let contents = serde_json::to_string_pretty(list)?;
         std::fs::write(path, contents)?;
@@ -45,12 +54,12 @@ impl DbAdapterFile<'_> {
 impl EntityManager for DbAdapterFile<'_> {
     async fn insert(&self, openapi: &OpenAPI, table_name :&str, obj: &Value) -> Result<Value, Box<dyn std::error::Error>> {
         let mut obj = obj.clone();
-        let tables: LockResult<RwLockWriteGuard<HashMap<String, Value>>> = self.tables.write();
-        let mut tables: RwLockWriteGuard<HashMap<String, Value>> = tables.unwrap();
-        let list = tables.get(table_name).unwrap().as_array().unwrap();
 
-        //if let Some(openapi) = self.openapi {
+        {
+            let tables = self.tables.read().unwrap();
+
             if let Some(_field) = openapi.get_property(table_name, "id") {
+                let list = tables.get(table_name).unwrap().as_array().unwrap();
                 let mut id = 0;
         
                 for item in list {
@@ -63,12 +72,16 @@ impl EntityManager for DbAdapterFile<'_> {
     
                 obj["id"] = Value::Number(Number::from(id + 1));
             }
-        //}
+        }
 
-        let json_array = tables.get_mut(table_name).unwrap();
-        let list = json_array.as_array_mut().unwrap();
-        list.push(obj.clone());
-        self.store(table_name, json_array)?;
+        {
+            let mut tables = self.tables.write().unwrap();
+            let json_array = tables.get_mut(table_name).unwrap();
+            let list = json_array.as_array_mut().unwrap();
+            list.push(obj.clone());
+        }
+
+        self.store(table_name)?;
         return Ok(obj.clone());
     }
 
@@ -86,45 +99,60 @@ impl EntityManager for DbAdapterFile<'_> {
         Ok(list_out)
     }
 
-    async fn find_one(&self, _openapi: &OpenAPI, table: &str, key: &Value) -> Result<Option<Box<Value>>, Box<dyn std::error::Error>> {
+    async fn find_one(&self, _openapi: &OpenAPI, table_name: &str, key: &Value) -> Result<Option<Box<Value>>, Box<dyn std::error::Error>> {
         let tables: LockResult<RwLockReadGuard<HashMap<String, Value>>> = self.tables.read();
         let tables: RwLockReadGuard<HashMap<String, Value>> = tables.unwrap();
-        let list = tables.get(table).unwrap().as_array().unwrap();
-        let index = crate::data_store::Filter::find_index(list, key)?.ok_or("[DbAdapterFile.find_one] Missing item for key")?;
-        let obj = list.get(index).ok_or("[DbAdapterFile.find_one] Missing item for key")?;
+        let table = tables.get(table_name).ok_or_else(|| format!("Missing table {}.", table_name))?;
+
+        let list = table.as_array().ok_or_else(|| {
+            println!("Raw table {} content :\n{}", table_name, serde_json::to_string_pretty(table).unwrap());
+            format!("Table {} is not array.", table_name)
+        })?;
+
+        let Some(index) = crate::data_store::Filter::find_index(list, key)? else {
+            return Ok(None);
+        };
+
+        let obj = list.get(index).ok_or("[DbAdapterFile.find_one] Broken get item.")?;
         Ok(Some(Box::new(obj.clone())))
     }
 
     async fn update(&self, _openapi: &OpenAPI, table_name :&str, key :&Value, obj :&Value) -> Result<Value, Box<dyn std::error::Error>> {
-        let tables: LockResult<RwLockWriteGuard<HashMap<String, Value>>> = self.tables.write();
-        let mut tables: RwLockWriteGuard<HashMap<String, Value>> = tables.unwrap();
-        let list = tables.get(table_name).unwrap().as_array().unwrap();
-
-        if let Some(pos) = crate::data_store::Filter::find_index(list, key).unwrap() {
-            let json_array = tables.get_mut(table_name).unwrap();
-            let list = json_array.as_array_mut().unwrap();
-            list.insert(pos, obj.clone());
-            self.store(table_name, json_array)?;
-            return Ok(obj.clone());
+        {
+            let tables: LockResult<RwLockWriteGuard<HashMap<String, Value>>> = self.tables.write();
+            let mut tables: RwLockWriteGuard<HashMap<String, Value>> = tables.unwrap();
+            let list = tables.get(table_name).unwrap().as_array().unwrap();
+    
+            if let Some(pos) = crate::data_store::Filter::find_index(list, key).unwrap() {
+                let json_array = tables.get_mut(table_name).unwrap();
+                let list = json_array.as_array_mut().unwrap();
+                list.insert(pos, obj.clone());
+            } else {
+                return Err(format!("[FileDbAdapter.Update(name = {}, key = {})] : don't find table", table_name, key))?;
+            }
         }
 
-        Err(format!("[FileDbAdapter.Update(name = {}, key = {})] : don't find table", table_name, key))?
+        self.store(table_name)?;
+        return Ok(obj.clone());
     }
 
     async fn delete_one(&self, _openapi: &OpenAPI, table_name: &str, key: &Value) -> Result<(), Box<dyn std::error::Error>> {
-        let tables: LockResult<RwLockWriteGuard<HashMap<String, Value>>> = self.tables.write();
-        let mut tables: RwLockWriteGuard<HashMap<String, Value>> = tables.unwrap();
-        let list = tables.get(table_name).unwrap().as_array().unwrap();
-
-        if let Some(pos) = crate::data_store::Filter::find_index(list, key).unwrap() {
-            let json_array = tables.get_mut(table_name).unwrap();
-            let list = json_array.as_array_mut().unwrap();
-            list.remove(pos);
-            self.store(table_name, json_array)?;
-            return Ok(());
+        {
+            let tables: LockResult<RwLockWriteGuard<HashMap<String, Value>>> = self.tables.write();
+            let mut tables: RwLockWriteGuard<HashMap<String, Value>> = tables.unwrap();
+            let list = tables.get(table_name).unwrap().as_array().unwrap();
+    
+            if let Some(pos) = crate::data_store::Filter::find_index(list, key).unwrap() {
+                let json_array = tables.get_mut(table_name).unwrap();
+                let list = json_array.as_array_mut().unwrap();
+                list.remove(pos);
+            } else {
+                return Err(format!("[FileDbAdapter.Update(name = {}, key = {})] : don't find table", table_name, key))?;
+            }
         }
 
-        Err(format!("[FileDbAdapter.Update(name = {}, key = {})] : don't find table", table_name, key))?
+        self.store(table_name)?;
+        return Ok(());
     }
 
     async fn update_open_api(&mut self, _openapi: &mut OpenAPI, _options :&mut FillOpenAPIOptions) -> Result<(), Box<dyn std::error::Error>> {
