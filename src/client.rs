@@ -6,7 +6,7 @@ use regex;
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::{cmp::Ordering, collections::HashMap, fmt::Display, str::FromStr, vec};
+use std::{cmp::Ordering, collections::HashMap, vec};
 
 //#[cfg(target_arch = "wasm32")]
 //use web_log::println;
@@ -138,20 +138,26 @@ impl HttpRestRequest {
 
 #[derive(PartialEq, Clone, Copy, Debug, Default)]
 pub enum DataViewProcessAction {
-    #[default]
-    Search,
     New,
     Edit,
     View,
+    #[default]
+    Search,
+    Filter,
+    Aggregate,
+    Sort,
 }
 
 impl std::fmt::Display for DataViewProcessAction {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
-            DataViewProcessAction::Search => write!(f, "search"),
             DataViewProcessAction::New => write!(f, "new"),
             DataViewProcessAction::Edit => write!(f, "edit"),
             DataViewProcessAction::View => write!(f, "view"),
+            DataViewProcessAction::Search => write!(f, "search"),
+            DataViewProcessAction::Filter => write!(f, "filter"),
+            DataViewProcessAction::Aggregate => write!(f, "aggregate"),
+            DataViewProcessAction::Sort => write!(f, "sort"),
         }
     }
 }
@@ -409,40 +415,6 @@ pub enum DataViewType {
     Child(Dependent),
 }
 
-#[derive(PartialEq, Clone, Debug, Default)]
-pub enum FormType {
-    #[default]
-    Instance,
-    Filter,
-    Aggregate,
-    Sort,
-}
-
-impl std::str::FromStr for FormType {
-    type Err = Box<dyn std::error::Error>;
-
-    fn from_str(input: &str) -> Result<FormType, Self::Err> {
-        match input {
-            "aggregate" => Ok(FormType::Aggregate),
-            "filter" => Ok(FormType::Filter),
-            "sort" => Ok(FormType::Sort),
-            "instance" => Ok(FormType::Instance),
-            _ => Err("ivalid".into()),
-        }
-    }
-}
-
-impl Display for FormType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            FormType::Instance => write!(f, "instance"),
-            FormType::Filter => write!(f, "filter"),
-            FormType::Aggregate => write!(f, "aggregate"),
-            FormType::Sort => write!(f, "sort"),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Default)]
 pub struct DataViewId {
     pub action: DataViewProcessAction,
@@ -455,14 +427,13 @@ pub struct DataViewId {
 #[derive(Debug, Clone, Default)]
 pub struct HtmlElementId {
     pub data_view_id: DataViewId,
-    pub form_type: FormType,
     form_type_ext: Option<String>,
     field_name: Option<String>,
     index: Option<usize>,
 }
 
 impl HtmlElementId {
-    pub fn new(schema: String, parent: Option<&str>, form_type: FormType, form_type_ext: Option<String>, action: DataViewProcessAction, field_name: Option<String>, index: Option<usize>) -> Self {
+    pub fn new(schema: String, parent: Option<&str>, form_type_ext: Option<String>, action: DataViewProcessAction, field_name: Option<String>, index: Option<usize>) -> Self {
         let (form_id, form_id_parent, parent) = if let Some(parent) = parent {
             let form_id_parent = parent.to_case(convert_case::Case::Snake);
             let form_id = format!("{}-{}", form_id_parent, schema.to_case(convert_case::Case::Snake));
@@ -487,7 +458,6 @@ impl HtmlElementId {
                 schema_name: schema,
                 parent_name: parent,
             },
-            form_type,
             form_type_ext,
             field_name,
             index,
@@ -496,11 +466,6 @@ impl HtmlElementId {
 
     fn new_with_regex(cap: &regex::Captures) -> Result<Self, Box<dyn std::error::Error>> {
         let schema = cap.name("name").ok_or_else(|| format!("context name"))?.as_str().replace(".", "/");
-
-        let form_type = match cap.name("form_type") {
-            Some(form_type) => FormType::from_str(form_type.as_str())?,
-            None => FormType::Instance,
-        };
 
         let form_type_ext = match cap.name("form_type_ext") {
             Some(form_type_ext) => Some(form_type_ext.as_str().to_string()),
@@ -545,7 +510,6 @@ impl HtmlElementId {
                 form_id_parent,
                 form_id,
             },
-            form_type,
             form_type_ext,
             field_name,
             index,
@@ -612,7 +576,7 @@ impl DataView {
             (None, path_or_name.to_string())
         };
 
-        let element_id = HtmlElementId::new(schema_name, parent_name, FormType::Instance, None, action, None, None);
+        let element_id = HtmlElementId::new(schema_name, parent_name, None, action, None, None);
         let data_view_id = element_id.data_view_id.clone();
         let mut params = DataViewParams::default();
         params.page = 1;
@@ -664,51 +628,42 @@ impl DataView {
         Ok(())
     }
 
-    fn build_changes(&mut self, element_id: &HtmlElementId, data_out: &mut Value) -> Result<(), Box<dyn std::error::Error>> {
+    fn build_changes(&mut self, data_out: &mut Value) -> Result<(), Box<dyn std::error::Error>> {
         let mut form = json!({});
 
         for (field_name, value) in &self.properties_modified {
             form[field_name] = json!(value);
         }
 
-        let form_id = format!("{}-{}--{}", element_id.form_type, self.data_view_id.action, self.data_view_id.form_id);
+        let form_id = format!("{}--{}", self.data_view_id.action, self.data_view_id.form_id);
         data_out[form_id] = form;
         self.properties_modified.clear();
 
         for data_view in &mut self.childs {
-            data_view.build_changes(element_id, data_out)?;
+            data_view.build_changes(data_out)?;
         }
 
         Ok(())
     }
 
-    fn build_form(data_view_manager: &DataViewManager, data_view: &DataView, form_type: FormType) -> Result<String, Box<dyn std::error::Error>> {
+    fn build_form(data_view_manager: &DataViewManager, data_view: &DataView, action: DataViewProcessAction) -> Result<String, Box<dyn std::error::Error>> {
         let form_id = &data_view.data_view_id.form_id;
-        let action = data_view.data_view_id.action.to_string();
-
-        let form_type_str = match form_type {
-            FormType::Instance => "instance",
-            FormType::Filter => "filter",
-            FormType::Aggregate => "aggregate",
-            FormType::Sort => "sort",
-        };
-
         let title = data_view.data_view_id.schema_name.to_case(convert_case::Case::Title);
 
-        let table = if form_type == FormType::Instance {
+        let table = if action == DataViewProcessAction::Search || data_view.data_view_id.parent_name.is_some() {
             format!(r#"<div id="div-table-{action}--{form_id}" class="table-responsive" style="white-space: nowrap;"></div>"#)
         } else {
             String::new()
         };
 
-        if action == "search" && form_type == FormType::Instance {
+        if action == DataViewProcessAction::Search {
             let href_new = DataView::build_location_hash(&data_view.data_view_id.form_id, &DataViewProcessAction::New, &json!({}))?;
-            let header = format!(r#"<div class="card-header"><a href="{href_new}" id="create-{form_type_str}-{action}--{form_id}" class="btn btn-default"><i class="bi bi-plus"></i> {title}</a></div>"#);
+            let header = format!(r#"<div class="card-header"><a href="{href_new}" id="create-{action}--{form_id}" class="btn btn-default"><i class="bi bi-plus"></i> {title}</a></div>"#);
 
             let search = if data_view.data_view_id.parent_name.is_none() {
-                let html_filter = DataView::build_form(data_view_manager, data_view, FormType::Filter)?;
-                let html_aggregate = DataView::build_form(data_view_manager, data_view, FormType::Aggregate)?;
-                let html_sort = DataView::build_form(data_view_manager, data_view, FormType::Sort)?;
+                let html_filter = DataView::build_form(data_view_manager, data_view, DataViewProcessAction::Filter)?;
+                let html_aggregate = DataView::build_form(data_view_manager, data_view, DataViewProcessAction::Aggregate)?;
+                let html_sort = DataView::build_form(data_view_manager, data_view, DataViewProcessAction::Sort)?;
                 format!(r##"
                     <div class="panel panel-default" ng-if="vm.rufsService.list.length > 0 || vm.rufsService.access.get == true">
                         <nav>
@@ -740,7 +695,7 @@ impl DataView {
             };
 
             let str = format!(r##"
-            <div id="div-{form_type_str}-{action}--{form_id}" class="card" hidden>
+            <div id="div-{action}--{form_id}" class="card" hidden>
                 {header}
                 <div class="card-body">
                     {search}
@@ -858,7 +813,7 @@ impl DataView {
                     if data_view.data_view_id.action != DataViewProcessAction::View && html_options.len() > 0 && html_options.len() <= 20 {
                         format!(
                             r##"
-                        <select class="form-control" id="{form_type_str}-{action}--{form_id}--{field_name}" name="{field_name}" ng-required="field.essential == true && field.nullable != true" ng-disabled="{{field.readOnly == true}}">
+                        <select class="form-control" id="{action}--{form_id}--{field_name}" name="{field_name}" ng-required="field.essential == true && field.nullable != true" ng-disabled="{{field.readOnly == true}}">
                             <option value=""></option>
                             {html_options_str}
                         </select>
@@ -869,7 +824,7 @@ impl DataView {
                         let disabled = if data_view.data_view_id.action == DataViewProcessAction::View { "disabled" } else { "" };
 
                         format!(r##"
-                        <input class="form-control" id="{form_type_str}-{action}--{form_id}--{field_name}" name="{field_name}" type="{html_input_typ}" {html_input_step} {html_input_pattern} maxlength="{html_input_max_length}" placeholder="" ng-required="field.essential == true && field.nullable != true" {disabled} list="list--{form_id}--{field_name}" autocomplete="off">
+                        <input class="form-control" id="{action}--{form_id}--{field_name}" name="{field_name}" type="{html_input_typ}" {html_input_step} {html_input_pattern} maxlength="{html_input_max_length}" placeholder="" ng-required="field.essential == true && field.nullable != true" {disabled} list="list--{form_id}--{field_name}" autocomplete="off">
                         <datalist ng-if="field.filterResultsStr.length >  20" id="list--{form_id}--{field_name}">
                             {html_options_str}
                         </datalist>
@@ -913,7 +868,7 @@ impl DataView {
                         r##"
                     <div class="form-group form-group row">
                         <label class="col-offset-1 control-label">
-                            <input type="checkbox" id="{form_type_str}-{action}--{form_id}--{field_name}-{index}" name="{field_name}-{index}"/>
+                            <input type="checkbox" id="{action}--{form_id}--{field_name}-{index}" name="{field_name}-{index}"/>
                             {label}
                         </label>
                     </div>
@@ -928,22 +883,8 @@ impl DataView {
             };
 
             let label = field_name.to_case(convert_case::Case::Title);
-            let str = match form_type {
-                FormType::Instance => {
-                    format!(
-                        r##"
-                        <div class="col-{col_size}">
-                            <label for="{form_type_str}-{action}--{form_id}--{field_name}" class="control-label">{label}</label>
-                            <div class="row">
-                                <div class="col">{html_input}</div>
-                                {html_references}
-                                {html_flags}
-                            </div>
-                        </div>
-                        "##
-                    )
-                }
-                FormType::Filter => {
+            let str = match action {
+                DataViewProcessAction::Filter => {
                     let html_field_range = if ["date", "datetime-local"].contains(&html_input_typ) {
                         let filter_range_options = [
                             " hora corrente ",
@@ -976,7 +917,7 @@ impl DataView {
                             r#"
                         <div class="form-group">
                             <div ng-if="field.htmlType.includes('date')" class="col-offset-3 col-9">
-                                <select class="form-control" id="{form_type_str}-{action}--{form_id}--{field_name}-range" name="{field_name}-range" ng-model="vm.instanceFilterRange[fieldName]" ng-change="vm.setFilterRange(fieldName, vm.instanceFilterRange[fieldName])">
+                                <select class="form-control" id="{action}--{form_id}--{field_name}-range" name="{field_name}-range" ng-model="vm.instanceFilterRange[fieldName]" ng-change="vm.setFilterRange(fieldName, vm.instanceFilterRange[fieldName])">
                                     <option value=""></option>
                                     {html_options}
                                 </select>
@@ -999,13 +940,13 @@ impl DataView {
                                     format!(
                                         r#"
                                     <div class="col-4">
-                                        <input class="form-control" id="{form_type_str}-{action}--{form_id}--{field_name}@min" name="{field_name}@min" type="{html_input_typ}" {html_input_step} placeholder="">
+                                        <input class="form-control" id="{action}--{form_id}--{field_name}@min" name="{field_name}@min" type="{html_input_typ}" {html_input_step} placeholder="">
                                     </div>
                             
                                     <label for="{field_name}@max" class="col-1 control-label" style="text-align: center">à</label>
                             
                                     <div class="col-4">
-                                        <input class="form-control" id="{form_type_str}-{action}--{form_id}--{field_name}@max" name="{field_name}@max" type="{html_input_typ}" {html_input_step} placeholder="">
+                                        <input class="form-control" id="{action}--{form_id}--{field_name}@max" name="{field_name}@max" type="{html_input_typ}" {html_input_step} placeholder="">
                                     </div>
                                     "#
                                     )
@@ -1013,7 +954,7 @@ impl DataView {
                                     format!(
                                         r#"
                                     <div class="col-9">
-                                        <input class="form-control" id="{form_type_str}-{action}--{form_id}--{field_name}" name="{field_name}" type="{html_input_typ}" {html_input_step} placeholder="">
+                                        <input class="form-control" id="{action}--{form_id}--{field_name}" name="{field_name}" type="{html_input_typ}" {html_input_step} placeholder="">
                                     </div>
                                     "#
                                     )
@@ -1026,14 +967,14 @@ impl DataView {
                         r#"
                         {html_field_range}
                         <div class="form-group row">
-                            <label for="{form_type_str}-{action}--{form_id}--{field_name}" class="control-label col-2">{label}</label>
+                            <label for="{action}--{form_id}--{field_name}" class="control-label col-2">{label}</label>
                             {html_input}
                             {html_external_search}
                         </div>
                     "#
                     )
                 }
-                FormType::Aggregate => {
+                DataViewProcessAction::Aggregate => {
                     let html_input = if ["date", "datetime-local"].contains(&html_input_typ) {
                         let mut html_options = vec![];
 
@@ -1045,7 +986,7 @@ impl DataView {
                         format!(
                             r#"
                         <div class="col-9">
-                            <select class="form-control" id="{form_type_str}-{action}--{form_id}--{field_name}" name="{field_name}">
+                            <select class="form-control" id="{action}--{form_id}--{field_name}" name="{field_name}">
                                 <option value=""></option>
                                 {html_options}
                             </select>
@@ -1054,38 +995,52 @@ impl DataView {
                         )
                     } else {
                         let html_input = if is_rangeable {
-                            format!(r#"<input  class="form-control" id="{form_type_str}-{action}--{form_id}--{field_name}" name="{field_name}" type="{html_input_typ}" {html_input_step} placeholder="">"#)
+                            format!(r#"<input  class="form-control" id="{action}--{form_id}--{field_name}" name="{field_name}" type="{html_input_typ}" {html_input_step} placeholder="">"#)
                         } else {
-                            format!(r#"<input  class="form-control" id="{form_type_str}-{action}--{form_id}--{field_name}" name="{field_name}" type="checkbox">"#)
+                            format!(r#"<input  class="form-control" id="{action}--{form_id}--{field_name}" name="{field_name}" type="checkbox">"#)
                         };
 
                         format!(r#"<div class="col-4">{html_input}</div>"#)
                     };
 
-                    format!(r#"<div class="form-group row"><label for="{form_type_str}-{action}--{form_id}--{field_name}" class="control-label">{label}</label>{html_input}</div>"#)
+                    format!(r#"<div class="form-group row"><label for="{action}--{form_id}--{field_name}" class="control-label">{label}</label>{html_input}</div>"#)
                 }
-                FormType::Sort => {
+                DataViewProcessAction::Sort => {
                     format!(
                         r#"
                         <div class="form-group row">
-                            <label for="{form_type_str}-{action}--{form_id}--{field_name}" class="control-label">{label}</label>
+                            <label for="{action}--{form_id}--{field_name}" class="control-label">{label}</label>
                                 
                             <div class="col-3">
-                                <select class="form-control" id="{form_type_str}-{action}--{form_id}--{field_name}-order_by" name="{field_name}-order_by" ng-model="vm.properties[fieldName].sortType">
+                                <select class="form-control" id="{action}--{form_id}--{field_name}-order_by" name="{field_name}-order_by" ng-model="vm.properties[fieldName].sortType">
                                     <option value="asc">asc</option>
                                     <option value="desc">desc</option>
                                 </select>
                             </div>
                     
                             <div class="col-3">
-                                <input  class="form-control" id="{form_type_str}-{action}--{form_id}--{field_name}-index" name="{field_name}-index" ng-model="vm.properties[fieldName].orderIndex" type="number" step="1">
+                                <input  class="form-control" id="{action}--{form_id}--{field_name}-index" name="{field_name}-index" ng-model="vm.properties[fieldName].orderIndex" type="number" step="1">
                             </div>
                     
                             <div class="col-3">
-                                <input  class="form-control" id="{form_type_str}-{action}--{form_id}--{field_name}-table_visible" name="{field_name}-table_visible" type="checkbox">
+                                <input  class="form-control" id="{action}--{form_id}--{field_name}-table_visible" name="{field_name}-table_visible" type="checkbox">
                             </div>
                         </div>
                     "#
+                    )
+                }
+                _ => {
+                    format!(
+                        r##"
+                        <div class="col-{col_size}">
+                            <label for="{action}--{form_id}--{field_name}" class="control-label">{label}</label>
+                            <div class="row">
+                                <div class="col">{html_input}</div>
+                                {html_references}
+                                {html_flags}
+                            </div>
+                        </div>
+                        "##
                     )
                 }
             };
@@ -1096,10 +1051,10 @@ impl DataView {
         let html_fields = hmtl_fields.join("\n");
         let mut crud_item_json = vec![];
 
-        let (form_class, hidden_form) = match form_type {
-            FormType::Instance => {
+        let (form_class, hidden_form) = match action {
+            DataViewProcessAction::New | DataViewProcessAction::Edit | DataViewProcessAction::View => {
                 for data_view in &data_view.childs {
-                    let form_instance = DataView::build_form(data_view_manager, data_view, FormType::Instance)?;
+                    let form_instance = DataView::build_form(data_view_manager, data_view, DataViewProcessAction::New)?;
                     crud_item_json.push(form_instance);
                 }
 
@@ -1119,26 +1074,26 @@ impl DataView {
         let mut form_actions = vec![];
 
         if data_view.data_view_id.action != DataViewProcessAction::View {
-            form_actions.push(format!(r#"<button id="apply-{form_type_str}-{action}--{form_id}"  name="apply"  class="btn btn-primary"><i class="bi bi-apply"></i> Aplicar</button>"#));
-            form_actions.push(format!(r#"<button id="clear-{form_type_str}-{action}--{form_id}"  name="clear"  class="btn btn-default"><i class="bi bi-erase"></i> Limpar</button>"#));
+            form_actions.push(format!(r#"<button id="apply-{action}--{form_id}"  name="apply"  class="btn btn-primary"><i class="bi bi-apply"></i> Aplicar</button>"#));
+            form_actions.push(format!(r#"<button id="clear-{action}--{form_id}"  name="clear"  class="btn btn-default"><i class="bi bi-erase"></i> Limpar</button>"#));
         }
 
         if data_view.data_view_id.action == DataViewProcessAction::Edit {
-            form_actions.push(format!(r#"<button id="delete-{form_type_str}-{action}--{form_id}" name="delete" class="btn btn-default"><i class="bi bi-remove"></i> Remove</button>"#));
+            form_actions.push(format!(r#"<button id="delete-{action}--{form_id}" name="delete" class="btn btn-default"><i class="bi bi-remove"></i> Remove</button>"#));
         }
 
         let form_actions = form_actions.join("\n");
 
         let str = format!(r##"
-            <div id="div-{form_type_str}-{action}--{form_id}" class="card" {hidden}>
+            <div id="div-{action}--{form_id}" class="card" {hidden}>
                 <div class="card-header">{title}</div>
                 <div class="card-body">
-                    <form id="{form_type_str}-{action}--{form_id}" name="{form_type_str}-{action}--{form_id}" role="form" {hidden_form}>
-                        <fieldset id="fieldset-{form_type_str}-{action}--{form_id}" name="fieldset-{form_type_str}-{action}--{form_id}" class="{form_class}"> 
+                    <form id="{action}--{form_id}" name="{action}--{form_id}" role="form" {hidden_form}>
+                        <fieldset id="fieldset-{action}--{form_id}" name="fieldset-{action}--{form_id}" class="{form_class}"> 
                             {html_fields}
                             <div class="form-group">
                                 {form_actions}
-                                <button id="cancel-{form_type_str}-{action}--{form_id}" name="cancel" class="btn btn-default"><i class="bi bi-exit"></i> Fechar</button>
+                                <button id="cancel-{action}--{form_id}" name="cancel" class="btn btn-default"><i class="bi bi-exit"></i> Fechar</button>
                             </div>
                         </fieldset> 
                     </form>
@@ -1722,10 +1677,10 @@ impl DataView {
         self.apply_sort()
     }
 
-    fn get_form_type_instance(&self, form_type: &FormType, form_type_ext: &Option<String>) -> Result<&Value, Box<dyn std::error::Error>> {
-        let instance = match form_type {
-            FormType::Instance => &self.params.instance,
-            FormType::Filter => match form_type_ext {
+    fn get_form_type_instance(&self, action: &DataViewProcessAction, form_type_ext: &Option<String>) -> Result<&Value, Box<dyn std::error::Error>> {
+        let instance = match action {
+            DataViewProcessAction::New | DataViewProcessAction::Edit | DataViewProcessAction::View => &self.params.instance,
+            DataViewProcessAction::Filter => match form_type_ext {
                 Some(form_type_ext) => {
                     if form_type_ext == "@max" {
                         &self.params.filter_range_max
@@ -1735,8 +1690,8 @@ impl DataView {
                 }
                 None => &self.params.filter,
             },
-            FormType::Aggregate => &self.params.aggregate,
-            FormType::Sort => todo!(),
+            DataViewProcessAction::Aggregate => &self.params.aggregate,
+            DataViewProcessAction::Sort | DataViewProcessAction::Search => todo!(),
         };
 
         Ok(instance)
@@ -1782,9 +1737,9 @@ impl DataView {
             flags
         }
 
-        fn set_form_type_value(data_view: &mut DataView, form_type: &FormType, form_type_ext: &Option<String>, field_name: &str, value: Value) -> Result<(), Box<dyn std::error::Error>> {
-            match form_type {
-                FormType::Filter => match form_type_ext {
+        fn set_form_type_value(data_view: &mut DataView, action: &DataViewProcessAction, form_type_ext: &Option<String>, field_name: &str, value: Value) -> Result<(), Box<dyn std::error::Error>> {
+            match action {
+                DataViewProcessAction::Filter => match form_type_ext {
                     Some(form_type_ext) => {
                         if form_type_ext == "@max" {
                             data_view.params.filter_range_max[field_name] = value
@@ -1794,9 +1749,9 @@ impl DataView {
                     }
                     None => data_view.params.filter[field_name] = value,
                 },
-                FormType::Aggregate => data_view.params.aggregate[field_name] = value,
-                FormType::Sort => todo!(),
-                FormType::Instance => {
+                DataViewProcessAction::Aggregate => data_view.params.aggregate[field_name] = value,
+                DataViewProcessAction::Sort => todo!(),
+                _ => {
                     data_view.params.instance[field_name] = value;
 
                     if data_view.typ == DataViewType::ObjectProperty {
@@ -1810,14 +1765,8 @@ impl DataView {
             Ok(())
         }
     
-        fn set_value_process(
-            data_view: &mut DataView,
-            server_connection: &ServerConnection,
-            field_name: &str,
-            value: &Value,
-            element_id: &HtmlElementId,
-        ) -> Result<(Value, Value, Value), Box<dyn std::error::Error>> {
-            let value_old = data_view.get_form_type_instance(&element_id.form_type, &element_id.form_type_ext)?.get(field_name).unwrap_or(&Value::Null).clone();
+        fn set_value_process(data_view: &mut DataView, server_connection: &ServerConnection, field_name: &str, value: &Value, element_id: &HtmlElementId) -> Result<(Value, Value, Value), Box<dyn std::error::Error>> {
+            let value_old = data_view.get_form_type_instance(&element_id.data_view_id.action, &element_id.form_type_ext)?.get(field_name).unwrap_or(&Value::Null).clone();
 
             let field = match data_view.properties.get(field_name).ok_or_else(|| format!("set_value_process : missing field {} in data_view {}", field_name, data_view.data_view_id.form_id))? {
                 ReferenceOr::Reference { reference: _ } => todo!(),
@@ -1852,7 +1801,7 @@ impl DataView {
                     data_view.field_external_references_str.insert(field_name.to_string(), "".to_string());
                 } else {
                     let service = server_connection.service_map.get(&data_view.data_view_id.schema_name).ok_or_else(|| format!("[set_value_process] Missing service"))?;
-                    let mut obj = data_view.get_form_type_instance(&element_id.form_type, &element_id.form_type_ext)?.clone();
+                    let mut obj = data_view.get_form_type_instance(&element_id.data_view_id.action, &element_id.form_type_ext)?.clone();
                     obj[field_name] = value.clone();
                     let external_references_str = Service::build_field_str(server_connection, &None, &service.schema_name, field_name, &obj)?;
                     data_view.field_external_references_str.insert(field_name.to_string(), external_references_str.clone());
@@ -1948,7 +1897,7 @@ impl DataView {
 
             if let Some(child_name) = child_name {
                 let data_view = self.get_child_mut(child_name)?;
-                set_form_type_value(data_view, &element_id.form_type.clone(), &element_id.form_type_ext.clone(), field_name, field_value.clone())?;
+                set_form_type_value(data_view, &element_id.data_view_id.action, &element_id.form_type_ext.clone(), field_name, field_value.clone())?;
 
                 match &field_value {
                     Value::Array(array) => {
@@ -1958,7 +1907,7 @@ impl DataView {
                     _ => set_value_show(data_view, field_name, field_value_str, element_id)?,
                 }
             } else {
-                set_form_type_value(self, &element_id.form_type.clone(), &element_id.form_type_ext.clone(), field_name, field_value.clone())?;
+                set_form_type_value(self, &element_id.data_view_id.action, &element_id.form_type_ext.clone(), field_name, field_value.clone())?;
 
                 match &field_value {
                     Value::Array(array) => {
@@ -2043,7 +1992,7 @@ impl DataView {
             let mut query_obj = json!({});
 
             if action == &DataViewProcessAction::Search {
-                query_obj["origin"] = json!(format!("{}--{}--{}", element_id.form_type, element_id.data_view_id.form_id, field_name));
+                query_obj["origin"] = json!(format!("{}-{}--{}", element_id.data_view_id.action, element_id.data_view_id.form_id, field_name));
                 let filter = json!({});
                 /*
                            if item.is_unique_key == false {
@@ -2546,25 +2495,28 @@ macro_rules! function {
 macro_rules! data_view_get {
     ($data_view_manager:tt, $element_id:tt) => {{
         let id = &$element_id.data_view_id;
+        let data_view_map: &std::collections::HashMap<String, crate::client::DataView> = &$data_view_manager.data_view_map;
 
         let data_view = if let Some(parent) = &id.parent_name {
             let form_id = format!("{}--{}", id.action, id.form_id_parent);
 
-            let form_id = if $data_view_manager.data_view_map.get(&form_id).is_some() {
+            let form_id = if data_view_map.get(&form_id).is_some() {
                 form_id
             } else {
-                format!("{}-{}", crate::client::DataViewProcessAction::Edit, id.form_id_parent)
+                format!("{}--{}", crate::client::DataViewProcessAction::Edit, id.form_id_parent)
             };
 
-            let data_view = $data_view_manager.data_view_map.get(&form_id).ok_or_else(|| {
-                format!("[{} - data_view_get] Missing parent schema {} in data_view_manager", function!(), id.form_id_parent)
+            let data_view = data_view_map.get(&form_id).ok_or_else(|| {
+                let keys = data_view_map.keys().map(|item| format!("{},", item)).collect::<String>();
+                format!("Missing data_view_map.get({}).\nOptions : {}", form_id, keys)
             })?;
             data_view.childs.iter().find(|item| item.data_view_id.schema_name == id.schema_name).ok_or_else(|| {
-                format!("Missing item {} in data_view {}", id.schema_name, parent.as_str())
+                let keys = data_view.childs.iter().map(|item| item.data_view_id.schema_name.clone()).collect::<String>();
+                format!("Missing item {} in data_view {}, options : {}", id.schema_name, parent.as_str(), keys)
             })?
         } else {
             let form_id = format!("{}--{}", id.action, id.form_id);
-            $data_view_manager.data_view_map.get(&form_id).ok_or_else(|| {
+            data_view_map.get(&form_id).ok_or_else(|| {
                 format!("[process_click_target] Missing form {} in data_view_manager (2).", id.form_id)
             })?
         };
@@ -2932,6 +2884,7 @@ impl DataViewManager<'_> {
             }
 
             let form_id = format!("{}--{}", element_id.data_view_id.action, element_id.data_view_id.form_id_parent);
+            println!("[DEBUG - process_data_view_action] data_view_map.insert({})", form_id);
             self.data_view_map.insert(form_id, data_view);
             true
         } else {
@@ -2972,7 +2925,25 @@ impl DataViewManager<'_> {
         }
 
         match &data_view.data_view_id.action {
-            DataViewProcessAction::Search => {
+            DataViewProcessAction::New => {
+                if params_search.instance.as_object().ok_or_else(|| format!("broken obj"))?.is_empty() == false {
+                    data_view.set_values(&self.server_connection, &self.watcher, &params_search.instance, element_id)?;
+                } else {
+                    data_view.set_values(&self.server_connection, &self.watcher, params_extra, element_id)?;
+                }
+            }
+            DataViewProcessAction::Edit | DataViewProcessAction::View => {
+                if data_view.path.is_some() {
+                    if let Some(primary_key) = &params_search.primary_key {
+                        data_view_get(&self.watcher, data_view, &mut self.server_connection, primary_key, element_id).await?
+                    } else {
+                        data_view_get(&self.watcher, data_view, &mut self.server_connection, params_extra, element_id).await?
+                    }
+                } else {
+                    data_view.set_values(&self.server_connection, &self.watcher, params_extra, element_id)?;
+                }
+            }
+            _ => {
                 data_view.params.origin = params_search.origin.clone();
 
                 {
@@ -3018,60 +2989,32 @@ impl DataViewManager<'_> {
                     data_view.apply_sort()?;
                 }
             }
-            DataViewProcessAction::New => {
-                if params_search.instance.as_object().ok_or_else(|| format!("broken obj"))?.is_empty() == false {
-                    data_view.set_values(&self.server_connection, &self.watcher, &params_search.instance, element_id)?;
-                } else {
-                    data_view.set_values(&self.server_connection, &self.watcher, params_extra, element_id)?;
-                }
-            }
-            DataViewProcessAction::Edit | DataViewProcessAction::View => {
-                if data_view.path.is_some() {
-                    if let Some(primary_key) = &params_search.primary_key {
-                        data_view_get(&self.watcher, data_view, &mut self.server_connection, primary_key, element_id).await?
-                    } else {
-                        data_view_get(&self.watcher, data_view, &mut self.server_connection, params_extra, element_id).await?
-                    }
-                } else {
-                    data_view.set_values(&self.server_connection, &self.watcher, params_extra, element_id)?;
-                }
-            }
         }
 
         let data_view = data_view_get!(self, element_id);
 
         if is_first {
-            data_view_response.html[form_id] = json!(DataView::build_form(self, data_view, FormType::Instance)?);
+            data_view_response.html[form_id] = json!(DataView::build_form(self, data_view, element_id.data_view_id.action)?);
         }
 
-        let table = DataView::build_table(self, data_view, params_search)?;
-        let table_id = format!("{}--{}", data_view.data_view_id.action, data_view.data_view_id.form_id);
-        data_view_response.tables[&table_id] = json!(table);
-
-        if data_view.data_view_id.action == DataViewProcessAction::Search && element_id.form_type == FormType::Instance {
+        if data_view.data_view_id.action == DataViewProcessAction::Search {
+            let table = DataView::build_table(self, data_view, params_search)?;
+            let table_id = format!("{}--{}", data_view.data_view_id.action, data_view.data_view_id.form_id);
+            data_view_response.tables[&table_id] = json!(table);
             return Ok(());
         }
 
-        match &data_view.data_view_id.action {
-            DataViewProcessAction::Search => {},
-            DataViewProcessAction::New => {},
-            DataViewProcessAction::Edit | DataViewProcessAction::View => {
-                for data_view in &data_view.childs {
-                    if data_view.filter_results.len() > 0 {
-                        let table = DataView::build_table(self, data_view, params_search)?;
-                        let form_id = format!("{}--{}", data_view.data_view_id.action, data_view.data_view_id.form_id);
-                        data_view_response.tables[&form_id] = json!(table);
-                    }
-                }
-            },
+        for data_view in &data_view.childs {
+            if data_view.filter_results.len() > 0 {
+                let table = DataView::build_table(self, data_view, params_search)?;
+                let form_id = format!("{}--{}", data_view.data_view_id.action, data_view.data_view_id.form_id);
+                data_view_response.tables[&form_id] = json!(table);
+            }
         }
 
         let mut form = HtmlElementProperties{ hidden: false, disabled: false };
         
         match &data_view.data_view_id.action {
-            DataViewProcessAction::Search => {},
-            DataViewProcessAction::New => {
-            },
             DataViewProcessAction::Edit => {
                 for data_view in &data_view.childs {
                     let form = HtmlElementProperties{ hidden: false, disabled: false };
@@ -3093,6 +3036,7 @@ impl DataViewManager<'_> {
                     data_view_response.forms.insert(form_id, form);
                 }
             },
+            _ => {}
         }
 
         let form_id = format!("{}--{}", data_view.data_view_id.action, data_view.data_view_id.form_id);
@@ -3104,12 +3048,12 @@ impl DataViewManager<'_> {
             data_view_get_mut!(self, element_id)    
         };
 
-        data_view.build_changes(element_id, &mut data_view_response.changes)?;
+        data_view.build_changes(&mut data_view_response.changes)?;
         Ok(())
     }
 
     async fn process_click_target(&mut self, target: &str) -> Result<DataViewResponse, Box<dyn std::error::Error>> {
-        let re = regex::Regex::new(r"create-(?P<form_type>instance|filter|aggregate|sort)-(?P<action>new|edit|view|search)--((?P<parent>\pL[\w_]+)-)?(?P<name>\pL[\w_]+)$")?;
+        let re = regex::Regex::new(r"create-(?P<action>new|edit|view|search|filter|aggregate|sort)--((?P<parent>\pL[\w_]+)-)?(?P<name>\pL[\w_]+)$")?;
 
         if let Some(cap) = re.captures(target) {
             let mut element_id = HtmlElementId::new_with_regex(&cap)?;
@@ -3121,7 +3065,7 @@ impl DataViewManager<'_> {
             return Ok(data_view_response);
         }
 
-        let re = regex::Regex::new(r"delete-(?P<form_type>instance|filter|aggregate|sort)-(?P<action>new|edit|view|search)--((?P<parent>\pL[\w_]+)-)?(?P<name>\pL[\w_]+)")?;
+        let re = regex::Regex::new(r"delete-(?P<action>new|edit|view|search|filter|aggregate|sort)--((?P<parent>\pL[\w_]+)-)?(?P<name>\pL[\w_]+)")?;
 
         if let Some(cap) = re.captures(target) {
             let mut element_id = HtmlElementId::new_with_regex(&cap)?;
@@ -3139,13 +3083,30 @@ impl DataViewManager<'_> {
             return Ok(data_view_response);
         }
 
-        let re = regex::Regex::new(r"apply-(?P<form_type>instance|filter|aggregate|sort)-(?P<action>new|edit|view|search)--((?P<parent>\pL[\w_]+)-)?(?P<name>\pL[\w_\d/]+)$")?;
+        let re = regex::Regex::new(r"apply-(?P<action>new|edit|view|search|filter|aggregate|sort)--((?P<parent>\pL[\w_]+)-)?(?P<name>\pL[\w_\d/]+)$")?;
 
         if let Some(cap) = re.captures(target) {
             let mut element_id = HtmlElementId::new_with_regex(&cap)?;
 
-            let data_view_response = match &element_id.form_type {
-                FormType::Instance => {
+            let data_view_response = match &element_id.data_view_id.action {
+                DataViewProcessAction::Filter => {
+                    let data_view = data_view_get!(self, element_id);
+                    let params_search = data_view.params.clone();
+                    element_id.data_view_id.action = DataViewProcessAction::Search;
+                    let mut data_view_response = DataViewResponse {form_id: element_id.data_view_id.form_id.clone(), changes: json!({}), tables: json!({}), html: json!({}), ..Default::default()};
+                    self.process_data_view_action(&element_id, &params_search, &json!({}), &mut data_view_response).await?;
+                    data_view_response
+                }
+                DataViewProcessAction::Aggregate => {
+                    let data_view = data_view_get_mut!(self, element_id);
+                    let aggregate = data_view.params.aggregate.clone();
+                    data_view.apply_aggregate(&self.server_connection, &aggregate)?;
+                    let mut data_view_response = DataViewResponse { ..Default::default() };
+                    data_view_response.aggregates[&data_view.data_view_id.form_id] = json!(data_view.aggregate_results);
+                    data_view_response
+                }
+                DataViewProcessAction::Sort => {todo!()}
+                _ => {
                     let child_name = if element_id.data_view_id.parent_name.is_some() {
                         Some(element_id.data_view_id.schema_name.as_str())
                     } else {
@@ -3195,23 +3156,6 @@ impl DataViewManager<'_> {
                         DataViewResponse { ..Default::default() }
                     }
                 }
-                FormType::Filter => {
-                    let data_view = data_view_get!(self, element_id);
-                    let params_search = data_view.params.clone();
-                    element_id.data_view_id.action = DataViewProcessAction::Search;
-                    let mut data_view_response = DataViewResponse {form_id: element_id.data_view_id.form_id.clone(), changes: json!({}), tables: json!({}), html: json!({}), ..Default::default()};
-                    self.process_data_view_action(&element_id, &params_search, &json!({}), &mut data_view_response).await?;
-                    data_view_response
-                }
-                FormType::Aggregate => {
-                    let data_view = data_view_get_mut!(self, element_id);
-                    let aggregate = data_view.params.aggregate.clone();
-                    data_view.apply_aggregate(&self.server_connection, &aggregate)?;
-                    let mut data_view_response = DataViewResponse { ..Default::default() };
-                    data_view_response.aggregates[&data_view.data_view_id.form_id] = json!(data_view.aggregate_results);
-                    data_view_response
-                }
-                FormType::Sort => todo!(),
             };
 
             return Ok(data_view_response);
@@ -3331,7 +3275,7 @@ impl DataViewManager<'_> {
                 let data_view_origin = data_view_get_parent_mut!(self, element_id_origin);
                 data_view_origin.set_value(&self.server_connection, self.watcher.as_ref(), field_name, &value, element_id_origin)?;
                 let mut data_view_response = DataViewResponse { changes: json!({}), ..Default::default() };
-                data_view_origin.build_changes(element_id_origin, &mut data_view_response.changes)?;
+                data_view_origin.build_changes(&mut data_view_response.changes)?;
                 let form_id = format!("{}--{}", element_id.data_view_id.action, element_id.data_view_id.form_id);
                 data_view_response.forms.insert(form_id, HtmlElementProperties { hidden: true, disabled: false });
                 return Ok(data_view_response);
@@ -3416,17 +3360,17 @@ impl DataViewManager<'_> {
                 return None.ok_or_else(|| format!("[process_edit_target] missing field field_name"))?;
             };
 
-            let field = data_view
-                .properties
-                .get(field_name)
-                .ok_or_else(|| format!("[process_edit_target.parse_value()] Missing field {}.{}", data_view.data_view_id.schema_name, field_name))?;
+            let field = data_view.properties.get(field_name).ok_or_else(|| {
+                format!("[process_edit_target.parse_value()] Missing field {}.{}", data_view.data_view_id.schema_name, field_name)
+            })?;
+
             let field = field.as_item().ok_or_else(|| format!("[process_edit_target.parse_value({})] broken", value))?;
             let extensions = &field.schema_data.extensions;
             let mut is_flags = false;
 
             let value = if let Some(_) = extensions.get("x-flags") {
                 let index = element_id.index.ok_or_else(|| format!("Missing flag_index"))?;
-                let field_value = data_view.get_form_type_instance(&element_id.form_type, &element_id.form_type_ext)?.get(field_name).unwrap_or(&Value::Null);
+                let field_value = data_view.get_form_type_instance(&element_id.data_view_id.action, &element_id.form_type_ext)?.get(field_name).unwrap_or(&Value::Null);
                 let field_value = field_value.as_u64().ok_or_else(|| format!("Is not u64"))?;
 
                 let bit_mask = if ["true", "on"].contains(&value) {
@@ -3488,7 +3432,7 @@ impl DataViewManager<'_> {
         }
 
         let mut data_view_response = DataViewResponse { changes: json!({}), ..Default::default() };
-        let re = regex::Regex::new(r"(?P<form_type>instance|filter|aggregate|sort)-(?P<action>new|edit|view|search)--((?P<parent>\pL[\w_]+)-)?(?P<name>\pL[\w_\d/]+)--(?P<field_name>\pL[\w_]+)(?P<form_type_ext>@min|@max)?(-(?P<index>\d+))?")?;
+        let re = regex::Regex::new(r"(?P<action>new|edit|view|search|filter|aggregate|sort)--((?P<parent>\pL[\w_]+)-)?(?P<name>\pL[\w_\d/]+)--(?P<field_name>\pL[\w_]+)(?P<form_type_ext>@min|@max)?(-(?P<index>\d+))?")?;
 
         if let Some(cap) = re.captures(target) {
             let element_id = &HtmlElementId::new_with_regex(&cap)?;
@@ -3497,7 +3441,7 @@ impl DataViewManager<'_> {
             let (value, is_flags) = parse_value_process(data_view, &self.server_connection, element_id, value)?;
             let data_view_parent = data_view_get_parent_mut!(self, element_id);
             data_view_parent.set_value(&self.server_connection, self.watcher.as_ref(), field_name, &value, element_id)?;
-            data_view_parent.build_changes(element_id, &mut data_view_response.changes)?;
+            data_view_parent.build_changes(&mut data_view_response.changes)?;
 
             if is_flags {
                 let data_view = data_view_get!(self, element_id);
