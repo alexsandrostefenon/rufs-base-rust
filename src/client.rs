@@ -425,6 +425,28 @@ pub struct DataViewId {
 }
 
 impl DataViewId {
+    pub fn new(schema_name: String, parent: Option<DataViewId>, action: DataViewProcessAction) -> Self {
+        let schema_name_snake = schema_name.to_case(convert_case::Case::Snake);//.replace(".", "/");
+
+        let schema_name_snake = if schema_name_snake.starts_with("v_") {
+            schema_name_snake.replace("v_", "v")
+        } else {
+            schema_name_snake
+        };
+
+        let (parent_schema_name, parent_action, parent_id, id) = if let Some(parent) = parent {
+            let id = format!("{}--{}-{}", parent.id, action, schema_name_snake);
+            let parent_schema_name = Some(parent.schema_name.clone());
+            let parent_action = Some(parent.action.clone());
+            (parent_schema_name, parent_action, Some(parent.id.clone()), id)
+        } else {
+            let id = format!("{}-{}", action, schema_name_snake);
+            (None, None, None, id)
+        };
+
+        Self {parent_action, action, parent_schema_name, schema_name, parent_id, id}
+    }
+    
     fn set_action(&mut self, action: DataViewProcessAction) {
         self.action = action;
         let schema_name_snake = self.schema_name.to_case(convert_case::Case::Snake);
@@ -450,39 +472,33 @@ impl HtmlElementId {
         Self {data_view_id, form_type_ext, field_name, index}
     }
 
-    pub fn new(schema_name: String, parent: Option<&DataViewId>, form_type_ext: Option<String>, action: DataViewProcessAction, field_name: Option<String>, index: Option<usize>) -> Self {
-        let schema_name_snake = schema_name.to_case(convert_case::Case::Snake);//.replace(".", "/");
-
-        let schema_name_snake = if schema_name_snake.starts_with("v_") {
-            schema_name_snake.replace("v_", "v")
-        } else {
-            schema_name_snake
-        };
-
-        let (parent_schema_name, parent_action, parent_id, id) = if let Some(parent) = parent {
-            let id = format!("{}--{}-{}", parent.id, action, schema_name_snake);
-            let parent_schema_name = Some(parent.schema_name.clone());
-            let parent_action = Some(parent.action.clone());
-            (parent_schema_name, parent_action, Some(parent.id.clone()), id)
-        } else {
-            let id = format!("{}-{}", action, schema_name_snake);
-            (None, None, None, id)
-        };
-
-        let data_view_id = DataViewId {
-            parent_action,
-            action,
-            parent_schema_name,
-            schema_name,
-            parent_id,
-            id
-        };
-
+    pub fn new(schema_name: String, parent: Option<DataViewId>, form_type_ext: Option<String>, action: DataViewProcessAction, field_name: Option<String>, index: Option<usize>) -> Self {
+        let data_view_id = DataViewId::new(schema_name, parent, action);
         Self {data_view_id, form_type_ext, field_name, index}
     }
 
     fn new_with_regex(cap: &regex::Captures) -> Result<Self, Box<dyn std::error::Error>> {
         let schema_name_snake = cap.name("name").ok_or_else(|| format!("context name"))?.as_str().replace(".", "/");
+        let schema_name = schema_name_snake.to_case(convert_case::Case::Camel);
+        let action_str = cap.name("action").ok_or_else(|| format!("Missing action in HtmlElementId.new_with_regex"))?.as_str();
+        let action = DataViewProcessAction::from(action_str);
+
+        let parent = {
+            if let Some(parent) = cap.name("parent_name") {
+                let schema_name = parent.as_str().to_case(convert_case::Case::Camel);
+
+                if let Some(action) = cap.name("parent_action") {
+                    let action = DataViewProcessAction::from(action.as_str());
+                    Some(DataViewId::new(schema_name, None, action))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }    
+        };
+
+        let data_view_id = DataViewId::new(schema_name, parent, action);
 
         let form_type_ext = match cap.name("form_type_ext") {
             Some(form_type_ext) => Some(form_type_ext.as_str().to_string()),
@@ -497,41 +513,6 @@ impl HtmlElementId {
         let index = match cap.name("index") {
             Some(index) => Some(index.as_str().parse::<usize>()?),
             None => None,
-        };
-
-        let (parent_schema_name, parent_schema_name_snake) = if let Some(parent) = cap.name("parent_name") {
-            let parent_schema_name_snake = parent.as_str().to_string();
-            let parent_schema_name = parent.as_str().to_case(convert_case::Case::Camel);
-            (Some(parent_schema_name), Some(parent_schema_name_snake))
-        } else {
-            (None, None)
-        };
-
-        let action_str = cap.name("action").ok_or_else(|| format!("Missing action in HtmlElementId.new_with_regex"))?.as_str();
-        let action = DataViewProcessAction::from(action_str);
-
-        let parent_action = if let Some(action) = cap.name("parent_action") {
-            Some(DataViewProcessAction::from(action.as_str()))
-        } else {
-            None
-        };
-
-        let (parent_id, id) = if parent_schema_name_snake.is_some() && parent_action.is_some() {
-            let parent_id = format!("{}-{}", parent_action.unwrap(), parent_schema_name_snake.clone().unwrap());
-            let id = format!("{}--{}-{}", parent_id, action, schema_name_snake);
-            (Some(parent_id), id)
-        } else {
-            let id = format!("{}-{}", action, schema_name_snake);
-            (None, id)
-        };
-
-        let data_view_id = DataViewId {
-            parent_action,
-            action,
-            parent_schema_name,
-            schema_name: schema_name_snake.to_case(convert_case::Case::Camel),
-            parent_id,
-            id
         };
 
         Ok(Self {data_view_id, form_type_ext, field_name, index})
@@ -590,7 +571,7 @@ pub struct DataView {
 }
 
 impl DataView {
-    pub fn new(path_or_name: &str, typ: DataViewType, parent: Option<&DataViewId>, action: DataViewProcessAction) -> Self {
+    pub fn new(path_or_name: &str, typ: DataViewType, parent: Option<DataViewId>, action: DataViewProcessAction) -> Self {
         let (path, schema_name) = if path_or_name.starts_with("/") {
             (Some(path_or_name.to_string()), path_or_name[1..].to_string().to_case(convert_case::Case::Camel))
         } else {
@@ -687,15 +668,10 @@ impl DataView {
         data_view_id.set_action(action);
         let form_id = &data_view_id.id;
         let title = data_view.data_view_id.schema_name.to_case(convert_case::Case::Title);
-
-        let table = if action == DataViewProcessAction::Search/* || data_view.data_view_id.parent_schema_name.is_some() */ {
-            format!(r#"<div id="div-table-{form_id}" class="table-responsive" style="white-space: nowrap;"></div>"#)
-        } else {
-            String::new()
-        };
+        let table = format!(r#"<div id="div-table-{form_id}" class="table-responsive" style="white-space: nowrap;"></div>"#);
 
         if action == DataViewProcessAction::Search {
-            let href_new = DataView::build_location_hash(&data_view.data_view_id.schema_name.to_case(convert_case::Case::Snake), &DataViewProcessAction::New, &json!({}))?;
+            let href_new = DataView::build_location_hash(&data_view.data_view_id, &DataViewProcessAction::New, &json!({}))?;
             let header = format!(r#"<div class="card-header"><a href="{href_new}" id="create-{form_id}" class="btn btn-default"><i class="bi bi-plus"></i> {title}</a></div>"#);
 
             let search = if data_view.data_view_id.parent_schema_name.is_none() {
@@ -1152,7 +1128,7 @@ impl DataView {
                 let primary_key = &service.get_primary_key(item).ok_or_else(|| {
                     format!("[DataView.build_table] {} : Missing primary key", service.path)                    
                 })?;
-                DataView::build_location_hash(&data_view.data_view_id.schema_name.to_case(convert_case::Case::Snake), action, primary_key)?
+                DataView::build_location_hash(&data_view.data_view_id, action, primary_key)?
             } else {
                 "".to_string()
             };
@@ -1824,10 +1800,12 @@ impl DataView {
                     if force_enable_null || field.schema_data.nullable {
                         value
                     } else {
-                        return None.ok_or_else(|| format!(
-                            "set_value_process 2 : received value null in {}.{}, force_enable_null = {}, field.schema_data.nullable = {}, data_view.data_view_id.action = {}",
-                            data_view.data_view_id.id, field_name, force_enable_null, field.schema_data.nullable, data_view.data_view_id.action
-                        ))?;
+                        return None.ok_or_else(|| {
+                            let str = format!("Received value null in {}.{}, force_enable_null = {}, field.schema_data.nullable = {}",
+                                data_view.data_view_id.id, field_name, force_enable_null, field.schema_data.nullable
+                            );
+                            str
+                        })?;
                     }
                 } else {
                     value
@@ -1953,7 +1931,7 @@ impl DataView {
 
                 match &field_value {
                     Value::Array(array) => {
-                        let data_view = self.childs.iter_mut().find(|data_view| &data_view.data_view_id.schema_name == field_name).ok_or_else(|| {
+                        let data_view = self.childs.iter_mut().find(|data_view| &data_view.data_view_id.schema_name == field_name && data_view.data_view_id.action == self.data_view_id.action).ok_or_else(|| {
                             format!("Missing item 3 {} in {}", field_name, self.data_view_id.id)
                         })?;
 
@@ -2008,22 +1986,25 @@ impl DataView {
         // if filter.length == 0) filter = list.filter(([fieldName, field]) => field.hidden != true && field.readOnly != true);
         // if filter.length == 0) filter = list.filter(([fieldName, field]) => field.hidden != true);
         //self.get_document(self, obj, false);
-        let obj = &server_connection
-            .login_response
-            .openapi
-            .copy_fields_using_properties(&self.properties, &self.extensions, false /*true*/, obj, true, false, false)?; //value || {}
+        let obj = {
+            let may_be_array = false;//true
+            let ignore_null = true;
+            let ignore_hidden = false;
+            let only_primary_keys = false;
+            server_connection.login_response.openapi.copy_fields_using_properties(&self.properties, &self.extensions, may_be_array, obj, ignore_null, ignore_hidden, only_primary_keys)?
+        };
         //println!("[DEBUG - set_values - 1] {}.instance = {}", self.data_view_id.form_id, obj);
-        set_values_process(self, element_id, server_connection, watcher, obj)?;
-
+        set_values_process(self, element_id, server_connection, watcher, &obj)?;
+/*
         for data_view in &mut self.childs {
-            if data_view.typ == DataViewType::ObjectProperty {
+            if data_view.typ == DataViewType::ObjectProperty && data_view.data_view_id.action == self.data_view_id.action {
                 if let Some(obj) = obj.get(&data_view.data_view_id.schema_name) {
-                    //println!("[DEBUG - set_values - 2] {}.instance = {}", data_view.data_view_id.form_id, obj);
-                    data_view.set_values(server_connection, watcher, obj, element_id)?;
+                    println!("\n[DEBUG - set_values - 2] {} : {}\n", data_view.data_view_id.id, obj);
+                    data_view.set_values(server_connection, watcher, obj, None)?;
                 }
             }
         }
-
+*/
         Ok(())
     }
 
@@ -2040,9 +2021,16 @@ impl DataView {
         }
     }
 
-    fn build_location_hash(schema_name_snake: &str, action: &DataViewProcessAction, params: &Value) -> Result<String, Box<dyn std::error::Error>> {
+    fn build_location_hash(data_view_id: &DataViewId, action: &DataViewProcessAction, params: &Value) -> Result<String, Box<dyn std::error::Error>> {
         let query_string = serde_qs::to_string(params).unwrap();
-        Ok(format!("#!/app/{}/{}?{}", schema_name_snake, action, query_string))
+
+        let path = if let Some(schema_name) = &data_view_id.parent_schema_name {
+            format!("{}-{}", schema_name.to_case(convert_case::Case::Snake), data_view_id.schema_name.to_case(convert_case::Case::Snake))
+        } else {
+            data_view_id.schema_name.to_case(convert_case::Case::Snake)
+        };
+
+        Ok(format!("#!/app/{}/{}?{}", path, action, query_string))
     }
 
     fn build_go_to_field(&self, server_connection: &ServerConnection, element_id: &HtmlElementId, action: &DataViewProcessAction, obj: &Value) -> Result<Option<String>, Box<dyn std::error::Error>> {
@@ -2071,8 +2059,8 @@ impl DataView {
                 query_obj = item.primary_key;
             }
 
-            let service_name = &item.schema;
-            let url = DataView::build_location_hash(&service_name.to_case(convert_case::Case::Snake), action, &query_obj)?;
+            let data_view_id = DataViewId::new(item.schema.clone(), None, action.clone());
+            let url = DataView::build_location_hash(&data_view_id, action, &query_obj)?;
             Ok(Some(url))
         } else {
             let Some(value) = obj.get(field_name) else {
@@ -2205,7 +2193,11 @@ impl ServerConnection {
     async fn remove(&mut self, schema_name: &str, primary_key: &Value) -> Result<(), Box<dyn std::error::Error>> {
         let service = self.service_map.get_mut(schema_name).ok_or_else(|| format!("Missing service {} in service_map", schema_name))?;
         let _res_data = self.http_rest.remove(&service.path, primary_key).await?;
-        self.update_list(schema_name, primary_key, json!({}))?;
+        
+        if let Some(pos) = service.find_pos(&primary_key)? {
+            service.list.remove(pos);
+        }
+
         Ok(())
     }
     /*
@@ -2784,14 +2776,12 @@ impl DataViewManager<'_> {
                 return Ok(())
             };
             
-            let dependents = server_connection.login_response.openapi.get_dependents(schema_name, false);
-
-            for item in &dependents {
-                let Some(data_view_item) = data_view.childs.iter_mut().find(|child| child.data_view_id.schema_name == item.schema) else {
+            for data_view_item in data_view.childs.iter_mut() {
+                let DataViewType::Child(dependent) = &data_view_item.typ else {
                     continue;
                 };
 
-                let (_fkd, foreign_key) = server_connection.login_response.openapi.get_foreign_key(&data_view_item.properties/*&item.schema*/, &data_view_item.extensions, &item.field, &primary_key)?.ok_or_else(|| format!("Invalid FK"))?;
+                let (_fkd, foreign_key) = server_connection.login_response.openapi.get_foreign_key(&data_view_item.properties/*&item.schema*/, &data_view_item.extensions, &dependent.field, &primary_key)?.ok_or_else(|| format!("Invalid FK"))?;
 
                 if data_view_item.data_view_id.action == DataViewProcessAction::New {
                     for (field_name, value) in foreign_key.as_object().ok_or("foreign_key is not object")? {
@@ -2815,9 +2805,11 @@ impl DataViewManager<'_> {
                     if data_view_item.is_one_to_one {
                         data_view_get(watcher, data_view_item, server_connection, &foreign_key, element_id).await?;
                     } else {
-                        for item in &service.list {
-                            if crate::data_store::Filter::check_match_exact(item, &foreign_key)? {
-                                data_view_item.filter_results.push(item.clone());
+                        if data_view_item.data_view_id.action == DataViewProcessAction::Search {
+                            for item in &service.list {
+                                if crate::data_store::Filter::check_match_exact(item, &foreign_key)? {
+                                    data_view_item.filter_results.push(item.clone());
+                                }
                             }
                         }
                     }                    
@@ -2862,7 +2854,7 @@ impl DataViewManager<'_> {
                             let service = self.server_connection.service_map.get(&dependent.schema).ok_or_else(|| format!("Missing service"))?;
 
                             for action in &action_childs {
-                                let mut data_view_item = DataView::new(&path, DataViewType::Child(dependent.clone()), Some(&data_view.data_view_id), action.clone());
+                                let mut data_view_item = DataView::new(&path, DataViewType::Child(dependent.clone()), Some(data_view.data_view_id.clone()), action.clone());
 
                                 if service.primary_keys.len() == 1 && service.primary_keys.contains(&dependent.field) {
                                     data_view_item.is_one_to_one = true;
@@ -2895,7 +2887,7 @@ impl DataViewManager<'_> {
                                 SchemaKind::Type(typ) => match typ {
                                     Type::Object(schema) => {
                                         for action in &action_childs {
-                                            let mut data_view_item = DataView::new(field_name, DataViewType::ObjectProperty, Some(&data_view.data_view_id), action.clone());
+                                            let mut data_view_item = DataView::new(field_name, DataViewType::ObjectProperty, Some(data_view.data_view_id.clone()), action.clone());
                                             data_view_item.properties = schema.properties.clone();
                                             build_field_filter_results(&mut data_view_item, &self.server_connection)?;
                                             data_view.childs.push(data_view_item);
@@ -2905,7 +2897,7 @@ impl DataViewManager<'_> {
                                 },
                                 SchemaKind::Any(schema) => {
                                     for action in &action_childs {
-                                        let mut data_view_item = DataView::new(field_name, DataViewType::ObjectProperty, Some(&data_view.data_view_id), action.clone());
+                                        let mut data_view_item = DataView::new(field_name, DataViewType::ObjectProperty, Some(data_view.data_view_id.clone()), action.clone());
                                         data_view_item.properties = schema.properties.clone();
                                         data_view_item.short_description_list = data_view_item.properties.keys().map(|x| x.clone()).collect();
                                         build_field_filter_results(&mut data_view_item, &self.server_connection)?;
@@ -3035,6 +3027,11 @@ impl DataViewManager<'_> {
             #[cfg(not(target_arch = "wasm32"))]
             std::fs::write(format!("/tmp/{}.html", element_id.data_view_id.id), &html)?;
             data_view_response.html[&element_id.data_view_id.id] = json!(html);
+
+            if data_view.data_view_id.action != DataViewProcessAction::Search {
+                let form = HtmlElementProperties{ hidden: false, disabled: false };
+                data_view_response.forms.insert(data_view.data_view_id.id.clone(), form);
+            }
         }
 
         if data_view.data_view_id.action == DataViewProcessAction::Search {
@@ -3049,7 +3046,7 @@ impl DataViewManager<'_> {
                 data_view_response.tables[&data_view.data_view_id.id] = json!(table);
             }
         }
-
+/*
         let mut form = HtmlElementProperties{ hidden: false, disabled: false };
         
         match &data_view.data_view_id.action {
@@ -3076,13 +3073,8 @@ impl DataViewManager<'_> {
         }
 
         data_view_response.forms.insert(data_view.data_view_id.id.clone(), form);
-
-        let data_view = if element_id.data_view_id.parent_schema_name.is_some() {
-            data_view_get_parent_mut!(self, element_id)    
-        } else {
-            data_view_get_mut!(self, element_id)    
-        };
-
+*/
+        let data_view = data_view_get_parent_mut!(self, element_id);
         data_view.build_changes(&mut data_view_response.changes)?;
         Ok(())
     }
@@ -3108,12 +3100,18 @@ impl DataViewManager<'_> {
 
             let primary_key = data_view.params.primary_key.as_ref().ok_or_else(|| {
                 format!("don't opened item in form_id {}", data_view.data_view_id.id)}
-            )?;
+            )?.clone();
 
-            self.server_connection.remove(&data_view.data_view_id.schema_name, primary_key).await?;
+            self.server_connection.remove(&data_view.data_view_id.schema_name, &primary_key).await?;
             let params_search = DataViewParams { ..Default::default() };
             let params_extra = json!({});
             element_id.data_view_id.set_action(DataViewProcessAction::Search);
+            let data_view = data_view_get_mut!(self, element_id);
+
+            if let Some(pos) = data_view.filter_results.iter().position(|item| crate::data_store::Filter::check_match_exact(item, &primary_key).unwrap()) {
+                data_view.filter_results.remove(pos);
+            }
+
             let mut data_view_response = DataViewResponse {changes: json!({}), tables: json!({}), html: json!({}), ..Default::default()};
             self.process_data_view_action(&element_id, &params_search, &params_extra, &mut data_view_response).await?;
             return Ok(data_view_response);

@@ -231,14 +231,17 @@ pub enum SqlType {
 		Ok(())
     }
 
-    fn build_query<'a>(&self, query_params:&'a Value, params :&mut Vec<&'a (dyn ToSql + Sync)>, order_by :&Vec<String>) -> String {
-		fn build_conditions<'a> (query_params:&'a Value, params: &mut Vec<&'a (dyn ToSql + Sync)>, operator:&str, conditions : &mut Vec<String>) {
-			let mut count = 1;
+    fn build_query<'a>(&self, properties: &SchemaProperties, query_params:&'a Value, params :&mut Vec<&'a (dyn ToSql + Sync)>, order_by :&Vec<String>) -> Result<String, Box<dyn std::error::Error>> {
+		fn build_conditions<'a> (properties: &SchemaProperties, query_params:&'a Value, params: &mut Vec<&'a (dyn ToSql + Sync)>, operator:&str, conditions : &mut Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
+			let query_params = query_params.as_object().ok_or_else(|| format!("[build_conditions] query_params is not object"))?;
 
-			for (field_name, field) in query_params.as_object().unwrap() {
+			for (field_name, _property) in properties {
+				let Some(field) = query_params.get(field_name) else {
+					continue;
+				};
+
 				let field_name = field_name.to_case(convert_case::Case::Snake);
-				let param_id = format!("${}", count);
-				count += 1;
+				let param_id = format!("${}", params.len()+1);
 
 				match field {
 					Value::Null => conditions.push(format!("{} {} NULL", field_name, operator)),
@@ -258,9 +261,11 @@ pub enum SqlType {
 					Value::String(value) => params.push(value),
 					Value::Array(value) => params.push(value),
 					Value::Object(_) => params.push(field),
-					_ => count -= 1,
+					_ => {},
 				}
 			}
+
+			Ok(())
 		}
 
 		let mut conditions: Vec<String> = vec![];
@@ -272,16 +277,16 @@ pub enum SqlType {
 	
 			if !filter.is_null() || !filter_range_min.is_null() || !filter_range_max.is_null() {
 				if !filter.is_null() {
-					build_conditions(filter, params, "=", &mut conditions)
+					build_conditions(properties, filter, params, "=", &mut conditions)?
 				}
 				if !filter_range_min.is_null() {
-					build_conditions(filter_range_min, params, ">", &mut conditions)
+					build_conditions(properties, filter_range_min, params, ">", &mut conditions)?
 				}
 				if !filter_range_max.is_null() {
-					build_conditions(filter_range_max, params, "<", &mut conditions)
+					build_conditions(properties, filter_range_max, params, "<", &mut conditions)?
 				}
 			} else if query_params.as_object().iter().len() > 0 {
-				build_conditions(query_params, params, "=", &mut conditions)
+				build_conditions(properties, query_params, params, "=", &mut conditions)?
 			}
 		}
 
@@ -304,9 +309,9 @@ pub enum SqlType {
 				order_by_internal.push(format!("{} {}", field_name.to_case(convert_case::Case::Snake), extra));
 			}
 
-			format!("{} ORDER BY {}", str, order_by_internal.join(","))
+			Ok(format!("{} ORDER BY {}", str, order_by_internal.join(",")))
 		} else {
-			str
+			Ok(str)
 		}
     }
 
@@ -426,10 +431,10 @@ impl EntityManager for DbAdapterSql<'_> {
 	}
 
 	async fn find(&self, openapi: &OpenAPI, schema_name: &str, query_params: &Value, order_by: &Vec<String>) -> Result<Vec<Value>, Box<dyn std::error::Error>> {
+		let properties = openapi.get_properties_from_schema_name(&None, schema_name, &crate::openapi::SchemaPlace::Schemas).unwrap();
 		let table_name = schema_name.to_case(convert_case::Case::Snake);
 		let mut params = vec![];
-		let sql_query = self.build_query(query_params, &mut params, order_by);
-		let properties = openapi.get_properties_from_schema_name(&None, schema_name, &crate::openapi::SchemaPlace::Schemas).unwrap();
+		let sql_query = self.build_query(properties, query_params, &mut params, order_by)?;
 		let mut count = 0;
 		let mut names = vec![];
 
@@ -490,14 +495,17 @@ impl EntityManager for DbAdapterSql<'_> {
 
 	async fn update(&self, openapi: &OpenAPI, schema_name :&str, query_params :&Value, obj :&Value) -> Result<Value, Box<dyn std::error::Error>> {
         println!("[DbAdapterSql.update({}, {})]", schema_name, obj.to_string());
+		let obj = obj.as_object().ok_or_else(|| format!("EntityManager.update({}) : value must be json object", schema_name))?;
 		let table_name = schema_name.to_case(convert_case::Case::Snake);
 		let mut params: Vec<&(dyn ToSql + Sync)> = vec![];
 		let mut str_values = vec![];
-		let mut count = 1;
 		let properties = openapi.get_properties_from_schema_name(&None, schema_name, &crate::openapi::SchemaPlace::Schemas).ok_or_else(|| format!("EntityManager.update({}) : Missing porperties for schema", schema_name))?;
 
-		for (field_name, value) in obj.as_object().ok_or_else(|| format!("EntityManager.update({}) : value must be json object", schema_name))? {
-			let field = properties.get(field_name).ok_or_else(|| format!("EntityManager.update({}) : field {} missing in schema definition", schema_name, field_name))?;
+		for (field_name, field) in properties {
+			let Some(value) = obj.get(field_name) else {
+				continue;
+			};
+
 			let field = field.as_item().ok_or_else(|| format!("EntityManager.insert({}) : field {} must be item, not reference", schema_name, field_name))?;
 			let field_name = field_name.to_case(convert_case::Case::Snake);
 
@@ -523,9 +531,8 @@ impl EntityManager for DbAdapterSql<'_> {
 										_ => todo!(),
 									},
 									_ => {
-										str_values.push(format!("{}=${}", field_name, count));
 										params.push(value);
-										count += 1;
+										str_values.push(format!("{}=${}", field_name, params.len()));
 									},
 								}
 							},
@@ -535,19 +542,17 @@ impl EntityManager for DbAdapterSql<'_> {
 					}
 				},
 				Value::Array(value) => {
-					str_values.push(format!("{}=${}", field_name, count));
 					params.push(value);
-					count += 1;
+					str_values.push(format!("{}=${}", field_name, params.len()));
 				},
 				Value::Object(_) => {
-					str_values.push(format!("{}=${}", field_name, count));
 					params.push(value);
-					count += 1;
+					str_values.push(format!("{}=${}", field_name, params.len()));
 				},
 			}
 		}
 
-		let sql_query = self.build_query(query_params, &mut params, &vec![]);
+		let sql_query = self.build_query(properties, query_params, &mut params, &vec![])?;
 		let sql = format!("UPDATE {} SET {} {} RETURNING *", table_name, str_values.join(","), sql_query);
 		println!("[DbAdapterSql.update()] : {}", sql);
 		let params = params.as_slice();
@@ -556,11 +561,12 @@ impl EntityManager for DbAdapterSql<'_> {
 		Ok(self.get_json_list(&list)?.get(0).ok_or("broken")?.clone())
 	}
 
-	async fn delete_one(&self, _openapi: &OpenAPI, schema_name: &str, query_params: &Value) -> Result<(), Box<dyn std::error::Error>> {
+	async fn delete_one(&self, openapi: &OpenAPI, schema_name: &str, query_params: &Value) -> Result<(), Box<dyn std::error::Error>> {
 		println!("[DbAdapterSql.delete_one({}, {})]", schema_name, query_params);
+		let properties = openapi.get_properties_from_schema_name(&None, schema_name, &crate::openapi::SchemaPlace::Schemas).unwrap();
 		let table_name = schema_name.to_case(convert_case::Case::Snake);
 		let mut params: Vec<&(dyn ToSql + Sync)> = vec![];
-		let sql_query = self.build_query(query_params, &mut params, &vec![]);
+		let sql_query = self.build_query(properties, query_params, &mut params, &vec![])?;
 		let sql = format!("DELETE FROM {} {}", table_name, sql_query);
 		let params = params.as_slice();
 		println!("[DbAdapterSql.delete_one({})] : {} , {:?}", query_params, sql, params);
