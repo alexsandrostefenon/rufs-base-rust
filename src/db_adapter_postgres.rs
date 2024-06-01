@@ -10,6 +10,7 @@ use serde_json::{Value, Number, json};
 #[cfg(feature = "postgres")]
 use rust_decimal::{Decimal, prelude::ToPrimitive};
 use crate::entity_manager::EntityManager;
+use crate::openapi::SchemaProperties;
 
 #[cfg(feature = "postgres")]
 use tokio_postgres::types::ToSql;
@@ -112,6 +113,14 @@ impl DbAdapterSql<'_> {//impl<C> DbAdapterSql<'_, C> {
 						Value::Null
 					}
 				},
+				tokio_postgres::types::Type::DATE => {
+					if let Some(value) = row.get::<usize, Option<chrono::NaiveDate>>(idx) {
+						let str = value.to_string();
+						Value::String(str)
+					} else {
+						Value::Null
+					}
+				},
 				tokio_postgres::types::Type::NUMERIC => {
 					if let Some(value) = row.get::<usize, Option<Decimal>>(idx) {
 						if value.scale() == 0 {
@@ -199,13 +208,20 @@ pub enum SqlType {
 		#[cfg(feature = "postgres")]
 		let client = {
 			let (client, connection) = tokio_postgres::connect(uri, tokio_postgres::NoTls).await?;
+			//let _res = connection.await?;
 
-			tokio::spawn(async move {
+			let _res = tokio::spawn(async move {
 				if let Err(e) = connection.await {
 					eprintln!("connection error: {}", e);
+					std::process::exit(1);
 				}
 			});
-	
+/*
+			for i in 0..10 {
+				sleep(std::time::Duration::from_secs(1)).await;
+				let _res = res..await?;
+			}
+*/
 			client
 		};	
 
@@ -215,14 +231,17 @@ pub enum SqlType {
 		Ok(())
     }
 
-    fn build_query<'a>(&self, query_params:&'a Value, params :&mut Vec<&'a (dyn ToSql + Sync)>, order_by :&Vec<String>) -> String {
-		fn build_conditions<'a> (query_params:&'a Value, params: &mut Vec<&'a (dyn ToSql + Sync)>, operator:&str, conditions : &mut Vec<String>) {
-			let mut count = 1;
+    fn build_query<'a>(&self, properties: &SchemaProperties, query_params:&'a Value, params :&mut Vec<&'a (dyn ToSql + Sync)>, order_by :&Vec<String>) -> Result<String, Box<dyn std::error::Error>> {
+		fn build_conditions<'a> (properties: &SchemaProperties, query_params:&'a Value, params: &mut Vec<&'a (dyn ToSql + Sync)>, operator:&str, conditions : &mut Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
+			let query_params = query_params.as_object().ok_or_else(|| format!("[build_conditions] query_params is not object"))?;
 
-			for (field_name, field) in query_params.as_object().unwrap() {
+			for (field_name, _property) in properties {
+				let Some(field) = query_params.get(field_name) else {
+					continue;
+				};
+
 				let field_name = field_name.to_case(convert_case::Case::Snake);
-				let param_id = format!("${}", count);
-				count += 1;
+				let param_id = format!("${}", params.len()+1);
 
 				match field {
 					Value::Null => conditions.push(format!("{} {} NULL", field_name, operator)),
@@ -242,9 +261,11 @@ pub enum SqlType {
 					Value::String(value) => params.push(value),
 					Value::Array(value) => params.push(value),
 					Value::Object(_) => params.push(field),
-					_ => count -= 1,
+					_ => {},
 				}
 			}
+
+			Ok(())
 		}
 
 		let mut conditions: Vec<String> = vec![];
@@ -256,16 +277,16 @@ pub enum SqlType {
 	
 			if !filter.is_null() || !filter_range_min.is_null() || !filter_range_max.is_null() {
 				if !filter.is_null() {
-					build_conditions(filter, params, "=", &mut conditions)
+					build_conditions(properties, filter, params, "=", &mut conditions)?
 				}
 				if !filter_range_min.is_null() {
-					build_conditions(filter_range_min, params, ">", &mut conditions)
+					build_conditions(properties, filter_range_min, params, ">", &mut conditions)?
 				}
 				if !filter_range_max.is_null() {
-					build_conditions(filter_range_max, params, "<", &mut conditions)
+					build_conditions(properties, filter_range_max, params, "<", &mut conditions)?
 				}
 			} else if query_params.as_object().iter().len() > 0 {
-				build_conditions(query_params, params, "=", &mut conditions)
+				build_conditions(properties, query_params, params, "=", &mut conditions)?
 			}
 		}
 
@@ -288,9 +309,9 @@ pub enum SqlType {
 				order_by_internal.push(format!("{} {}", field_name.to_case(convert_case::Case::Snake), extra));
 			}
 
-			format!("{} ORDER BY {}", str, order_by_internal.join(","))
+			Ok(format!("{} ORDER BY {}", str, order_by_internal.join(",")))
 		} else {
-			str
+			Ok(str)
 		}
     }
 
@@ -410,10 +431,10 @@ impl EntityManager for DbAdapterSql<'_> {
 	}
 
 	async fn find(&self, openapi: &OpenAPI, schema_name: &str, query_params: &Value, order_by: &Vec<String>) -> Result<Vec<Value>, Box<dyn std::error::Error>> {
+		let properties = openapi.get_properties_from_schema_name(&None, schema_name, &crate::openapi::SchemaPlace::Schemas).unwrap();
 		let table_name = schema_name.to_case(convert_case::Case::Snake);
 		let mut params = vec![];
-		let sql_query = self.build_query(query_params, &mut params, order_by);
-		let properties = openapi.get_properties_from_schema_name(&None, schema_name, &crate::openapi::SchemaPlace::Schemas).unwrap();
+		let sql_query = self.build_query(properties, query_params, &mut params, order_by)?;
 		let mut count = 0;
 		let mut names = vec![];
 
@@ -474,14 +495,17 @@ impl EntityManager for DbAdapterSql<'_> {
 
 	async fn update(&self, openapi: &OpenAPI, schema_name :&str, query_params :&Value, obj :&Value) -> Result<Value, Box<dyn std::error::Error>> {
         println!("[DbAdapterSql.update({}, {})]", schema_name, obj.to_string());
+		let obj = obj.as_object().ok_or_else(|| format!("EntityManager.update({}) : value must be json object", schema_name))?;
 		let table_name = schema_name.to_case(convert_case::Case::Snake);
 		let mut params: Vec<&(dyn ToSql + Sync)> = vec![];
 		let mut str_values = vec![];
-		let mut count = 1;
 		let properties = openapi.get_properties_from_schema_name(&None, schema_name, &crate::openapi::SchemaPlace::Schemas).ok_or_else(|| format!("EntityManager.update({}) : Missing porperties for schema", schema_name))?;
 
-		for (field_name, value) in obj.as_object().ok_or_else(|| format!("EntityManager.update({}) : value must be json object", schema_name))? {
-			let field = properties.get(field_name).ok_or_else(|| format!("EntityManager.update({}) : field {} missing in schema definition", schema_name, field_name))?;
+		for (field_name, field) in properties {
+			let Some(value) = obj.get(field_name) else {
+				continue;
+			};
+
 			let field = field.as_item().ok_or_else(|| format!("EntityManager.insert({}) : field {} must be item, not reference", schema_name, field_name))?;
 			let field_name = field_name.to_case(convert_case::Case::Snake);
 
@@ -507,9 +531,8 @@ impl EntityManager for DbAdapterSql<'_> {
 										_ => todo!(),
 									},
 									_ => {
-										str_values.push(format!("{}=${}", field_name, count));
 										params.push(value);
-										count += 1;
+										str_values.push(format!("{}=${}", field_name, params.len()));
 									},
 								}
 							},
@@ -519,19 +542,17 @@ impl EntityManager for DbAdapterSql<'_> {
 					}
 				},
 				Value::Array(value) => {
-					str_values.push(format!("{}=${}", field_name, count));
 					params.push(value);
-					count += 1;
+					str_values.push(format!("{}=${}", field_name, params.len()));
 				},
 				Value::Object(_) => {
-					str_values.push(format!("{}=${}", field_name, count));
 					params.push(value);
-					count += 1;
+					str_values.push(format!("{}=${}", field_name, params.len()));
 				},
 			}
 		}
 
-		let sql_query = self.build_query(query_params, &mut params, &vec![]);
+		let sql_query = self.build_query(properties, query_params, &mut params, &vec![])?;
 		let sql = format!("UPDATE {} SET {} {} RETURNING *", table_name, str_values.join(","), sql_query);
 		println!("[DbAdapterSql.update()] : {}", sql);
 		let params = params.as_slice();
@@ -540,11 +561,12 @@ impl EntityManager for DbAdapterSql<'_> {
 		Ok(self.get_json_list(&list)?.get(0).ok_or("broken")?.clone())
 	}
 
-	async fn delete_one(&self, _openapi: &OpenAPI, schema_name: &str, query_params: &Value) -> Result<(), Box<dyn std::error::Error>> {
+	async fn delete_one(&self, openapi: &OpenAPI, schema_name: &str, query_params: &Value) -> Result<(), Box<dyn std::error::Error>> {
 		println!("[DbAdapterSql.delete_one({}, {})]", schema_name, query_params);
+		let properties = openapi.get_properties_from_schema_name(&None, schema_name, &crate::openapi::SchemaPlace::Schemas).unwrap();
 		let table_name = schema_name.to_case(convert_case::Case::Snake);
 		let mut params: Vec<&(dyn ToSql + Sync)> = vec![];
-		let sql_query = self.build_query(query_params, &mut params, &vec![]);
+		let sql_query = self.build_query(properties, query_params, &mut params, &vec![])?;
 		let sql = format!("DELETE FROM {} {}", table_name, sql_query);
 		let params = params.as_slice();
 		println!("[DbAdapterSql.delete_one({})] : {} , {:?}", query_params, sql, params);
@@ -580,7 +602,7 @@ impl EntityManager for DbAdapterSql<'_> {
 			return field_name;
 		}
 
-		fn set_ref(properties: &mut IndexMap<String, ReferenceOr<Box<Schema>>>, field_name :&str, table_ref :&str) {
+		fn set_ref(properties: &mut SchemaProperties, field_name :&str, table_ref :&str) {
 			if let Some(field) = properties.get_mut(field_name) {
 				if let ReferenceOr::Item(field) = field {
 					field.schema_data.extensions.insert("x-$ref".to_string(), Value::String(format!("#/components/schemas/{}", table_ref)));
@@ -912,18 +934,35 @@ impl EntityManager for DbAdapterSql<'_> {
 				};
 
 				if rec.column_default.is_empty() == false {
-					schema_data.default = match rufs_type {
-						"integer" => Some(Value::Number(Number::from(rec.column_default.parse::<i64>().unwrap()))),
-						"number" => Some(Value::Number(Number::from_f64(rec.column_default.parse::<f64>().unwrap()).unwrap())),
-						_ => {
-							// TODO : usar regexp ^'(.*)'$ // 'pt-br'::character varying,
-							let str = rec.column_default;
-							let str = str.replace("'", "");
-							let re = regex::Regex::new(r"([^:]*)(::.*)?")?;
-							let str = re.replace(&str, "$1").to_string();
-							Some(Value::String(str))
-						}, 
-					}
+					// TODO : usar regexp ^'(.*)'$ // 'pt-br'::character varying,
+					let str = rec.column_default;
+					let str1 = str.replace("'", "");
+					let re = regex::Regex::new(r"([^:]*)(::.*)?")?;
+					let str2 = re.replace(&str1, "$1").to_string();
+
+					schema_data.default = if str2.to_uppercase() == "NULL" || str2.contains("nextval") {
+						None
+					} else {
+						match rufs_type {
+							"integer" => {
+								let re = regex::Regex::new(r"\d*")?;
+								match re.captures(&str2) {
+									Some(str) => {
+										match str.get(1) {
+											Some(str) => {
+												let str3 = str.as_str();
+												Some(Value::Number(Number::from(str3.parse::<i64>().unwrap())))
+											},
+											None => None,
+										}
+									},
+									None => None,
+								}
+							},
+							"number" => Some(Value::Number(Number::from_f64(str2.parse::<f64>().unwrap()).unwrap())),
+							_ => Some(Value::String(str2)), 
+						}
+					};
 				}
 
 				if ["number"].contains(&rufs_type) {

@@ -1,11 +1,10 @@
 use std::collections::HashMap;
 
-use indexmap::IndexMap;
 use jsonwebtoken::{decode, DecodingKey, Validation};
-use openapiv3::{ReferenceOr, Schema};
+use openapiv3::ReferenceOr;
 use serde::{Serialize, Deserialize};
-use serde_json::{json, Value, Number};
-use crate::openapi::{RufsOpenAPI, SchemaPlace};
+use serde_json::{json, Value};
+use crate::openapi::{RufsOpenAPI, SchemaPlace, SchemaProperties};
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{
@@ -48,13 +47,13 @@ impl<'a> RequestFilter<'a> {
             println!("[RequestFilter.new()] rf.parameters = {}", rf.parameters.to_string());
         }
 
-        let mut uri_path = path;
+        let rest_path = if let Some(pos) = path.find(&format!("/{}/", rms.params.api_path)) {
+            &path[pos + 1 + rms.params.api_path.len()..]
+        } else {
+            path
+        };
 
-        if uri_path.starts_with(&format!("/{}/", rms.params.api_path)) {
-            uri_path = &uri_path[rms.params.api_path.len() + 1..];
-        }
-
-        rf.path = rms.openapi.get_path_params(uri_path, &rf.parameters).unwrap();
+        rf.path = rms.openapi.get_path_params(rest_path, &rf.parameters).unwrap();
 
         rf.may_be_array = match &rf.parameters {
             Value::Object(obj) => !(obj.contains_key("id") || obj.contains_key("primaryKey")),
@@ -75,10 +74,10 @@ impl<'a> RequestFilter<'a> {
     // private to create,update,delete,read
     fn check_object_access(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let openapi = &self.micro_service.openapi;
-        let user_rufs_group_owner = self.token_payload.as_ref().unwrap().rufs_group_owner;
+        let user_rufs_group_owner = &self.token_payload.as_ref().unwrap().rufs_group_owner;
         //let rufs_group_owner_entries = openapi.get_properties_with_ref(&self.schema_name, "#/components/schemas/rufsGroupOwner");
 
-        if user_rufs_group_owner == 0 /*|| rufs_group_owner_entries.len() == 0*/ {
+        if user_rufs_group_owner == "admin" {
             return Ok(());
         }
 
@@ -91,15 +90,15 @@ impl<'a> RequestFilter<'a> {
         };
 
         if obj_rufs_group_owner.valid == false {
-            obj["rufsGroupOwner"] = Value::Number(Number::from(user_rufs_group_owner));
-            obj_rufs_group_owner.primary_key["id"] = Value::Number(Number::from(user_rufs_group_owner));
+            obj["rufsGroupOwner"] = json!(user_rufs_group_owner);
+            obj_rufs_group_owner.primary_key["name"] = json!(user_rufs_group_owner);
         }
 
-        let obj_rufs_group_owner_id = obj_rufs_group_owner.primary_key.get("id").unwrap().as_u64().unwrap();
+        let obj_rufs_group_owner_id = obj_rufs_group_owner.primary_key.get("name").unwrap().as_str().unwrap().to_string();
 
-        if obj_rufs_group_owner_id == user_rufs_group_owner || user_rufs_group_owner == 1 {
+        if &obj_rufs_group_owner_id == user_rufs_group_owner {
             if let Some(rufs_group) = openapi.get_primary_key_foreign(&self.schema_name, "rufsGroup", obj)? {
-                let rufs_group_id = rufs_group.primary_key.get("id").unwrap().as_u64().unwrap();
+                let rufs_group_id = rufs_group.primary_key.get("name").unwrap().as_str().unwrap().to_string();
                 let mut found = false;
 
                 for group in self.token_payload.as_ref().unwrap().groups.as_ref().iter().as_ref() {
@@ -182,7 +181,7 @@ impl<'a> RequestFilter<'a> {
     }
 
     async fn process_query(&self) -> Result<Value, Box<dyn std::error::Error>> {
-        fn get_order_by(properties: &IndexMap<String, ReferenceOr<Box<Schema>>>) -> Vec<String> {
+        fn get_order_by(properties: &SchemaProperties) -> Vec<String> {
             let mut order_by = Vec::<String>::new();
 
             for (field_name, field) in properties {
@@ -223,7 +222,7 @@ impl<'a> RequestFilter<'a> {
             _ => todo!(),
         };
 
-        let list = self.entity_manager.as_ref().unwrap().find(&self.micro_service.openapi, &self.schema_name, &fields, &order_by).await?;
+        let list = self.entity_manager.as_ref().ok_or("Broken entity_manager.as_ref.")?.find(&self.micro_service.openapi, &self.schema_name, &fields, &order_by).await?;
         println!("[RequestFilter.process_query] : returning {} registers.", list.len());
         Ok(Value::Array(list))
     }
@@ -239,22 +238,15 @@ impl<'a> RequestFilter<'a> {
             }
         }
 
-        for security_item in self.micro_service.openapi.security.as_ref().unwrap() {
+        let openapi = &self.micro_service.openapi;
+
+        for security_item in openapi.security.as_ref().ok_or("Missing openapi.security")? {
             for (security_name, _) in security_item {
-                let security_scheme = self.micro_service
-                    .openapi
-                    .components
-                    .as_ref()
-                    .unwrap()
-                    .security_schemes
-                    .get(security_name);
-
-                if security_scheme.is_none()
-                {
+                let Some(security_scheme) = openapi.components.as_ref().ok_or("Broken components")?.security_schemes.get(security_name) else {
                     continue;
-                }
+                };
 
-                let security_scheme = security_scheme.unwrap().as_item().unwrap();
+                let security_scheme = security_scheme.as_item().ok_or("Broken security_scheme.as_item()")?;
 
                 match &security_scheme {
                     openapiv3::SecurityScheme::APIKey { location, name, description: _ } => match &location {
@@ -262,7 +254,7 @@ impl<'a> RequestFilter<'a> {
                         openapiv3::APIKeyLocation::Header => {
                             for (map_name, token_raw) in headers {
                                 if map_name.as_str().to_lowercase() == name.to_lowercase() {
-                                    if let Some(_user) = self.micro_service.db_adapter_file.find_one(&self.micro_service.openapi, "rufsUser", &json!({ "password": token_raw })).await.unwrap().take() {
+                                    if let Some(_user) = self.micro_service.db_adapter_file.find_one(openapi, "rufsUser", &json!({ "password": token_raw })).await.unwrap().take() {
                                         //let x = serde_json::from_value(user.clone()).unwrap();
                                         //self.token_payload = x;
                                     } else {
@@ -275,12 +267,8 @@ impl<'a> RequestFilter<'a> {
                         }
                         openapiv3::APIKeyLocation::Cookie => todo!(),
                     },
-                    openapiv3::SecurityScheme::HTTP {
-                        scheme,
-                        bearer_format,
-                        description: _,
-                    } => {
-                        if scheme == "bearer" && bearer_format.as_ref().unwrap() == "JWT" {
+                    openapiv3::SecurityScheme::HTTP { scheme, bearer_format, description: _ } => {
+                        if scheme == "bearer" && bearer_format.as_ref().ok_or("Broken bearer_format.as_ref()")? == "JWT" {
                             let authorization_header_prefix = "Bearer ";
                             let token_raw = headers.get(&"Authorization".to_lowercase()).ok_or("Missing header Authorization")?;
 
@@ -293,15 +281,12 @@ impl<'a> RequestFilter<'a> {
                         }
                     }
                     openapiv3::SecurityScheme::OAuth2 { flows: _, description: _ } => todo!(),
-                    openapiv3::SecurityScheme::OpenIDConnect {
-                        open_id_connect_url: _,
-                        description: _,
-                    } => todo!(),
+                    openapiv3::SecurityScheme::OpenIDConnect { open_id_connect_url: _, description: _ } => todo!(),
                 }
             }
         }
 
-        if let Some(role) = self.token_payload.as_ref().unwrap().roles.as_ref().iter().find(|&x| x.path == self.path) {
+        if let Some(role) = self.token_payload.as_ref().ok_or("Broken token_payload")?.roles.iter().find(|&x| x.path == self.path) {
             if check_mask(role.mask, &self.method) {
                 Ok(true)
             } else {
@@ -362,8 +347,8 @@ impl<'a> RequestFilter<'a> {
             let mut check_rufs_group_owner = obj_rufs_group_owner.is_none();
 
             if check_rufs_group_owner == false {
-                if let Some(id) = obj_rufs_group_owner.as_ref().unwrap().primary_key.get("id") {
-                    if id.as_u64().unwrap() == token_data.rufs_group_owner {
+                if let Some(name) = obj_rufs_group_owner.as_ref().unwrap().primary_key.get("name") {
+                    if name.as_str().unwrap() == &token_data.rufs_group_owner {
                         check_rufs_group_owner = true;
                     }
                 }
@@ -372,14 +357,14 @@ impl<'a> RequestFilter<'a> {
             let mut check_rufs_group = rufs_group.is_none();
 
             if check_rufs_group == false {
-                if let Some(id) = rufs_group.as_ref().unwrap().primary_key.get("id") {
-                    if token_data.groups.contains(&id.as_u64().unwrap()) {
+                if let Some(name) = rufs_group.as_ref().unwrap().primary_key.get("name") {
+                    if token_data.groups.contains(&name.as_str().unwrap().to_string()) {
                         check_rufs_group = true;
                     }
                 }
             }
             // restrição de rufsGroup
-            if token_data.rufs_group_owner == 1 || (check_rufs_group_owner && check_rufs_group) {
+            if token_data.rufs_group_owner == "admin" || (check_rufs_group_owner && check_rufs_group) {
                 for role in token_data.roles.iter() {
                     if role.path == self.path {
                         if (role.mask & 0x01) != 0 {

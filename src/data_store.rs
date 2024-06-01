@@ -4,11 +4,13 @@ pub struct Filter;
 
 impl Filter {
     
-    fn check_match_exact(item: &Value, key: &Value) -> Result<bool, Box<dyn std::error::Error>> {
+    pub fn check_match_exact(item: &Value, key: &Value) -> Result<bool, Box<dyn std::error::Error>> {
         let mut _match = Ok(true);
 
         for (field_name, expected_value) in key.as_object().ok_or("[check_match_exact] broken key.as_object().")? {
-            let item_value = item.get(field_name).ok_or("[check_match_exact] Missing field.")?;
+            let item_value = item.get(field_name).ok_or_else(|| {
+                format!("[Filter::check_match_exact] Missing field '{}' in {}.", field_name, item)
+            })?;
 
             let item_value = if let Some(str) = item_value.as_str() {
                 str.to_string()
