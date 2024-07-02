@@ -136,6 +136,25 @@ pub struct RufsMicroService<'a> {
 }
 
 impl RufsMicroService<'_> {
+    pub fn build_db_uri(host: Option<&str>, port: Option<&str>, database: Option<&str>, user: Option<&str>, password: Option<&str>) -> String {
+        fn get_value(key: &str, value: Option<&str>, default: &str) -> String {
+            match std::env::var(key) {
+                Ok(value) => value,
+                Err(_) => match value {
+                    Some(value) => value.to_string(),
+                    None => default.to_string(),
+                }
+            }            
+        }
+
+        let host = get_value("PGHOST", host, "localhost");
+        let port = get_value("PGPORT", port, "5432");
+        let database = get_value("PGDATABASE", database, "rufs_base");
+        let user = get_value("PGUSER", user, "development");
+        let password = get_value("PGPASSWORD", password, "123456");
+        format!("postgres://{user}:{password}@{host}:{port}/{database}")
+    }
+
     fn load_open_api(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         if self.params.openapi_file_name.is_empty() {
             self.params.openapi_file_name = format!("openapi-{}.json", self.params.app_name);

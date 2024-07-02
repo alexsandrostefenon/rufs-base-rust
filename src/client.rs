@@ -1212,44 +1212,39 @@ impl DataView {
             }
 
             let html_cols = html_cols.join("\n");
+            let mut html_row_actions = vec![];
             let href_view = build_href(data_view_manager, data_view, item, &DataViewProcessAction::View)?;
+            html_row_actions.push(format!(r##"<a id="table_row-view-{form_id}--{index}" href="{href_view}"><i class="bi bi-eye-fill"></i> View</a>"##));
 
-            let row = if data_view.data_view_id.parent_schema_name.is_some() && data_view.data_view_id.action == DataViewProcessAction::View {
-                format!(r##"
-                <tr>
-                    <td>
-                        <a id="table_row-view-{form_id}--{index}" href="{href_view}"><i class="bi bi-eye-fill"></i> View</a>
-                    </td>
-                    {html_cols}
-                </tr>
-                "##)
-            } else {
-                let html_a_select = if let Some(_origin) = &params_search.origin {
-                    // bi-box-arrow-left, bi-box-arrow-down-left
-                    format!(r##"<a href="#" id="search_select-new-{form_id}--{item_index}"><i class="bi bi-check-lg"></i> Select</a>"##)
+            if data_view.data_view_id.parent_schema_name.is_none() || data_view.data_view_id.action != DataViewProcessAction::View {
+                if let Some(_origin) = &params_search.origin {
+                    html_row_actions.insert(0, format!(r##"<a id="search_select-new-{form_id}--{item_index}" href="#"><i class="bi bi-check-lg"></i> Select</a>"##));
+                }
+
+                let enable_edit = if let Some(action) = &data_view.data_view_id.parent_action {
+                    action == &DataViewProcessAction::Edit
                 } else {
-                    "".to_string()
+                    true
                 };
-    
-                let href_edit = build_href(data_view_manager, data_view, item, &DataViewProcessAction::Edit)?;
-                let href_item_move = format!(r##"
-                <a id="table_row-remove-{form_id}--{index}" ng-if="edit == true" href="#"><i class="bi bi-trash"></i> Delete</a>
-                <a id="table_row-up-{form_id}--{index}"     ng-if="edit == true" href="#"><i class="bi bi-arrow-up"></i> Up</a>
-                <a id="table_row-down-{form_id}--{index}"   ng-if="edit == true" href="#"><i class="bi bi-arrow-down"></i> Down</a>
-                "##);
-                format!(r##"
-                <tr>
-                    <td>
-                        <a id="table_row-view-{form_id}--{index}" href="{href_view}"><i class="bi bi-eye-fill"></i> View</a>
-                        <a id="table_row-edit-{form_id}--{index}" href="{href_edit}"><i class="bi bi-eye-fill"></i> Edit</a>
-                        {html_a_select}
-                        {href_item_move}
-                    </td>
-                    {html_cols}
-                </tr>
-                "##)
-            };
 
+                if enable_edit {
+                    let href_edit = build_href(data_view_manager, data_view, item, &DataViewProcessAction::Edit)?;
+                    html_row_actions.push(format!(r##"<a id="table_row-edit-{form_id}--{index}"   href="{href_edit}"><i class="bi bi-eye-fill"></i> Edit</a>"##));
+                    html_row_actions.push(format!(r##"<a id="table_row-remove-{form_id}--{index}" href="#"><i class="bi bi-trash"></i> Delete</a>"##));
+                    html_row_actions.push(format!(r##"<a id="table_row-up-{form_id}--{index}"     href="#"><i class="bi bi-arrow-up"></i> Up</a>"##));
+                    html_row_actions.push(format!(r##"<a id="table_row-down-{form_id}--{index}"   href="#"><i class="bi bi-arrow-down"></i> Down</a>"##));
+                }
+            }
+
+            let html_row_actions = html_row_actions.join("\n");
+            let row = format!(r##"
+            <tr>
+                <td>
+                    {html_row_actions}
+                </td>
+                {html_cols}
+            </tr>
+            "##);
             hmtl_rows.push(row);
             item_index += 1;
         }
@@ -1705,7 +1700,9 @@ impl DataView {
                 None => &self.params.filter,
             },
             DataViewProcessAction::Aggregate => &self.params.aggregate,
-            DataViewProcessAction::Sort | DataViewProcessAction::Search => todo!(),
+            DataViewProcessAction::Sort | DataViewProcessAction::Search => {
+                todo!()
+            },
         };
 
         Ok(instance)
@@ -2105,6 +2102,10 @@ pub struct ServerConnection {
     //web_socket :Option<WebSocket>,
 }
 
+/*
+TODO : no processo de login buscar somente as alterações.
+https://dba.stackexchange.com/questions/233735/track-all-modifications-to-a-postgresql-table
+ */
 impl ServerConnection {
     pub fn new(server_url: &str) -> Self {
         Self {
@@ -2767,7 +2768,7 @@ impl DataViewManager<'_> {
 
         #[cfg_attr(target_arch = "wasm32", async_recursion::async_recursion(?Send))]
         #[cfg_attr(not(target_arch = "wasm32"), async_recursion::async_recursion)]
-        async fn data_view_get(watcher: &Box<dyn DataViewWatch>, data_view: &mut DataView, server_connection: &mut ServerConnection, primary_key: &Value, element_id: &HtmlElementId) -> Result<(), Box<dyn std::error::Error>> {
+        async fn data_view_get(watcher: &Box<dyn DataViewWatch>, data_view: &mut DataView, server_connection: &mut ServerConnection, primary_key: &Value, element_id: Option<&HtmlElementId>) -> Result<(), Box<dyn std::error::Error>> {
             let schema_name = &data_view.data_view_id.schema_name;
             let service = server_connection.service_map.get(schema_name).ok_or_else(|| format!("[data_view_get] Missing service {} in server_connection.service_map.", data_view.data_view_id.schema_name))?;
             let primary_key = service.get_primary_key(primary_key).ok_or_else(|| format!("wrong primary key {} for service {}", primary_key, service.schema_name))?;
@@ -2803,7 +2804,9 @@ impl DataViewManager<'_> {
                     let service = server_connection.service_map.get(schema_name).ok_or_else(|| format!("Missing service"))?;
 
                     if data_view_item.is_one_to_one {
-                        data_view_get(watcher, data_view_item, server_connection, &foreign_key, element_id).await?;
+                        if data_view_item.data_view_id.action != DataViewProcessAction::Search {
+                            data_view_get(watcher, data_view_item, server_connection, &foreign_key, None).await?;
+                        }
                     } else {
                         if data_view_item.data_view_id.action == DataViewProcessAction::Search {
                             for item in &service.list {
@@ -2817,7 +2820,7 @@ impl DataViewManager<'_> {
             }
 
             data_view.params.primary_key = Some(primary_key);
-            data_view.set_values(server_connection, watcher, &value, Some(element_id))
+            data_view.set_values(server_connection, watcher, &value, element_id)
         }
 
         let parent_id = if let Some(parent_id) = &element_id.data_view_id.parent_id {
@@ -2963,9 +2966,9 @@ impl DataViewManager<'_> {
             DataViewProcessAction::Edit | DataViewProcessAction::View => {
                 if data_view.path.is_some() {
                     if let Some(primary_key) = &params_search.primary_key {
-                        data_view_get(&self.watcher, data_view, &mut self.server_connection, primary_key, element_id).await?
+                        data_view_get(&self.watcher, data_view, &mut self.server_connection, primary_key, Some(element_id)).await?
                     } else {
-                        data_view_get(&self.watcher, data_view, &mut self.server_connection, params_extra, element_id).await?
+                        data_view_get(&self.watcher, data_view, &mut self.server_connection, params_extra, Some(element_id)).await?
                     }
                 } else {
                     data_view.set_values(&self.server_connection, &self.watcher, params_extra, Some(element_id))?;
