@@ -1,9 +1,8 @@
 
 use std::{collections::HashMap, fs, path::Path, sync::{RwLock, Arc}};
-use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value,json};
-use openapiv3::{OpenAPI,SecurityRequirement};
+use openapiv3::{OpenAPI, SecurityRequirement};
 use jsonwebtoken::{encode, EncodingKey, Header};
 use async_std::path::PathBuf;
 use async_trait::async_trait;
@@ -136,7 +135,7 @@ pub struct RufsMicroService<'a> {
 }
 
 impl RufsMicroService<'_> {
-    pub fn build_db_uri(host: Option<&str>, port: Option<&str>, database: Option<&str>, user: Option<&str>, password: Option<&str>) -> String {
+    pub fn build_db_uri(host: Option<&str>, port: Option<&str>, user: Option<&str>, password: Option<&str>, database: Option<&str>, schema: Option<&str>) -> String {
         fn get_value(key: &str, value: Option<&str>, default: &str) -> String {
             match std::env::var(key) {
                 Ok(value) => value,
@@ -149,10 +148,22 @@ impl RufsMicroService<'_> {
 
         let host = get_value("PGHOST", host, "localhost");
         let port = get_value("PGPORT", port, "5432");
-        let database = get_value("PGDATABASE", database, "rufs_base");
         let user = get_value("PGUSER", user, "development");
         let password = get_value("PGPASSWORD", password, "123456");
-        format!("postgres://{user}:{password}@{host}:{port}/{database}")
+
+        let database = if let Some(database) = database {
+            database.to_string()
+        } else {
+            get_value("PGDATABASE", database, "rufs_base")
+        };
+
+        let options = if let Some(schema) = schema {
+            "?options=-c%20search_path=".to_owned() + schema
+        } else {
+            String::new()
+        };
+
+        format!("postgres://{user}:{password}@{host}:{port}/{database}{options}")
     }
 
     fn load_open_api(&mut self) -> Result<(), Box<dyn std::error::Error>> {
@@ -204,31 +215,34 @@ impl RufsMicroService<'_> {
         }
     
         async fn create_rufs_tables(rms: &RufsMicroService<'_>, openapi_rufs: &OpenAPI) -> Result<(), Box<dyn std::error::Error>> {
+            let db_schema = "rufs_customer_template";
+            rms.entity_manager.exec("CREATE SCHEMA IF NOT EXISTS rufs_customer_template;").await?;
+
             for name in ["rufsGroupOwner", "rufsUser", "rufsGroup"] { // , "rufsGroupUser"
                 if rms.openapi.components.as_ref().unwrap().schemas.get(name).is_none() {
                     println!("don't matched schema {}, existents :\n{:?}", name, rms.openapi.components.as_ref().unwrap().schemas.keys());
                     let schema = openapi_rufs.components.as_ref().unwrap().schemas.get(name).unwrap().as_item().unwrap();
-                    rms.entity_manager.create_table(name, schema).await?;
+                    rms.entity_manager.create_table(db_schema, &name, schema).await?;
                 }
             }
 
             let default_group_owner_admin: serde_json::Value = serde_json::from_str(DEFAULT_GROUP_OWNER_ADMIN_STR).unwrap();
             let default_user_admin: serde_json::Value = serde_json::from_str(DEFAULT_USER_ADMIN_STR).unwrap();
 
-            if rms.entity_manager.find_one(openapi_rufs, "rufsGroupOwner", &json!({"name": "admin"})).await?.is_none() {
-                rms.entity_manager.insert(openapi_rufs, "rufsGroupOwner", &default_group_owner_admin).await?;
+            if rms.entity_manager.find_one(openapi_rufs, db_schema, "rufsGroupOwner", &json!({"name": "admin"})).await?.is_none() {
+                rms.entity_manager.insert(openapi_rufs, db_schema, "rufsGroupOwner", &default_group_owner_admin).await?;
             }
 
-            if rms.entity_manager.find_one(openapi_rufs, "rufsUser", &json!({"name": "admin"})).await?.is_none() {
-                rms.entity_manager.insert(openapi_rufs, "rufsUser", &default_user_admin).await?;
+            if rms.entity_manager.find_one(openapi_rufs, db_schema, "rufsUser", &json!({"name": "admin"})).await?.is_none() {
+                rms.entity_manager.insert(openapi_rufs, db_schema, "rufsUser", &default_user_admin).await?;
             }
 
             Ok(())
         }
 
-        async fn exec_migrations(rms: &mut RufsMicroService<'_>, migration_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+        async fn exec_migrations(rms: &mut RufsMicroService<'_>, migration_path: &str) -> Result<bool, Box<dyn std::error::Error>> {
             fn get_version(name: &str) -> Result<usize, Box<dyn std::error::Error>> {
-                let reg_exp = Regex::new(r"(\d{1,3})\.(\d{1,3})\.(\d{1,3})").unwrap();
+                let reg_exp = regex::Regex::new(r"(\d{1,3})\.(\d{1,3})\.(\d{1,3})").unwrap();
                 let reg_exp_result = reg_exp.captures(name).unwrap();
 
                 if reg_exp_result.len() != 4 {
@@ -261,7 +275,7 @@ impl RufsMicroService<'_> {
             }
 
             if Path::new(migration_path).exists() == false {
-                return Ok(());
+                return Ok(false);
             }
 
             let old_version = get_version(&rms.openapi.info.version)?;
@@ -284,10 +298,10 @@ impl RufsMicroService<'_> {
             });
 
             for file_name in &list {
-                migrate(rms, migration_path, file_name).await.unwrap();
+                migrate(rms, migration_path, file_name).await?;
             }
 
-            Ok(())
+            Ok(list.len() > 0)
         }
 
         let mut rufs = RufsMicroService {
@@ -316,7 +330,18 @@ impl RufsMicroService<'_> {
         }
 
         println!("[connect] : exec_migrations...");        
-        exec_migrations(&mut rufs, migration_path).await?;
+
+        if exec_migrations(&mut rufs, migration_path).await? {
+            #[cfg(debug_assertions)]
+            let status = std::process::Command::new("/usr/bin/podman").arg("exec").arg("postgres").arg("/usr/bin/pg_dump").arg(db_uri).arg("--inserts").arg("-n").arg("rufs_customer_template").arg("-f").arg("/app/data/template.sql").status().expect("Failed to run pg_dump");
+            #[cfg(not(debug_assertions))]
+            let status = std::process::Command::new("/usr/bin/pg_dump").arg(db_uri).arg("--inserts").arg("-n").arg("rufs_customer_template").arg("-f").arg("data/template.sql").status().expect("Failed to run pg_dump");
+            
+            if status.success() == false {
+                return Err("Broken pg_dump")?;
+            }
+        }
+
         let mut options = FillOpenAPIOptions::default();
         options.request_body_content_type = rufs.params.request_body_content_type.clone();
         println!("[connect] : update_open_api...");        
@@ -344,7 +369,7 @@ impl RufsMicroService<'_> {
             exp: 10000000000,
             name: user.name,
             rufs_group_owner: user.rufs_group_owner.clone(),
-            groups: Box::new([]),//list_out.into_boxed_slice()
+            groups: Box::new([]),
             roles: user.roles,
             ip: remote_addr.to_string(),
             extra: extra_claims
@@ -379,14 +404,38 @@ pub struct RufsMicroServiceAuthenticator();
 #[async_trait]
 impl Authenticator for RufsMicroServiceAuthenticator {
 
-    async fn authenticate_user(&self, rufs: &RufsMicroService, user_name: &str, user_password: &str) -> Result<(RufsUser, Value, Value), Box<dyn std::error::Error>> {
-        let entity_manager = if rufs.db_adapter_file.have_table("rufsUser") {
+    async fn authenticate_user(&self, rufs: &RufsMicroService, customer_user: &str, user_password: &str) -> Result<(RufsUser, Value, Value), Box<dyn std::error::Error>> {
+        let re = regex::Regex::new(r"^((?P<customer_id>\d{11,14}|\d{3}\.\d{3}\.\d{3}\-\d{2}|\d{2}\.\d{3}\.\d{3}/\d{4}\-\d{2})\.)?(?P<user_id>.*)")?;
+
+        let Some(cap) = re.captures(customer_user) else {
+            return Err("Broken customer_user.")?
+        };
+
+        let Some(user_id) = cap.name("user_id") else {
+            return Err("Broken customer_user, missing user_name.")?
+        };
+
+        let (db_schema, customer_id) = match cap.name("customer_id") {
+            Some(customer_id) => {
+                let re = regex::Regex::new(r"[^\d]")?;
+                let customer_id = re.replace_all(customer_id.as_str(), "").to_string();
+                ("rufs_customer_".to_owned() + &customer_id, customer_id)
+            },
+            _ => {
+                ("public".to_string(), "".to_string())
+            },
+        };
+
+        let openapi_schema = "rufsUser";
+
+        let entity_manager = if rufs.db_adapter_file.have_table(&openapi_schema) {
             &rufs.db_adapter_file as &(dyn EntityManager + Sync + Send)
         } else {
             &rufs.entity_manager as &(dyn EntityManager + Sync + Send)
         };
 
-        let user = entity_manager.find_one(&rufs.openapi, "rufsUser", &json!({ "name": user_name })).await?.ok_or("Fail to find user.")?;
+        entity_manager.check_schema(&db_schema, user_id.as_str(), user_password).await?;
+        let user = entity_manager.find_one(&rufs.openapi, &db_schema, &openapi_schema, &json!({ "name": user_id.as_str() })).await?.ok_or("Fail to find user.")?;
         let user = RufsUser::deserialize(*user)?;
 
         if user.password.len() > 0 && user.password != user_password {
@@ -400,7 +449,10 @@ impl Authenticator for RufsMicroServiceAuthenticator {
             list_out.push(item.get("rufsGroup").unwrap().as_str().unwrap().to_string());
         }
 */
-        Ok((user, json!({}), json!({})))
+        // user, extra_claims, extra
+        let extra_claims = json!({"customer": customer_id});
+        let extra = json!({});
+        Ok((user, extra_claims, extra))
     }
 
 }
@@ -699,6 +751,7 @@ pub async fn rufs_warp<'a, T>(rufs: RufsMicroService<'static>, authenticator: &'
 
         let ret = warp_try!(rf.process_request().await);
         let ret = warp::reply::json(&ret);
+        println!("[handle_api()] : ...exiting");
         Ok(Box::new(ret))
     }
     
@@ -816,9 +869,9 @@ const RUFS_MICRO_SERVICE_OPENAPI_STR: &str = r##"{
 					"name":           {"type": "string", "maxLength": 32, "nullable": false},
 					"password":       {"type": "string", "nullable": false},
 					"path":           {"type": "string"},
-					"roles":          {"type": "array", "items": {"properties": {"path": {"type": "string", "default": ""}, "mask": {"type": "integer", "default": 0, "x-flags": ["get","post","put","delete","query"]}}}},
-					"routes":         {"type": "array", "items": {"properties": {"path": {"type": "string"}, "controller": {"type": "string"}, "templateUrl": {"type": "string"}}}},
-					"menu":           {"type": "array", "items": {"properties": {"group": {"type": "string", "default": "action"}, "label": {"type": "string"}, "path": {"type": "string", "default": "service/action?filter={}&aggregate={}"}}}}
+					"roles":          {"type": "array", "default": "[]", "items": {"properties": {"path": {"type": "string", "default": ""}, "mask": {"type": "integer", "default": 0, "x-flags": ["get","post","put","delete","query"]}}}},
+					"routes":         {"type": "array", "default": "[]", "items": {"properties": {"path": {"type": "string"}, "controller": {"type": "string"}, "templateUrl": {"type": "string"}}}},
+					"menu":           {"type": "array", "default": "[]", "items": {"properties": {"group": {"type": "string", "default": "action"}, "label": {"type": "string"}, "path": {"type": "string", "default": "service/action?filter={}&aggregate={}"}}}}
 				},
 				"x-primaryKeys": ["rufsGroupOwner", "name"],
 				"x-uniqueKeys":  {}
@@ -845,7 +898,6 @@ const RUFS_MICRO_SERVICE_OPENAPI_STR: &str = r##"{
 */
 
 const DEFAULT_GROUP_OWNER_ADMIN_STR: &str = r#"{"name": "admin"}"#;
-
 
 const DEFAULT_USER_ADMIN_STR: &str = r#"{
     "name": "admin",

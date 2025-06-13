@@ -1,5 +1,4 @@
 use std::{io::Error, sync::Arc, collections::HashMap};
-
 use async_trait::async_trait;
 use chrono::NaiveDateTime;
 use convert_case::Casing;
@@ -41,6 +40,7 @@ impl Default for DbConfig {
 pub struct DbAdapterSql<'a> {//pub struct DbAdapterSql<'a, C> {
 	pub openapi    : Option<&'a OpenAPI>,
 	db_config: DbConfig,
+	public_tables_in_camel: Vec<String>,
 	alias_map: HashMap<String, String>,
 	alias_map_external_to_internal :HashMap<String, String>,
 	missing_primary_keys: HashMap<String, Vec<String>>,
@@ -329,6 +329,17 @@ pub enum SqlType {
 		self.get_json_list(&list)
 	}
 
+	fn get_db_table<'a>(&'a self, db_schema: &'a str, openapi_schema: &'a str) -> String {
+		let table_name = openapi_schema.to_case(convert_case::Case::Snake);
+
+		let db_schema_and_table_in_snake = if self.public_tables_in_camel.iter().any(|x| x == openapi_schema) {
+			"public.".to_owned() + &table_name
+		} else {
+			db_schema.to_owned() + "." + &table_name
+		};
+
+		db_schema_and_table_in_snake
+	}
 }
 
 #[async_trait]
@@ -338,16 +349,16 @@ impl EntityManager for DbAdapterSql<'_> {
 		Ok(())
 	}
 
-    async fn insert(&self, openapi: &OpenAPI, schema_name :&str, obj :&Value) -> Result<Value, Box<dyn std::error::Error>> {
-		let table_name = schema_name.to_case(convert_case::Case::Snake);
+    async fn insert(&self, openapi: &OpenAPI, db_schema: &str, openapi_schema :&str, obj :&Value) -> Result<Value, Box<dyn std::error::Error>> {
 		let mut params: Vec<&(dyn ToSql + Sync)> = vec![];
 		let mut str_fields = vec![];
 		let mut str_values = vec![];
 		let mut count = 1;
-		let properties = openapi.get_properties_from_schema_name(&None, schema_name, &crate::openapi::SchemaPlace::Schemas).ok_or_else(|| format!("EntityManager.insert({}) : Missing porperties for schema", schema_name))?;
+		let db_schema_and_table_in_snake = self.get_db_table(db_schema, openapi_schema);
+		let properties = openapi.get_properties_from_schema_name(&None, openapi_schema, &crate::openapi::SchemaPlace::Schemas).ok_or_else(|| format!("EntityManager.insert({}) : Missing porperties for schema", openapi_schema))?;
 
 		for (field_name, field) in properties {
-			let field = field.as_item().ok_or_else(|| format!("EntityManager.insert({}) : field {} must be item, not reference", schema_name, field_name))?;
+			let field = field.as_item().ok_or_else(|| format!("EntityManager.insert({}) : field {} must be item, not reference", openapi_schema, field_name))?;
 			let value = obj.as_object().unwrap().get(field_name);
 			let value = match value {
 				Some(value) => value,
@@ -415,13 +426,15 @@ impl EntityManager for DbAdapterSql<'_> {
 			str_fields.push(field_name.to_case(convert_case::Case::Snake));
 		}
 
-		let sql = format!("INSERT INTO {} ({}) VALUES ({}) RETURNING *", table_name, str_fields.join(","), str_values.join(","));
+		let sql = format!("INSERT INTO {} ({}) VALUES ({}) RETURNING *", db_schema_and_table_in_snake, str_fields.join(","), str_values.join(","));
+		#[cfg(debug_assertions)]
+		println!("[EntityManager.insert()] :\n{}", sql);
 		let params = params.as_slice();
 
 		let list = match self.client.as_ref().unwrap().query(&sql, params).await {
 			Ok(list) => list,
 			Err(err) => {
-				println!("[DbAdapterSql.insert] {} : \n{}\n{}\n{}", schema_name, err, sql, serde_json::to_string_pretty(&obj)?);
+				println!("[DbAdapterSql.insert] {} : \n{}\n{}\n{}", openapi_schema, err, sql, serde_json::to_string_pretty(&obj)?);
 				return Err(err)?;
 			},
 		};
@@ -430,9 +443,9 @@ impl EntityManager for DbAdapterSql<'_> {
 		Self::get_json(obj)
 	}
 
-	async fn find(&self, openapi: &OpenAPI, schema_name: &str, query_params: &Value, order_by: &Vec<String>) -> Result<Vec<Value>, Box<dyn std::error::Error>> {
-		let properties = openapi.get_properties_from_schema_name(&None, schema_name, &crate::openapi::SchemaPlace::Schemas).unwrap();
-		let table_name = schema_name.to_case(convert_case::Case::Snake);
+	async fn find(&self, openapi: &OpenAPI, db_schema: &str, openapi_schema: &str, query_params: &Value, order_by: &Vec<String>) -> Result<Vec<Value>, Box<dyn std::error::Error>> {
+		let db_schema_and_table_in_snake = self.get_db_table(db_schema, openapi_schema);
+		let properties = openapi.get_properties_from_schema_name(&None, openapi_schema, &crate::openapi::SchemaPlace::Schemas).unwrap();
 		let mut params = vec![];
 		let sql_query = self.build_query(properties, query_params, &mut params, order_by)?;
 		let mut count = 0;
@@ -464,7 +477,7 @@ impl EntityManager for DbAdapterSql<'_> {
 		let mut sql_first = "".to_string();
 		let mut sql_limit = "".to_string();
 
-		if self.db_config.limit_query_exceptions.contains(&table_name) == false {
+		if self.db_config.limit_query_exceptions.contains(&db_schema_and_table_in_snake) == false {
 			if self.db_config.driver_name == "firebird" {
 				sql_first = format!("FIRST {}", self.db_config.limit_query);
 			} else {
@@ -472,20 +485,20 @@ impl EntityManager for DbAdapterSql<'_> {
 			}
 		}
 
-		let sql = format!("SELECT {} {} FROM {} {} {}", sql_first, fields_out, table_name, sql_query, sql_limit);
+		let sql = format!("SELECT {} {} FROM {} {} {}", sql_first, fields_out, db_schema_and_table_in_snake, sql_query, sql_limit);
 		let params = params.as_slice();
 		self.query(&sql, params).await
 	}
 
-	async fn find_one(&self, openapi: &OpenAPI, table: &str, key: &Value) -> Result<Option<Box<Value>>, Box<dyn std::error::Error>> {
-		println!("[DbAdapterSql.find_one({}, {})]", table, key);
-		let list = self.find(openapi, table, key, &vec![]).await?;
+	async fn find_one(&self, openapi: &OpenAPI, db_schema: &str, openapi_schema: &str, key: &Value) -> Result<Option<Box<Value>>, Box<dyn std::error::Error>> {
+		println!("[DbAdapterSql.find_one({}, {})]", openapi_schema, key);
+		let list = self.find(openapi, db_schema, openapi_schema, key, &vec![]).await?;
 
 		if list.len() == 0 {
 			Ok(None)
 		} else {
 			if list.len() > 1 {
-				Err(format!("[DbAdapterSql.find_one({}, {})] Error : expected one, found {} registers.", table, key, list.len()))?;
+				Err(format!("[DbAdapterSql.find_one({}, {})] Error : expected one, found {} registers.", openapi_schema, key, list.len()))?;
 			}
 
 			let obj = list.get(0).ok_or("broken")?;
@@ -493,20 +506,20 @@ impl EntityManager for DbAdapterSql<'_> {
 		}
 	}
 
-	async fn update(&self, openapi: &OpenAPI, schema_name :&str, query_params :&Value, obj :&Value) -> Result<Value, Box<dyn std::error::Error>> {
-        println!("[DbAdapterSql.update({}, {})]", schema_name, obj.to_string());
-		let obj = obj.as_object().ok_or_else(|| format!("EntityManager.update({}) : value must be json object", schema_name))?;
-		let table_name = schema_name.to_case(convert_case::Case::Snake);
+	async fn update(&self, openapi: &OpenAPI, db_schema: &str, openapi_schema :&str, query_params :&Value, obj :&Value) -> Result<Value, Box<dyn std::error::Error>> {
+        println!("[DbAdapterSql.update({}, {})]", openapi_schema, obj.to_string());
+		let obj = obj.as_object().ok_or_else(|| format!("EntityManager.update({}) : value must be json object", openapi_schema))?;
 		let mut params: Vec<&(dyn ToSql + Sync)> = vec![];
 		let mut str_values = vec![];
-		let properties = openapi.get_properties_from_schema_name(&None, schema_name, &crate::openapi::SchemaPlace::Schemas).ok_or_else(|| format!("EntityManager.update({}) : Missing porperties for schema", schema_name))?;
+		let db_schema_and_table_in_snake = self.get_db_table(db_schema, openapi_schema);
+		let properties = openapi.get_properties_from_schema_name(&None, openapi_schema, &crate::openapi::SchemaPlace::Schemas).ok_or_else(|| format!("EntityManager.update({}) : Missing porperties for schema", openapi_schema))?;
 
 		for (field_name, field) in properties {
 			let Some(value) = obj.get(field_name) else {
 				continue;
 			};
 
-			let field = field.as_item().ok_or_else(|| format!("EntityManager.insert({}) : field {} must be item, not reference", schema_name, field_name))?;
+			let field = field.as_item().ok_or_else(|| format!("EntityManager.insert({}) : field {} must be item, not reference", openapi_schema, field_name))?;
 			let field_name = field_name.to_case(convert_case::Case::Snake);
 
 			match value {
@@ -553,7 +566,7 @@ impl EntityManager for DbAdapterSql<'_> {
 		}
 
 		let sql_query = self.build_query(properties, query_params, &mut params, &vec![])?;
-		let sql = format!("UPDATE {} SET {} {} RETURNING *", table_name, str_values.join(","), sql_query);
+		let sql = format!("UPDATE {} SET {} {} RETURNING *", db_schema_and_table_in_snake, str_values.join(","), sql_query);
 		println!("[DbAdapterSql.update()] : {}", sql);
 		let params = params.as_slice();
 		let list = self.client.as_ref().unwrap().query(&sql, params).await.unwrap();
@@ -561,13 +574,13 @@ impl EntityManager for DbAdapterSql<'_> {
 		Ok(self.get_json_list(&list)?.get(0).ok_or("broken")?.clone())
 	}
 
-	async fn delete_one(&self, openapi: &OpenAPI, schema_name: &str, query_params: &Value) -> Result<(), Box<dyn std::error::Error>> {
-		println!("[DbAdapterSql.delete_one({}, {})]", schema_name, query_params);
-		let properties = openapi.get_properties_from_schema_name(&None, schema_name, &crate::openapi::SchemaPlace::Schemas).unwrap();
-		let table_name = schema_name.to_case(convert_case::Case::Snake);
+	async fn delete_one(&self, openapi: &OpenAPI, db_schema: &str, openapi_schema: &str, query_params: &Value) -> Result<(), Box<dyn std::error::Error>> {
+		println!("[DbAdapterSql.delete_one({}, {})]", openapi_schema, query_params);
+		let db_schema_and_table_in_snake = self.get_db_table(db_schema, openapi_schema);
+		let properties = openapi.get_properties_from_schema_name(&None, openapi_schema, &crate::openapi::SchemaPlace::Schemas).unwrap();
 		let mut params: Vec<&(dyn ToSql + Sync)> = vec![];
 		let sql_query = self.build_query(properties, query_params, &mut params, &vec![])?;
-		let sql = format!("DELETE FROM {} {}", table_name, sql_query);
+		let sql = format!("DELETE FROM {} {}", db_schema_and_table_in_snake, sql_query);
 		let params = params.as_slice();
 		println!("[DbAdapterSql.delete_one({})] : {} , {:?}", query_params, sql, params);
 		let _count = self.client.as_ref().unwrap().execute(&sql, params).await.unwrap();
@@ -812,6 +825,7 @@ impl EntityManager for DbAdapterSql<'_> {
 		struct SqlInfoTables {
 			data_type :String,
 			udt_name :String,
+			table_schema :String,
 			table_name :String,
 			column_name :String,
 			is_nullable :String,
@@ -831,6 +845,7 @@ impl EntityManager for DbAdapterSql<'_> {
 			select 
 			LOWER(TRIM(c.data_type)) as data_type,
 			LOWER(TRIM(c.udt_name)) as udt_name,
+			LOWER(TRIM(c.table_schema)) as table_schema,
 			LOWER(TRIM(c.table_name)) as table_name,
 			LOWER(TRIM(c.column_name)) as column_name,
 			c.is_nullable,
@@ -844,7 +859,7 @@ impl EntityManager for DbAdapterSql<'_> {
 			from pg_catalog.pg_statio_all_tables as st
 			inner join pg_catalog.pg_description pgd on (pgd.objoid=st.relid)
 			right outer join information_schema.columns c on (pgd.objsubid=c.ordinal_position and c.table_schema=st.schemaname and c.table_name=st.relname)
-			where table_schema = 'public' order by c.table_name,c.ordinal_position
+			where table_schema in ('public','rufs_customer_template') order by c.table_name,c.ordinal_position
 			";
 			let rows = adapter.query(sql_info_tables, &[]).await?;
 
@@ -865,6 +880,10 @@ impl EntityManager for DbAdapterSql<'_> {
 				}
 
 				let table_name = rec.table_name.to_case(convert_case::Case::Camel);
+
+				if rec.table_schema == "public" && adapter.public_tables_in_camel.contains(&table_name) == false {
+					adapter.public_tables_in_camel.push(table_name.clone());
+				}
 
 				let schema = if let Some(schema) = schemas.get_mut(&table_name) {
 					schema
@@ -985,7 +1004,7 @@ impl EntityManager for DbAdapterSql<'_> {
 		Ok(())
 	}
 
-	async fn create_table(&self, name :&str, schema :&Schema) -> Result<(), Box<dyn std::error::Error>> {
+	async fn create_table(&self, db_schema: &str, openapi_schema :&str, schema :&Schema) -> Result<(), Box<dyn std::error::Error>> {
 		fn gen_sql_column_description(field_name :&str, field :&Schema) -> Result<String, Error> {
 			let typ = match &field.schema_kind {
 				SchemaKind::Type(typ) => typ,
@@ -1068,7 +1087,7 @@ impl EntityManager for DbAdapterSql<'_> {
 				let reference = reference.as_str().unwrap();
 				let table_out = OpenAPI::get_schema_name_from_ref(reference);
 				let table_out = table_out.to_case(convert_case::Case::Snake);
-				list.push(format!("FOREIGN KEY({}) REFERENCES {}", field_name.to_case(convert_case::Case::Snake), table_out));
+				list.push(format!("FOREIGN KEY({}) REFERENCES {db_schema}.{}", field_name.to_case(convert_case::Case::Snake), table_out));
 			}
 		}
 
@@ -1083,12 +1102,40 @@ impl EntityManager for DbAdapterSql<'_> {
 			}
 		}
 
-		let table_name = name.to_case(convert_case::Case::Snake);
-		let sql = format!("CREATE TABLE IF NOT EXISTS {} ({}, PRIMARY KEY({}))", table_name, list.join(", "), list_primary_keys.join(", "));
+		let table_name = openapi_schema.to_case(convert_case::Case::Snake);
+		let sql = format!("CREATE TABLE IF NOT EXISTS {db_schema}.{table_name} ({}, PRIMARY KEY({}))", list.join(", "), list_primary_keys.join(", "));
 		println!("[DbAdapterSql.create_table] : {}", sql);
 		self.exec(&sql).await?;
 		//self.update_open_api(self.openapi, FillOpenApiOptions{request_body_content_type: self.db_config.request_body_content_type})?;
 		Ok(())
+	}
+
+	async fn check_schema(&self, db_schema: &str, user_id: &str, user_password: &str) -> Result<(), Box<dyn std::error::Error>> {
+		let sql = format!("SELECT schema_name FROM information_schema.schemata WHERE schema_name = $1");
+		let res = self.client.as_ref().unwrap().query(&sql, &[&db_schema]).await?;
+
+		if res.len() > 0 {
+			return Ok(());
+		}
+
+		#[cfg(debug_assertions)]
+		if self.client.as_ref().unwrap().query("SELECT schema_name FROM information_schema.schemata WHERE schema_name = 'rufs_customer_template'", &[]).await?.len() == 0 {
+			self.exec(&std::fs::read_to_string("data/template.sql")?).await?;
+		}
+
+		let sql = format!("ALTER SCHEMA rufs_customer_template RENAME TO {db_schema};");
+		self.exec(&sql).await?;
+
+		#[cfg(not(debug_assertions))]
+		self.exec(&std::fs::read_to_string("data/template.sql")?).await?;
+
+		let sql = format!("
+			update {db_schema}.rufs_user set password = '{user_password}' where name = 'admin';
+			update {db_schema}.rufs_user set name = '{user_id}', password = '{user_password}' where name = 'guest';
+		");
+
+		println!("check_schema :\n{sql}");
+		self.exec(&sql).await
 	}
 
 }

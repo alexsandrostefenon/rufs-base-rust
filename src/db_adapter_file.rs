@@ -52,14 +52,14 @@ impl DbAdapterFile<'_> {
 #[cfg(not(target_arch = "wasm32"))]
 #[async_trait]
 impl EntityManager for DbAdapterFile<'_> {
-    async fn insert(&self, openapi: &OpenAPI, table_name :&str, obj: &Value) -> Result<Value, Box<dyn std::error::Error>> {
+    async fn insert(&self, openapi: &OpenAPI, _db_schema: &str, openapi_schema :&str, obj: &Value) -> Result<Value, Box<dyn std::error::Error>> {
         let mut obj = obj.clone();
 
         {
             let tables = self.tables.read().unwrap();
 
-            if let Some(_field) = openapi.get_property(table_name, "id") {
-                let list = tables.get(table_name).unwrap().as_array().unwrap();
+            if let Some(_field) = openapi.get_property(openapi_schema, "id") {
+                let list = tables.get(openapi_schema).unwrap().as_array().unwrap();
                 let mut id = 0;
         
                 for item in list {
@@ -76,19 +76,19 @@ impl EntityManager for DbAdapterFile<'_> {
 
         {
             let mut tables = self.tables.write().unwrap();
-            let json_array = tables.get_mut(table_name).unwrap();
+            let json_array = tables.get_mut(openapi_schema).unwrap();
             let list = json_array.as_array_mut().unwrap();
             list.push(obj.clone());
         }
 
-        self.store(table_name)?;
+        self.store(openapi_schema)?;
         return Ok(obj.clone());
     }
 
-    async fn find(&self, _openapi: &OpenAPI, table: &str, key: &Value, _order_by: &Vec<String>) -> Result<Vec<Value>, Box<dyn std::error::Error>> {
+    async fn find(&self, _openapi: &OpenAPI, _db_schema: &str, openapi_schema: &str, key: &Value, _order_by: &Vec<String>) -> Result<Vec<Value>, Box<dyn std::error::Error>> {
         let tables: LockResult<RwLockReadGuard<HashMap<String, Value>>> = self.tables.read();
         let tables: RwLockReadGuard<HashMap<String, Value>> = tables.unwrap();
-        let list = tables.get(table).unwrap().as_array().unwrap();
+        let list = tables.get(openapi_schema).unwrap().as_array().unwrap();
         let list = crate::data_store::Filter::find(list, key).unwrap();
         let mut list_out = vec![];
 
@@ -99,14 +99,14 @@ impl EntityManager for DbAdapterFile<'_> {
         Ok(list_out)
     }
 
-    async fn find_one(&self, _openapi: &OpenAPI, table_name: &str, key: &Value) -> Result<Option<Box<Value>>, Box<dyn std::error::Error>> {
+    async fn find_one(&self, _openapi: &OpenAPI, _db_schema: &str, openapi_schema: &str, key: &Value) -> Result<Option<Box<Value>>, Box<dyn std::error::Error>> {
         let tables: LockResult<RwLockReadGuard<HashMap<String, Value>>> = self.tables.read();
         let tables: RwLockReadGuard<HashMap<String, Value>> = tables.unwrap();
-        let table = tables.get(table_name).ok_or_else(|| format!("Missing table {}.", table_name))?;
+        let table = tables.get(openapi_schema).ok_or_else(|| format!("Missing table {}.", openapi_schema))?;
 
         let list = table.as_array().ok_or_else(|| {
-            println!("Raw table {} content :\n{}", table_name, serde_json::to_string_pretty(table).unwrap());
-            format!("Table {} is not array.", table_name)
+            println!("Raw table {} content :\n{}", openapi_schema, serde_json::to_string_pretty(table).unwrap());
+            format!("Table {} is not array.", openapi_schema)
         })?;
 
         let Some(index) = crate::data_store::Filter::find_index(list, key)? else {
@@ -117,41 +117,41 @@ impl EntityManager for DbAdapterFile<'_> {
         Ok(Some(Box::new(obj.clone())))
     }
 
-    async fn update(&self, _openapi: &OpenAPI, table_name :&str, key :&Value, obj :&Value) -> Result<Value, Box<dyn std::error::Error>> {
+    async fn update(&self, _openapi: &OpenAPI, _db_schema: &str, openapi_schema :&str, key :&Value, obj :&Value) -> Result<Value, Box<dyn std::error::Error>> {
         {
             let tables: LockResult<RwLockWriteGuard<HashMap<String, Value>>> = self.tables.write();
             let mut tables: RwLockWriteGuard<HashMap<String, Value>> = tables.unwrap();
-            let list = tables.get(table_name).unwrap().as_array().unwrap();
+            let list = tables.get(openapi_schema).unwrap().as_array().unwrap();
     
             if let Some(pos) = crate::data_store::Filter::find_index(list, key).unwrap() {
-                let json_array = tables.get_mut(table_name).unwrap();
+                let json_array = tables.get_mut(openapi_schema).unwrap();
                 let list = json_array.as_array_mut().unwrap();
                 list.insert(pos, obj.clone());
             } else {
-                return Err(format!("[FileDbAdapter.Update(name = {}, key = {})] : don't find table", table_name, key))?;
+                return Err(format!("[FileDbAdapter.Update(name = {}, key = {})] : don't find table", openapi_schema, key))?;
             }
         }
 
-        self.store(table_name)?;
+        self.store(openapi_schema)?;
         return Ok(obj.clone());
     }
 
-    async fn delete_one(&self, _openapi: &OpenAPI, table_name: &str, key: &Value) -> Result<(), Box<dyn std::error::Error>> {
+    async fn delete_one(&self, _openapi: &OpenAPI, _db_schema: &str, openapi_schema: &str, key: &Value) -> Result<(), Box<dyn std::error::Error>> {
         {
             let tables: LockResult<RwLockWriteGuard<HashMap<String, Value>>> = self.tables.write();
             let mut tables: RwLockWriteGuard<HashMap<String, Value>> = tables.unwrap();
-            let list = tables.get(table_name).unwrap().as_array().unwrap();
+            let list = tables.get(openapi_schema).unwrap().as_array().unwrap();
     
             if let Some(pos) = crate::data_store::Filter::find_index(list, key).unwrap() {
-                let json_array = tables.get_mut(table_name).unwrap();
+                let json_array = tables.get_mut(openapi_schema).unwrap();
                 let list = json_array.as_array_mut().unwrap();
                 list.remove(pos);
             } else {
-                return Err(format!("[FileDbAdapter.Update(name = {}, key = {})] : don't find table", table_name, key))?;
+                return Err(format!("[FileDbAdapter.Update(name = {}, key = {})] : don't find table", openapi_schema, key))?;
             }
         }
 
-        self.store(table_name)?;
+        self.store(openapi_schema)?;
         return Ok(());
     }
 
@@ -163,8 +163,13 @@ impl EntityManager for DbAdapterFile<'_> {
         Ok(())
     }   
 
-    async fn create_table(&self, _name: &str, _schema :&Schema) -> Result<(), Box<dyn std::error::Error>> {
+    async fn create_table(&self, _db_schema: &str, _openapi_schema: &str, _schema :&Schema) -> Result<(), Box<dyn std::error::Error>> {
         Ok(())
     }
+
+	async fn check_schema(&self, _db_schema: &str, _user_id: &str, _user_password: &str) -> Result<(), Box<dyn std::error::Error>> {
+        // TODO : clonar as tabelas que começam por "public."
+		Ok(())
+	}
 
 }
