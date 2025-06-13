@@ -81,22 +81,22 @@ pub trait RufsOpenAPI {
     fn get_schema_from_schemas(&self, reference :&str) -> Result<Option<&Schema>, Box<dyn std::error::Error>>;
     fn get_schema_from_request_bodies(&self, schema_name: &str, may_be_array: bool) -> Option<&Schema>;
     fn get_schema_from_responses(&self, schema_name: &str, may_be_array: bool) -> Option<&Schema>;
-    fn get_schema_from_operation_object_parameters<'a>(&'a self, operation_object: &'a Operation, may_be_array: bool) -> Result<&Schema, Box<dyn std::error::Error>>;
+    fn get_schema_from_operation_object_parameters<'a>(&'a self, operation_object: &'a Operation, may_be_array: bool) -> Result<&'a Schema, Box<dyn std::error::Error>>;
     fn get_schema_from_parameters(&self, path: &str, method: &str, may_be_array: bool) -> Result<&Schema, Box<dyn std::error::Error>>;
-    fn get_schema<'a>(&'a self, path :&str, methods :&[&'a str], schema_place :&SchemaPlace, may_be_array: bool) -> Result<(&str, &Schema), Box<dyn std::error::Error>>;
+    fn get_schema<'a>(&'a self, path :&str, methods :&[&'a str], schema_place :&SchemaPlace, may_be_array: bool) -> Result<(&'a str, &'a Schema), Box<dyn std::error::Error>>;
     fn get_schema_from_ref(&self, reference: &str, may_be_array: bool) -> Result<&Schema, Box<dyn std::error::Error>>;
     fn get_path_params(&self, uri: &str, params: &Value) -> Result<String, Box<dyn std::error::Error>>;
     fn get_schema_name(&self, path: &str, method: &str, may_be_array: bool) -> Result<String, Box<dyn std::error::Error>>;
     fn get_properties_from_schema_name<'a>(&'a self, parent_name: &Option<String>, schema_name :&str, schema_place :&SchemaPlace) -> Option<&'a SchemaProperties>;
-    fn get_properties_with_extensions<'a>(&'a self, path: &str, methods: &[&'a str], schema_place: &SchemaPlace) -> Result<(Vec<String>, Vec<String>, SchemaProperties, &str), Box<dyn std::error::Error>>;
+    fn get_properties_with_extensions<'a>(&'a self, path: &str, methods: &[&'a str], schema_place: &SchemaPlace) -> Result<(Vec<String>, Vec<String>, SchemaProperties, &'a str), Box<dyn std::error::Error>>;
     fn get_properties_from_schema<'a>(&'a self, schema :&'a Schema) -> Option<&'a SchemaProperties>;
     fn get_property_from_properties<'a>(&'a self, properties :&'a SchemaProperties, property_name :&str) -> Option<&'a Schema>;
     fn get_property_from_schema<'a>(&'a self, schema :&'a Schema, property_name :&str) -> Option<&'a Schema>;
-    fn get_property_from_schemas<'a>(&'a self, schema_name: &str, property_name :&'a str) -> Option<&Schema>;
-    fn get_property_from_request_bodies<'a>(&'a self, schema_name :&str, property_name :&'a str) -> Option<&Schema>;
-    fn get_property<'a>(&'a self, schema_name :&str, property_name :&'a str) -> Option<&Schema>;
+    fn get_property_from_schemas<'a>(&'a self, schema_name: &str, property_name :&'a str) -> Option<&'a Schema>;
+    fn get_property_from_request_bodies<'a>(&'a self, schema_name :&str, property_name :&'a str) -> Option<&'a Schema>;
+    fn get_property<'a>(&'a self, schema_name :&str, property_name :&'a str) -> Option<&'a Schema>;
     fn get_property_mut<'a>(&'a mut self, schema_name: &'a str, field_name: &'a str) -> Option<&'a mut Box<Schema>>;
-    fn get_property_from<'a>(&'a self, path :&str, method :&'a str, schema_place :&SchemaPlace, may_be_array: bool, property_name :&str) -> Option<&Schema>;
+    fn get_property_from<'a>(&'a self, path :&str, method :&'a str, schema_place :&SchemaPlace, may_be_array: bool, property_name :&str) -> Option<&'a Schema>;
     //fn get_properties_with_ref(&self, schema_name :&str, reference :&str) -> Vec<PropertiesWithRef>;
     fn get_dependencies(&self, schema_name: &str, list: &mut Vec<String>);
     fn get_dependents(&self, schema_name_target: &str, only_in_document :bool) -> Vec<Dependent>;
@@ -476,7 +476,7 @@ func (self *OpenAPI) convertStandartToRufs() {
     }
 
     fn copy_fields(&self, path :&str, method :&str, schema_place :&SchemaPlace, may_be_array: bool, data_in: &Value, ignore_null: bool, ignore_hidden: bool, only_primary_keys: bool) -> Result<Value, Box<dyn std::error::Error>> {
-        let (_method, schema) = self.get_schema(path, &[method], schema_place, may_be_array).unwrap();
+        let (_method, schema) = self.get_schema(path, &[method], schema_place, may_be_array)?;
         let extensions = &schema.schema_data.extensions;
         let properties = self.get_properties_from_schema(schema).unwrap();
         self.copy_fields_using_properties(properties, extensions, may_be_array, data_in, ignore_null, ignore_hidden, only_primary_keys)
@@ -1067,7 +1067,7 @@ func (self *OpenAPI) convertStandartToRufs() {
         Err("Not found")?
     }
 
-    fn get_schema_from_operation_object_parameters<'a>(&'a self, operation_object: &'a Operation, may_be_array: bool) -> Result<&Schema, Box<dyn std::error::Error>> {
+    fn get_schema_from_operation_object_parameters<'a>(&'a self, operation_object: &'a Operation, may_be_array: bool) -> Result<&'a Schema, Box<dyn std::error::Error>> {
         for parameter_object in &operation_object.parameters {
             match &parameter_object {
                 ReferenceOr::Reference { reference } => {
@@ -1124,7 +1124,7 @@ func (self *OpenAPI) convertStandartToRufs() {
         Err(format!("[OpenAPI.get_schema_from_parameters] don't find schema parameter from {}", path))?
     }
 
-    fn get_schema<'a>(&'a self, path :&str, methods :&[&'a str], schema_place :&SchemaPlace, may_be_array: bool) -> Result<(&str, &Schema), Box<dyn std::error::Error>> {
+    fn get_schema<'a>(&'a self, path :&str, methods :&[&'a str], schema_place :&SchemaPlace, may_be_array: bool) -> Result<(&'a str, &'a Schema), Box<dyn std::error::Error>> {
         fn get_schema_from_content<'a>(openapi: &'a OpenAPI, content :&'a Content, may_be_array: bool) -> Result<&'a Schema, Box<dyn std::error::Error>> {
             for (_, media_type_object) in content {
                 match media_type_object.schema.as_ref().unwrap() {
@@ -1334,7 +1334,7 @@ func (self *OpenAPI) convertStandartToRufs() {
         self.get_properties_from_schema(schema)
     }
 
-    fn get_properties_with_extensions<'a>(&'a self, path: &str, methods: &[&'a str], schema_place: &SchemaPlace) -> Result<(Vec<String>, Vec<String>, SchemaProperties, &str), Box<dyn std::error::Error>> {
+    fn get_properties_with_extensions<'a>(&'a self, path: &str, methods: &[&'a str], schema_place: &SchemaPlace) -> Result<(Vec<String>, Vec<String>, SchemaProperties, &'a str), Box<dyn std::error::Error>> {
 		fn get_max_field_size(openapi: &OpenAPI, schema: &Schema, property_name: &str) -> usize {
 			let field = openapi.get_property_from_schema(schema, property_name).unwrap();
 
@@ -1557,7 +1557,7 @@ func (self *OpenAPI) convertStandartToRufs() {
         self.get_property_from_properties(properties, property_name)
     }
 
-    fn get_property_from_schemas<'a>(&'a self, schema_name: &str, property_name :&'a str) -> Option<&Schema> {
+    fn get_property_from_schemas<'a>(&'a self, schema_name: &str, property_name :&'a str) -> Option<&'a Schema> {
         let schema = match self.get_schema_from_schemas(schema_name) {
             Ok(schema) => schema?,
             Err(err) => {
@@ -1569,13 +1569,13 @@ func (self *OpenAPI) convertStandartToRufs() {
         self.get_property_from_schema(schema, property_name)
     }
 
-    fn get_property_from_request_bodies<'a>(&'a self, schema_name :&str, property_name :&'a str) -> Option<&Schema> {
+    fn get_property_from_request_bodies<'a>(&'a self, schema_name :&str, property_name :&'a str) -> Option<&'a Schema> {
         let schema = self.get_schema_from_request_bodies(schema_name, false)?;
         let field = self.get_property_from_schema(schema, property_name);
         field
     }
 
-    fn get_property<'a>(&'a self, schema_name :&str, property_name :&'a str) -> Option<&Schema> {
+    fn get_property<'a>(&'a self, schema_name :&str, property_name :&'a str) -> Option<&'a Schema> {
         let schema_name = OpenAPI::get_schema_name_from_ref(schema_name);
         let field = self.get_property_from_schemas(&schema_name, property_name);
 
@@ -1628,7 +1628,7 @@ func (self *OpenAPI) convertStandartToRufs() {
         }
     }
 
-    fn get_property_from<'a>(&'a self, path :&str, method :&'a str, schema_place :&SchemaPlace, may_be_array: bool, property_name :&str) -> Option<&Schema> {
+    fn get_property_from<'a>(&'a self, path :&str, method :&'a str, schema_place :&SchemaPlace, may_be_array: bool, property_name :&str) -> Option<&'a Schema> {
         let (_method, schema) = self.get_schema(path, &[method], schema_place, may_be_array).unwrap();
         self.get_property_from_schema(schema, property_name)
     }
