@@ -719,7 +719,7 @@ impl DataView {
         data_view_id.set_action(action);
         let form_id = &data_view_id.id;
         let title = data_view.data_view_id.schema_name.to_case(convert_case::Case::Title);
-        let table = format!(r#"<div id="div-table-{form_id}" class="table-responsive" style="white-space: nowrap;"></div>"#);
+        let table = format!(r#"<div id="div-table-{form_id}"></div>"#);
 
         if action == DataViewProcessAction::Search {
             let href_new = DataView::build_location_hash(&data_view.data_view_id, &DataViewProcessAction::New, &json!({}))?;
@@ -1352,7 +1352,7 @@ impl DataView {
         let html_rows = hmtl_rows.join("\n");
         let ret = format!(
             r##"
-            <table id="table-{form_id}" class="table table-responsive table-bordered table-striped clearfix">
+            <table id="table-{form_id}" class="table table-responsive table-bordered table-striped clearfix" style="white-space: nowrap;">
                 <thead>
                     <tr>
                         <th></th>
