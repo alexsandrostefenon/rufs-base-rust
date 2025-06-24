@@ -103,8 +103,7 @@ pub struct RufsParams {
     pub port: u16,
     pub api_path: String,
     pub request_body_content_type: String,
-    pub openapi_file_name : String,
-    pub password_md5: bool
+    pub openapi_file_name : String
 }
 
 impl Default for RufsParams {
@@ -114,8 +113,7 @@ impl Default for RufsParams {
             api_path: "rest".to_string(),
             app_name: "base".to_string(),
             request_body_content_type: "application/json".to_string(),
-            openapi_file_name: "".to_string(),
-            password_md5: true
+            openapi_file_name: "".to_string()
         }
     }
 }
@@ -469,7 +467,7 @@ lazy_static::lazy_static! {
 async fn wasm_ws_login(rms: &RufsMicroService<'_>, server_url: &str, path: &str, data_in: Value) -> Result<Value, Box<dyn std::error::Error>> {
     let mut data_view_manager_map = DATA_VIEW_MANAGER_MAP.lock().await;
     let mut data_view_manager = crate::client::DataViewManager::new(server_url, rms.watcher);
-    let data_out = data_view_manager.login(path, data_in, rms.params.password_md5).await?;
+    let data_out = data_view_manager.login(path, data_in).await?;
     data_view_manager_map.insert(data_view_manager.server_connection.login_response.jwt_header.clone(), data_view_manager);
     Ok(data_out.into())
 }

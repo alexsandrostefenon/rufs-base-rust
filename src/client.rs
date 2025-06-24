@@ -102,11 +102,10 @@ impl HttpRestRequest {
         Ok(serde_json::from_str(&data_in)?)
     }
 
-    async fn login(&mut self, path: &str, username: &str, password: &str) -> Result<LoginResponseClient, Box<dyn std::error::Error>> {
+    async fn login(&self, path: &str, username: &str, password: &str) -> Result<LoginResponseClient, Box<dyn std::error::Error>> {
         let data_out = json!({"user": username, "password": password});
         let data_in = self.request_text(path, Method::POST, &Value::Null, &data_out).await?;
         let login_response_client = serde_json::from_str::<LoginResponseClient>(&data_in)?;
-        self.token = Some(login_response_client.jwt_header.clone());
         Ok(login_response_client)
     }
 
@@ -2485,17 +2484,11 @@ impl ServerConnection {
         */
     }
     // public
-    pub async fn login(&mut self, path: &str, username: &str, password: &str, send_md5: bool /*, callback_partial: CallbackPartial*/) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn login_from_response(&mut self, login_response: LoginResponseClient) -> Result<(), Box<dyn std::error::Error>> {
+        self.http_rest.token = Some(login_response.jwt_header.clone());
+        self.login_response = login_response;
+
         self.service_map.clear();
-
-        if send_md5 {
-            let password = md5::compute(password);
-            let password = format!("{:x}", password);
-            self.login_response = self.http_rest.login(path, username, &password).await?;
-        } else {
-            self.login_response = self.http_rest.login(path, username, password).await?;
-        }
-
         let mut list_dependencies = vec![];
         // depois carrega os serviços autorizados
         for role in self.login_response.roles.clone() {
@@ -2527,6 +2520,11 @@ impl ServerConnection {
 
         self.web_socket_connect("websocket");
         Ok(())
+    }
+
+    pub async fn login(&mut self, path: &str, username: &str, password: &str) -> Result<(), Box<dyn std::error::Error>> {
+        let login_response = self.http_rest.login(path, username, password).await?;
+        self.login_from_response(login_response).await
     }
     // public
     /*
@@ -2640,7 +2638,7 @@ macro_rules! data_view_get_parent_mut {
 #[derive(Deserialize)]
 pub struct LoginDataIn {
     user: String,
-    password: String,
+    password: String
 }
 
 impl DataViewManager<'_> {
@@ -2653,9 +2651,15 @@ impl DataViewManager<'_> {
         }
     }
 
-    pub async fn login(&mut self, path: &str, params: Value, convert_password_to_md5: bool) -> Result<Value, Box<dyn std::error::Error>> {
+    pub async fn login(&mut self, path: &str, params: Value) -> Result<Value, Box<dyn std::error::Error>> {
         let data_in = serde_json::from_value::<LoginDataIn>(params)?;
-        self.server_connection.login(path, &data_in.user, &data_in.password, convert_password_to_md5).await?;
+        self.server_connection.login(path, &data_in.user, &data_in.password).await?;
+        Ok(json!({"menu": self.watcher.menu(), "path": self.server_connection.login_response.path, "jwt_header": self.server_connection.login_response.jwt_header}))
+    }
+
+    pub async fn login_from_response(&mut self, params: Value) -> Result<Value, Box<dyn std::error::Error>> {
+        let data_in = serde_json::from_value::<LoginResponseClient>(params)?;
+        self.server_connection.login_from_response(data_in).await?;
         Ok(json!({"menu": self.watcher.menu(), "path": self.server_connection.login_response.path, "jwt_header": self.server_connection.login_response.jwt_header}))
     }
 
@@ -3510,7 +3514,7 @@ impl DataViewManager<'_> {
                     let pos = field_results_str
                         .iter()
                         .position(|s| s.as_str() == value)
-                        .ok_or_else(|| format!("Missing foreign description {} in {}.", value, field_name))?;
+                        .ok_or_else(|| format!("(x-$ref) Missing foreign description {} in {}.", value, field_name))?;
                     let foreign_data = field_results.get(pos).ok_or_else(|| format!("broken 1 in parse_value"))?;
                     let (_, foreign_key) = server_connection
                         .login_response
@@ -3540,7 +3544,7 @@ impl DataViewManager<'_> {
                                 false
                             }
                         })
-                        .ok_or_else(|| format!("Missing foreign description {} in {}.", value, field_name))?;
+                        .ok_or_else(|| format!("(x-enum) Missing foreign description {} in {}.", value, field_name))?;
 
                     enumeration.get(pos).ok_or_else(|| format!("expected value at pos"))?.clone()
                 } else {
@@ -3630,10 +3634,10 @@ pub struct DataViewManagerWrapper<'a> {
 
 #[cfg(target_arch = "wasm32")]
 impl DataViewManagerWrapper<'_> {
-    pub async fn login(&mut self, path: &str, params: JsValue, convert_password_to_md5: bool) -> Result<JsValue, JsValue> {
+    pub async fn login_from_response(&mut self, params :JsValue) -> Result<JsValue, JsValue> {
         let params = serde_wasm_bindgen::from_value::<Value>(params)?;
 
-        let ret = match self.data_view_manager.login(path, params, convert_password_to_md5).await {
+        let ret = match self.data_view_manager.login_from_response(params).await {
             Ok(ret) => ret,
             Err(err) => return Err(JsValue::from_str(&err.to_string())),
         };
@@ -3780,8 +3784,9 @@ pub mod tests {
                                                 .find(|command| ["type", "sendKeys"].contains(&command.command.as_str()) && command.target == "id=login-password")
                                             {
                                                 let customer_user = format!("{}.{}", customer_id.value, user.value);
-
-                                                match data_view_manager.server_connection.login("/login", &customer_user, &password.value, false).await {
+                                                //let password = md5::compute(password);
+                                                //let password = format!("{:x}", password);
+                                                match data_view_manager.server_connection.login("/login", &customer_user, &password.value).await {
                                                     Ok(_) => target = format!("#!/app/{}", data_view_manager.server_connection.login_response.path),
                                                     Err(err) => {
                                                         if let Some(http_msg) = test.commands.iter().find(|command| command.command == "assertText" && command.target == "id=http-error") {
