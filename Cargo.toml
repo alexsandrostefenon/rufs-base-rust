@@ -61,7 +61,6 @@ tide = ["dep:tide", "dep:tide-websockets"]
 warp = ["dep:warp", "dep:futures-util"]
 postgres = ["dep:tokio-postgres", "dep:rust_decimal"]
 firebird = ["dep:rsfbclient", "dep:rsfbclient-core"]
-db_file_json = []
 openapi = []
 client = []
 
