@@ -1,6 +1,6 @@
 [package]
 name = "rufs-base-rust"
-version = "1.0.10"
+version = "1.0.11"
 authors = ["Alexsandro Stefenon <alexsandrostefenon@gmail.com>"]
 edition = "2021"
 
@@ -61,7 +61,6 @@ tide = ["dep:tide", "dep:tide-websockets"]
 warp = ["dep:warp", "dep:futures-util"]
 postgres = ["dep:tokio-postgres", "dep:rust_decimal"]
 firebird = ["dep:rsfbclient", "dep:rsfbclient-core"]
-db_file_json = []
 openapi = []
 client = []
 

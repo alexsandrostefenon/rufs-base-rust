@@ -2,10 +2,6 @@ pub mod openapi;
 pub mod data_store;
 
 #[cfg(not(target_arch = "wasm32"))]
-#[cfg(feature = "db_file_json")]
-pub mod db_adapter_file;
-
-#[cfg(not(target_arch = "wasm32"))]
 #[cfg(any(feature = "postgres", feature = "firebird"))]
 pub mod db_adapter_postgres;
 

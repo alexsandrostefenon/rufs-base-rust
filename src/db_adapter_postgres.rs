@@ -37,7 +37,7 @@ impl Default for DbConfig {
 }
 
 #[derive(Clone,Default)]
-pub struct DbAdapterSql<'a> {//pub struct DbAdapterSql<'a, C> {
+pub struct DbAdapterSql<'a> {
 	pub openapi    : Option<&'a OpenAPI>,
 	db_config: DbConfig,
 	public_tables_in_camel: Vec<String>,
@@ -49,24 +49,14 @@ pub struct DbAdapterSql<'a> {//pub struct DbAdapterSql<'a, C> {
     client: Option<Arc<tokio_postgres::Client>>,
 	#[cfg(feature = "firebird")]
     client: Option<Arc<Connection<C>>>,
-    //client: Option<Arc<RwLock<Client>>>,
 }
 
-impl DbAdapterSql<'_> {//impl<C> DbAdapterSql<'_, C> {
-	//#[cfg(feature = "postgres")]
-	//type Row = tokio_postgres::Row;
-
+impl DbAdapterSql<'_> {
 	#[cfg(feature = "firebird")]
 	type Row = rsfbclient::Row;
 
-	//#[cfg(feature = "postgres")]
-	//type Rows = Vec<Self::Row>;
-
 	#[cfg(feature = "firebird")]
 	type Rows = Box<dyn Iterator<Item = Result<rsfbclient::Row, rsfbclient::FbError>>>;
-
-	//#[cfg(feature = "postgres")]
-	//type Params = Vec<&'a (dyn ToSql + Sync)>;
 
 	#[cfg(feature = "firebird")]
 	type Params = rsfbclient::IntoParams;
@@ -163,25 +153,6 @@ impl DbAdapterSql<'_> {//impl<C> DbAdapterSql<'_, C> {
 		Ok(obj)
 	}
 
-/*
-pub enum SqlType {
-    Text(String),
-
-    Integer(i64),
-
-    Floating(f64),
-
-    Timestamp(chrono::NaiveDateTime),
-
-    Binary(Vec<u8>),
-
-    /// Only works in fb >= 3.0
-    Boolean(bool),
-
-    Null,
-}
-*/
-
 	fn get_json_list(&self, rows: &Vec<tokio_postgres::Row>) -> Result<Vec<Value>, Box<dyn std::error::Error>> {
 		let mut list = vec![];
 
@@ -208,7 +179,6 @@ pub enum SqlType {
 		#[cfg(feature = "postgres")]
 		let client = {
 			let (client, connection) = tokio_postgres::connect(uri, tokio_postgres::NoTls).await?;
-			//let _res = connection.await?;
 
 			let _res = tokio::spawn(async move {
 				if let Err(e) = connection.await {
@@ -216,16 +186,10 @@ pub enum SqlType {
 					std::process::exit(1);
 				}
 			});
-/*
-			for i in 0..10 {
-				sleep(std::time::Duration::from_secs(1)).await;
-				let _res = res..await?;
-			}
-*/
+
 			client
 		};	
 
-        //let client = RwLock::new(client);
         let client = Arc::new(client);
         self.client = Some(client);
 		Ok(())
@@ -340,6 +304,7 @@ pub enum SqlType {
 
 		db_schema_and_table_in_snake
 	}
+
 }
 
 #[async_trait]

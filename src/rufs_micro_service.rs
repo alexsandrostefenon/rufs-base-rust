@@ -7,7 +7,7 @@ use jsonwebtoken::{encode, EncodingKey, Header};
 use async_std::path::PathBuf;
 use async_trait::async_trait;
 
-use crate::{db_adapter_file::DbAdapterFile,db_adapter_postgres::DbAdapterSql,entity_manager::EntityManager,openapi::{FillOpenAPIOptions, RufsOpenAPI, Role}};
+use crate::{db_adapter_postgres::DbAdapterSql,entity_manager::EntityManager,openapi::{FillOpenAPIOptions, RufsOpenAPI, Role}};
 
 #[derive(Deserialize, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -123,7 +123,6 @@ pub struct RufsMicroService<'a> {
     pub params: RufsParams,
     pub openapi: OpenAPI,
     pub entity_manager: DbAdapterSql<'a>,
-    pub db_adapter_file: DbAdapterFile<'a>,
     pub ws_server_connections_tokens : Arc<RwLock<HashMap<String, Claims>>>,
     pub watcher: &'static Box<dyn DataViewWatch>,
     #[cfg(feature = "tide")]
@@ -189,29 +188,7 @@ impl RufsMicroService<'_> {
         Ok(())
     }
 
-    pub async fn connect<'a>(db_uri: &str, rufs_tables_in_db: bool, migration_path: &str, params: RufsParams, watcher: &'static Box<dyn DataViewWatch>) -> Result<RufsMicroService<'a>, Box<dyn std::error::Error>> {
-        fn load_file_tables(rms :&mut RufsMicroService) -> Result<(), Box<dyn std::error::Error>> {
-            fn load_table(rms: &mut RufsMicroService, name: &str, default_rows: &serde_json::Value) -> Result<(), Box<dyn std::error::Error>> {
-                if rms.db_adapter_file.have_table(&name) {
-                    return Ok(());
-                }
-    
-                rms.db_adapter_file.load(name, default_rows)
-            }
-    
-            //RequestFilterUpdateRufsServices(rms.fileDbAdapter, rms.openapi)
-            let empty_list = json!([]);
-            load_table(rms, "rufsGroup", &empty_list)?;
-            //load_table(rms, "rufsGroupUser", &empty_list)?;
-            let item: serde_json::Value = serde_json::from_str(DEFAULT_GROUP_OWNER_ADMIN_STR).unwrap();
-            let list = serde_json::json!([item]);
-            load_table(rms, "rufsGroupOwner", &list)?;
-            let item: serde_json::Value = serde_json::from_str(DEFAULT_USER_ADMIN_STR).unwrap();
-            let list = serde_json::json!([item]);
-            load_table(rms, "rufsUser", &list)?;
-            Ok(())
-        }
-    
+    pub async fn connect<'a>(db_uri: &str, migration_path: &str, params: RufsParams, watcher: &'static Box<dyn DataViewWatch>) -> Result<RufsMicroService<'a>, Box<dyn std::error::Error>> {
         async fn create_rufs_tables(rms: &RufsMicroService<'_>, openapi_rufs: &OpenAPI) -> Result<(), Box<dyn std::error::Error>> {
             let db_schema = "rufs_customer_template";
             rms.entity_manager.exec("CREATE SCHEMA IF NOT EXISTS rufs_customer_template;").await?;
@@ -307,7 +284,6 @@ impl RufsMicroService<'_> {
             watcher,
             openapi: Default::default(),
             entity_manager: DbAdapterSql::default(),
-            db_adapter_file: DbAdapterFile::default(),
             ws_server_connections_tokens: Arc::default(),
             #[cfg(feature = "tide")]
             ws_server_connections_tide: Arc::default(),
@@ -321,13 +297,9 @@ impl RufsMicroService<'_> {
         rufs.entity_manager.connect(db_uri).await?;
         println!("[connect] : parsing static openapi_rufs...");        
         let openapi_rufs = serde_json::from_str::<OpenAPI>(RUFS_MICRO_SERVICE_OPENAPI_STR)?;
-
-        if rufs_tables_in_db {
-            println!("[connect] : create_rufs_tables...");        
-            create_rufs_tables(&rufs, &openapi_rufs).await?;
-        }
-
-        println!("[connect] : exec_migrations...");        
+        println!("[connect] : create_rufs_tables...");        
+        create_rufs_tables(&rufs, &openapi_rufs).await?;
+        println!("[connect] : exec_migrations...");
 
         if exec_migrations(&mut rufs, migration_path).await? {
             #[cfg(debug_assertions)]
@@ -352,12 +324,6 @@ impl RufsMicroService<'_> {
         rufs.openapi.fill(&mut options)?;
         println!("[connect] : store_open_api...");        
         rufs.store_open_api()?;
-
-        if rufs_tables_in_db == false {
-            println!("[connect] : load_file_tables...");        
-            load_file_tables(&mut rufs)?;
-        }
-
         Ok(rufs)
     }
 
@@ -425,28 +391,13 @@ impl Authenticator for RufsMicroServiceAuthenticator {
         };
 
         let openapi_schema = "rufsUser";
-
-        let entity_manager = if rufs.db_adapter_file.have_table(&openapi_schema) {
-            &rufs.db_adapter_file as &(dyn EntityManager + Sync + Send)
-        } else {
-            &rufs.entity_manager as &(dyn EntityManager + Sync + Send)
-        };
-
-        entity_manager.check_schema(&db_schema, user_id.as_str(), user_password).await?;
-        let user = entity_manager.find_one(&rufs.openapi, &db_schema, &openapi_schema, &json!({ "name": user_id.as_str() })).await?.ok_or("Fail to find user.")?;
+        rufs.entity_manager.check_schema(&db_schema, user_id.as_str(), user_password).await?;
+        let user = rufs.entity_manager.find_one(&rufs.openapi, &db_schema, &openapi_schema, &json!({ "name": user_id.as_str() })).await?.ok_or("Fail to find user.")?;
         let user = RufsUser::deserialize(*user)?;
 
         if user.password.len() > 0 && user.password != user_password {
             return Err("Don't match user and password.")?;
         }
-/*
-        let list_in = entity_manager.find(&self.openapi, "rufsGroupUser", &json!({"rufsUser": user.name}), &vec![]).await?;
-        let mut list_out: Vec<String> = vec![];
-
-        for item in list_in {
-            list_out.push(item.get("rufsGroup").unwrap().as_str().unwrap().to_string());
-        }
-*/
         // user, extra_claims, extra
         let extra_claims = json!({"customer": customer_id});
         let extra = json!({});
@@ -681,8 +632,6 @@ pub async fn rufs_warp<'a, T>(rufs: RufsMicroService<'static>, authenticator: &'
     use warp::Filter;
     use warp::ws::WebSocket;
 
-    use crate::request_filter::RequestFilter;
-
     let api_path = rufs.params.api_path.clone();
     let rufs = Arc::new(Mutex::new(rufs));
 
@@ -741,13 +690,7 @@ pub async fn rufs_warp<'a, T>(rufs: RufsMicroService<'static>, authenticator: &'
 
         print!("\n\ncurl -X '{}' {} -H 'Authorization: {}'", method, path, auth);
         let rufs = &rufs.lock().unwrap().to_owned();
-        let mut rf = RequestFilter::new(rufs, path, query, &method, obj_in).unwrap();
-
-        if warp_try!(rf.check_authorization::<RufsMicroService>(&headers_out).await) == false {
-            warp_try!(Err("401-Unauthorized."))
-        }
-
-        let ret = warp_try!(rf.process_request().await);
+        let ret = warp_try!(crate::request_filter::process_request(rufs, path, query, &method, &headers_out, obj_in).await);
         let ret = warp::reply::json(&ret);
         println!("[handle_api()] : ...exiting");
         Ok(Box::new(ret))
@@ -829,7 +772,15 @@ pub async fn rufs_warp<'a, T>(rufs: RufsMicroService<'static>, authenticator: &'
         let login_response = warp_try!(rufs.build_login_response(user, &remote.to_string(), extra_claims, extra));
         Ok(Box::new(warp::reply::json(&login_response)))
     }
-    
+/*
+    async fn handle_options(h: HeaderMap) -> Result<impl Reply, Infallible> {
+        let res = warp::reply();
+        Ok(Box::new(res))
+    }
+
+    let cors = warp::cors().allow_any_origin().allow_methods(vec!["GET", "PUT", "OPTIONS", "POST", "DELETE"]).allow_headers(vec!["access-control-allow-origin","content-type"]);
+    let route_options = warp::options().and(warp::header::headers_cloned()).and_then(handle_options).with(cors);
+*/
     let route_login = warp::path(api_path).and(warp::path("login")).and(with_rufs(rufs.clone())).and(warp::body::json()).and(warp::addr::remote()).and_then(|rufs: Arc<Mutex<RufsMicroService<'static>>>, login_request: LoginRequest, remote: Option<std::net::SocketAddr>| {
         handle_login(rufs, login_request, remote, authenticator)
     });
