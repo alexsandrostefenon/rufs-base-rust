@@ -1,6 +1,6 @@
 [package]
 name = "rufs-base-rust"
-version = "1.0.11"
+version = "1.0.14"
 authors = ["Alexsandro Stefenon <alexsandrostefenon@gmail.com>"]
 edition = "2021"
 

@@ -4,6 +4,7 @@ use chrono::NaiveDateTime;
 use convert_case::Casing;
 use indexmap::IndexMap;
 use openapiv3::{OpenAPI, Schema, ReferenceOr, ObjectType, SchemaData, SchemaKind, VariantOrUnknownOrEmpty, StringFormat};
+use regex::Regex;
 use serde::Deserialize;
 use serde_json::{Value, Number, json};
 #[cfg(feature = "postgres")]
@@ -32,7 +33,7 @@ struct DbConfig {
 
 impl Default for DbConfig {
     fn default() -> Self {
-        Self { driver_name: Default::default(), limit_query: 10000, limit_query_exceptions: Default::default() }
+        Self { driver_name: Default::default(), limit_query: 20000, limit_query_exceptions: Default::default() }
     }
 }
 
@@ -169,7 +170,7 @@ impl DbAdapterSql<'_> {
     }
 
     pub async fn connect(&mut self, uri :&str) -> Result<(), Box<dyn std::error::Error>> {
-		println!("[DbAdapterSql] connect({})", uri);
+		println!("[DbAdapterSql] connect({})...", uri);
 
 		#[cfg(feature = "firebird")]
 		let client = {
@@ -185,6 +186,8 @@ impl DbAdapterSql<'_> {
 					eprintln!("connection error: {}", e);
 					std::process::exit(1);
 				}
+
+				println!("[DbAdapterSql] ...exit.");
 			});
 
 			client
@@ -195,37 +198,68 @@ impl DbAdapterSql<'_> {
 		Ok(())
     }
 
+	fn check_date_time_str(value :&str) -> Result<&str, Box<dyn std::error::Error>> {
+		let regex_date_time = Regex::new(r#"^\d\d\d\d-\d\d-\d\d(T\d\d:\d\d(:\d\d)?)?$"#)?;
+
+		let text = if value.len() > 19 {
+			&value[0..19]
+		} else {
+			value
+		};
+
+		if regex_date_time.is_match(text) == false {
+			return Err(format!("[check_date_time_str({value})] parameter in date format '{regex_date_time}'"))?;
+		}
+
+		Ok(text)
+	}
+
     fn build_query<'a>(&self, properties: &SchemaProperties, query_params:&'a Value, params :&mut Vec<&'a (dyn ToSql + Sync)>, order_by :&Vec<String>) -> Result<String, Box<dyn std::error::Error>> {
 		fn build_conditions<'a> (properties: &SchemaProperties, query_params:&'a Value, params: &mut Vec<&'a (dyn ToSql + Sync)>, operator:&str, conditions : &mut Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
 			let query_params = query_params.as_object().ok_or_else(|| format!("[build_conditions] query_params is not object"))?;
 
-			for (field_name, _property) in properties {
-				let Some(field) = query_params.get(field_name) else {
+			for (field_name, field) in properties {
+				// TODO : retornar erro se o campo não for primary_key, unique_key ou index associado.
+				let Some(value) = query_params.get(field_name) else {
 					continue;
 				};
 
 				let field_name = field_name.to_case(convert_case::Case::Snake);
 				let param_id = format!("${}", params.len()+1);
 
-				match field {
+				match value {
 					Value::Null => conditions.push(format!("{} {} NULL", field_name, operator)),
 					Value::Bool(value) => conditions.push(format!("{} {} {}", field_name, operator, value)),
-					Value::Number(value) => if value.is_i64() {
-						conditions.push(format!("{} {} {}", field_name, operator, value.as_i64().unwrap()));
-					} else if value.is_u64() {
-						conditions.push(format!("{} {} {}", field_name, operator, value.as_u64().unwrap()));
-					} else if value.is_f64() {
-						conditions.push(format!("{} {} {}", field_name, operator, value.as_f64().unwrap()));
+					Value::Number(value) => conditions.push(format!("{} {} {}", field_name, operator, value)),
+					Value::Array(value) => {
+						conditions.push(format!("{} {} ANY ({})", field_name, operator, param_id));
+						params.push(value);
 					},
-					Value::Array(_) => conditions.push(format!("{} {} ANY ({})", field_name, operator, param_id)),
-					_ => conditions.push(format!("{} {} {}", field_name, operator, param_id)),
-				}
-
-				match field {
-					Value::String(value) => params.push(value),
-					Value::Array(value) => params.push(value),
-					Value::Object(_) => params.push(field),
-					_ => {},
+					Value::Object(_) => {
+						conditions.push(format!("{} {} {}", field_name, operator, param_id));
+						params.push(value);
+					},
+					Value::String(value) => {
+						match &field.as_item().ok_or("expected item !")?.schema_kind {
+							SchemaKind::Type(typ) => match typ {
+									openapiv3::Type::String(string_type) => match &string_type.format {
+											VariantOrUnknownOrEmpty::Item(item) => match item {
+													StringFormat::Date | StringFormat::DateTime => {
+														conditions.push(format!("{} {} '{}'", field_name, operator, DbAdapterSql::check_date_time_str(value)?));
+													},
+													_ => todo!(),
+												},
+											VariantOrUnknownOrEmpty::Unknown(_) => todo!(),
+											VariantOrUnknownOrEmpty::Empty => {
+												conditions.push(format!("{} {} {}", field_name, operator, param_id));
+												params.push(value);
+											},
+										},
+									_ => todo!(),
+								},
+							_ => todo!(),
+						}
+					},
 				}
 			}
 
@@ -244,10 +278,10 @@ impl DbAdapterSql<'_> {
 					build_conditions(properties, filter, params, "=", &mut conditions)?
 				}
 				if !filter_range_min.is_null() {
-					build_conditions(properties, filter_range_min, params, ">", &mut conditions)?
+					build_conditions(properties, filter_range_min, params, ">=", &mut conditions)?
 				}
 				if !filter_range_max.is_null() {
-					build_conditions(properties, filter_range_max, params, "<", &mut conditions)?
+					build_conditions(properties, filter_range_max, params, "<=", &mut conditions)?
 				}
 			} else if query_params.as_object().iter().len() > 0 {
 				build_conditions(properties, query_params, params, "=", &mut conditions)?
@@ -280,12 +314,13 @@ impl DbAdapterSql<'_> {
     }
 
 	async fn query(&self, sql: &str, params: &[&(dyn ToSql + Sync)]) -> Result<Vec<Value>, Box<dyn std::error::Error>> {
+        #[cfg(debug_assertions)]
 		println!("[DbAdapterSql.query] {} - {:?}", sql.replace("\n", " "), params);
 		
 		let list = match self.client.as_ref().unwrap().query(sql, params).await {
 			Ok(list) => list,
 			Err(err) => {
-				println!("[DbAdapterSql.query] : {}", err);
+				eprintln!("[DbAdapterSql.query] : {}", err);
 				vec![]
 			},
 		};
@@ -310,8 +345,15 @@ impl DbAdapterSql<'_> {
 #[async_trait]
 impl EntityManager for DbAdapterSql<'_> {
 	async fn exec(&self, sql: &str) -> Result<(), Box<dyn std::error::Error>> {
-		self.client.as_ref().unwrap().batch_execute(sql).await?;
-		Ok(())
+		let res = self.client.as_ref().unwrap().batch_execute(sql).await;
+
+		match res {
+			Ok(_) => return Ok(()),
+			Err(err) => {
+				eprintln!("[DbAdapterSql.exec] ERROR : {}.", err);
+				return Err(err)?
+			},
+		}
 	}
 
     async fn insert(&self, openapi: &OpenAPI, db_schema: &str, openapi_schema :&str, obj :&Value) -> Result<Value, Box<dyn std::error::Error>> {
@@ -324,7 +366,7 @@ impl EntityManager for DbAdapterSql<'_> {
 
 		for (field_name, field) in properties {
 			let field = field.as_item().ok_or_else(|| format!("EntityManager.insert({}) : field {} must be item, not reference", openapi_schema, field_name))?;
-			let value = obj.as_object().unwrap().get(field_name);
+			let value = obj.as_object().ok_or("Broken!")?.get(field_name);
 			let value = match value {
 				Some(value) => value,
 				None => match &field.schema_data.default {
@@ -354,8 +396,8 @@ impl EntityManager for DbAdapterSql<'_> {
 								openapiv3::Type::String(typ)=> {
 									match &typ.format {
 										VariantOrUnknownOrEmpty::Item(string_format) => match string_format {
-											StringFormat::DateTime => {
-												str_values.push(format!("'{}'", value));
+											StringFormat::Date | StringFormat::DateTime => {
+													str_values.push(format!("'{}'", DbAdapterSql::check_date_time_str(value)?));
 											},
 											_ => todo!(),
 										},
@@ -399,7 +441,7 @@ impl EntityManager for DbAdapterSql<'_> {
 		let list = match self.client.as_ref().unwrap().query(&sql, params).await {
 			Ok(list) => list,
 			Err(err) => {
-				println!("[DbAdapterSql.insert] {} : \n{}\n{}\n{}", openapi_schema, err, sql, serde_json::to_string_pretty(&obj)?);
+				eprintln!("[DbAdapterSql.insert] {} : \n{}\n{}\n{}", openapi_schema, err, sql, serde_json::to_string_pretty(&obj)?);
 				return Err(err)?;
 			},
 		};
@@ -418,8 +460,12 @@ impl EntityManager for DbAdapterSql<'_> {
 
 		for (field_name, property) in properties {
 			match property {
+	            #[cfg(debug_assertions)]
 				openapiv3::ReferenceOr::Reference { reference } => {
 					println!("{} -> {}", field_name, reference);
+				},
+	            #[cfg(not(debug_assertions))]
+				openapiv3::ReferenceOr::Reference { reference: _ } => {
 				},
 				openapiv3::ReferenceOr::Item(property) => {
 					if let Some(internal_name) = property.schema_data.extensions.get("x-internalName") {
@@ -455,7 +501,8 @@ impl EntityManager for DbAdapterSql<'_> {
 		self.query(&sql, params).await
 	}
 
-	async fn find_one(&self, openapi: &OpenAPI, db_schema: &str, openapi_schema: &str, key: &Value) -> Result<Option<Box<Value>>, Box<dyn std::error::Error>> {
+	async fn find_one(&self, openapi: &OpenAPI, db_schema: &str, openapi_schema: &str, key: &Value) -> Result<Option<Value>, Box<dyn std::error::Error>> {
+        #[cfg(debug_assertions)]
 		println!("[DbAdapterSql.find_one({}, {})]", openapi_schema, key);
 		let list = self.find(openapi, db_schema, openapi_schema, key, &vec![]).await?;
 
@@ -467,7 +514,7 @@ impl EntityManager for DbAdapterSql<'_> {
 			}
 
 			let obj = list.get(0).ok_or("broken")?;
-			Ok(Some(Box::new(obj.clone())))
+			Ok(Some(obj.clone()))
 		}
 	}
 
@@ -503,8 +550,8 @@ impl EntityManager for DbAdapterSql<'_> {
 							openapiv3::Type::String(string_type) => {
 								match &string_type.format {
 									VariantOrUnknownOrEmpty::Item(string_format) => match string_format {
-										StringFormat::DateTime => {
-											str_values.push(format!("{}='{}'", field_name, value));
+										StringFormat::Date | StringFormat::DateTime => {
+												str_values.push(format!("{}='{}'", field_name, DbAdapterSql::check_date_time_str(value)?));
 										},
 										_ => todo!(),
 									},
@@ -532,11 +579,13 @@ impl EntityManager for DbAdapterSql<'_> {
 
 		let sql_query = self.build_query(properties, query_params, &mut params, &vec![])?;
 		let sql = format!("UPDATE {} SET {} {} RETURNING *", db_schema_and_table_in_snake, str_values.join(","), sql_query);
+        #[cfg(debug_assertions)]
 		println!("[DbAdapterSql.update()] : {}", sql);
 		let params = params.as_slice();
 		let list = self.client.as_ref().unwrap().query(&sql, params).await.unwrap();
+        #[cfg(debug_assertions)]
 		println!("[DbAdapterSql.update] : returning* = {:?}", list);
-		Ok(self.get_json_list(&list)?.get(0).ok_or("broken")?.clone())
+		Ok(self.get_json_list(&list)?.get(0).ok_or(format!("Missing data in table '{db_schema_and_table_in_snake}' with query '{sql_query}'."))?.clone())
 	}
 
 	async fn delete_one(&self, openapi: &OpenAPI, db_schema: &str, openapi_schema: &str, query_params: &Value) -> Result<(), Box<dyn std::error::Error>> {
@@ -547,6 +596,7 @@ impl EntityManager for DbAdapterSql<'_> {
 		let sql_query = self.build_query(properties, query_params, &mut params, &vec![])?;
 		let sql = format!("DELETE FROM {} {}", db_schema_and_table_in_snake, sql_query);
 		let params = params.as_slice();
+        #[cfg(debug_assertions)]
 		println!("[DbAdapterSql.delete_one({})] : {} , {:?}", query_params, sql, params);
 		let _count = self.client.as_ref().unwrap().execute(&sql, params).await.unwrap();
 		Ok(())
@@ -919,7 +969,7 @@ impl EntityManager for DbAdapterSql<'_> {
 
 				if rec.column_default.is_empty() == false {
 					// TODO : usar regexp ^'(.*)'$ // 'pt-br'::character varying,
-					let str = rec.column_default;
+					let str = &rec.column_default;
 					let str1 = str.replace("'", "");
 					let re = regex::Regex::new(r"([^:]*)(::.*)?")?;
 					let str2 = re.replace(&str1, "$1").to_string();
@@ -944,6 +994,17 @@ impl EntityManager for DbAdapterSql<'_> {
 								}
 							},
 							"number" => Some(Value::Number(Number::from_f64(str2.parse::<f64>().unwrap()).unwrap())),
+							"boolean" => {
+								let default_lowercase = str.to_lowercase();
+
+								if default_lowercase.contains("true") {
+									Some(Value::Bool(true))
+								} else if default_lowercase.contains("false") {
+									Some(Value::Bool(false))
+								} else {
+									None
+								}
+							},
 							_ => Some(Value::String(str2)), 
 						}
 					};
@@ -1076,23 +1137,38 @@ impl EntityManager for DbAdapterSql<'_> {
 	}
 
 	async fn check_schema(&self, db_schema: &str, user_id: &str, user_password: &str) -> Result<(), Box<dyn std::error::Error>> {
+		println!("check_schema(db_schema -> {db_schema}, user_id -> {user_id})");
 		let sql = format!("SELECT schema_name FROM information_schema.schemata WHERE schema_name = $1");
 		let res = self.client.as_ref().unwrap().query(&sql, &[&db_schema]).await?;
+        #[cfg(debug_assertions)]
+		println!("[check_schema] sql -> {sql}");
+        #[cfg(debug_assertions)]
+		println!("[check_schema] res.len() -> {}", res.len());
 
 		if res.len() > 0 {
 			return Ok(());
 		}
-
+/*
 		#[cfg(debug_assertions)]
 		if self.client.as_ref().unwrap().query("SELECT schema_name FROM information_schema.schemata WHERE schema_name = 'rufs_customer_template'", &[]).await?.len() == 0 {
-			self.exec(&std::fs::read_to_string("data/template.sql")?).await?;
+			self.exec(&std::fs::read_to_string("data/rufs_customer_template.sql")?).await?;
 		}
-
+ */
 		let sql = format!("ALTER SCHEMA rufs_customer_template RENAME TO {db_schema};");
 		self.exec(&sql).await?;
+		println!("[check_schema] sql -> {sql}");
 
-		#[cfg(not(debug_assertions))]
-		self.exec(&std::fs::read_to_string("data/template.sql")?).await?;
+		//#[cfg(not(debug_assertions))]
+		let current_dir = std::env::current_dir()?;
+    	println!("The current directory is: {}", current_dir.display());
+		println!(r#"[check_schema] std::fs::read_to_string("./data/rufs_customer_template.sql") ..."#);
+		let sql = std::fs::read_to_string("./data/rufs_customer_template.sql")?;
+		let regex = Regex::new(r#"\\\w+ \w+"#)?;
+		let sql = regex.replace_all(&sql, "");
+		println!(r#"[check_schema] ... std::fs::read_to_string("./data/rufs_customer_template.sql")."#);
+		println!("[check_schema] self.exec(&sql) ...");
+		self.exec(&sql).await?;
+		println!("[check_schema] ...self.exec(&sql).");
 
 		let sql = format!("
 			update {db_schema}.rufs_user set password = '{user_password}' where name = 'admin';

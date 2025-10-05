@@ -14,6 +14,79 @@ use crate::{
 
 #[cfg(not(target_arch = "wasm32"))]
 #[cfg(feature = "http_server")]
+pub async fn check_authorization<'a, State>(rms: &'a RufsMicroService<'a>, headers: &'a HashMap<String, String>, path: &'a str, method: &'a str) -> Result<Claims, Box<dyn std::error::Error>> {
+    fn check_mask(mask: u64, method: &str) -> bool {
+        let list = vec!["get", "post", "put", "patch", "delete", "query"];
+
+        if let Some(idx) = list.iter().position(|&x| x == method) {
+            (mask & (1 << idx)) != 0
+        } else {
+            false
+        }
+    }
+
+    fn get_token_payload(openapi: &openapiv3::OpenAPI, headers: &HashMap<String, String>) -> Result<Claims, Box<dyn std::error::Error>> {
+        let mut token_payload = None;
+
+        for security_item in openapi.security.as_ref().ok_or("Missing openapi.security")? {
+            for (security_name, _) in security_item {
+                let Some(security_scheme) = openapi.components.as_ref().ok_or("Broken components")?.security_schemes.get(security_name) else {
+                    continue;
+                };
+
+                let security_scheme = security_scheme.as_item().ok_or("Broken security_scheme.as_item()")?;
+
+                match &security_scheme {
+                    openapiv3::SecurityScheme::APIKey { location, name: _, description: _ } => match &location {
+                        openapiv3::APIKeyLocation::Query => todo!(),
+                        openapiv3::APIKeyLocation::Header => todo!(),
+                        openapiv3::APIKeyLocation::Cookie => todo!(),
+                    },
+                    openapiv3::SecurityScheme::HTTP { scheme, bearer_format, description: _ } => {
+                        if scheme == "bearer" && bearer_format.as_ref().ok_or("Broken bearer_format.as_ref()")? == "JWT" {
+                            let authorization_header_prefix = "Bearer ";
+                            let token_raw = headers.get(&"Authorization".to_lowercase()).ok_or("Missing header Authorization")?;
+
+                            if token_raw.starts_with(authorization_header_prefix) {
+                                let token_raw = &token_raw[authorization_header_prefix.len()..];
+                                let secret = std::env::var("RUFS_JWT_SECRET").unwrap_or("123456".to_string());
+                                let x = decode::<Claims>(&token_raw, &DecodingKey::from_secret(secret.as_ref()), &Validation::default())?;
+                                token_payload = Some(x.claims);
+                            }
+                        }
+                    }
+                    openapiv3::SecurityScheme::OAuth2 { flows: _, description: _ } => todo!(),
+                    openapiv3::SecurityScheme::OpenIDConnect { open_id_connect_url: _, description: _ } => todo!(),
+                }
+            }
+        }
+
+        let token_payload = token_payload.ok_or("Broken token_payload")?;
+        Ok(token_payload)
+    }
+
+    let token_payload = get_token_payload(&rms.openapi, headers)?;
+
+    // TODO : remover de->para abaixo
+    let method = if method == "patch" {
+        "put"
+    } else {
+        method
+    };
+
+    if let Some(role) = token_payload.roles.iter().find(|&x| x.path == path) {
+        if check_mask(role.mask, method) {
+            Ok(token_payload)
+        } else {
+            Err(format!("401-Unauthorized. Method -> {method}. User mask -> {}", role.mask))?
+        }
+    } else {
+        Err(format!("404-[RequestFilter.CheckAuthorization] missing service {}.{} in authorized roles", path, method))?
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "http_server")]
 pub async fn process_request<'b>(rms: &'b RufsMicroService<'b>, path: &'b str, query: Option<&'b str>, method: &'b str, headers_out: &HashMap<String, String>, mut obj_in: Value) -> Result<Value, Box<dyn std::error::Error>> {
 
     struct RequestFilter {
@@ -23,83 +96,14 @@ pub async fn process_request<'b>(rms: &'b RufsMicroService<'b>, path: &'b str, q
         db_schema: String
     }
     
-    async fn check_authorization<'a, State>(rms: &'a RufsMicroService<'a>, headers: &'a HashMap<String, String>, path: &'a str, method: &'a str) -> Result<(bool, Claims, String), Box<dyn std::error::Error>> {
-        fn check_mask(mask: u64, method: &str) -> bool {
-            let list = vec!["get", "post", "put", "patch", "delete", "query"];
-
-            if let Some(idx) = list.iter().position(|&x| x == method) {
-                (mask & (1 << idx)) != 0
-            } else {
-                false
-            }
-        }
-
-        fn get_token_payload(openapi: &openapiv3::OpenAPI, headers: &HashMap<String, String>) -> Result<Claims, Box<dyn std::error::Error>> {
-            let mut token_payload = None;
-    
-            for security_item in openapi.security.as_ref().ok_or("Missing openapi.security")? {
-                for (security_name, _) in security_item {
-                    let Some(security_scheme) = openapi.components.as_ref().ok_or("Broken components")?.security_schemes.get(security_name) else {
-                        continue;
-                    };
-    
-                    let security_scheme = security_scheme.as_item().ok_or("Broken security_scheme.as_item()")?;
-    
-                    match &security_scheme {
-                        openapiv3::SecurityScheme::APIKey { location, name: _, description: _ } => match &location {
-                            openapiv3::APIKeyLocation::Query => todo!(),
-                            openapiv3::APIKeyLocation::Header => todo!(),
-                            openapiv3::APIKeyLocation::Cookie => todo!(),
-                        },
-                        openapiv3::SecurityScheme::HTTP { scheme, bearer_format, description: _ } => {
-                            if scheme == "bearer" && bearer_format.as_ref().ok_or("Broken bearer_format.as_ref()")? == "JWT" {
-                                let authorization_header_prefix = "Bearer ";
-                                let token_raw = headers.get(&"Authorization".to_lowercase()).ok_or("Missing header Authorization")?;
-    
-                                if token_raw.starts_with(authorization_header_prefix) {
-                                    let token_raw = &token_raw[authorization_header_prefix.len()..];
-                                    let secret = std::env::var("RUFS_JWT_SECRET").unwrap_or("123456".to_string());
-                                    let x = decode::<Claims>(&token_raw, &DecodingKey::from_secret(secret.as_ref()), &Validation::default()).unwrap();
-                                    token_payload = Some(x.claims);
-                                }
-                            }
-                        }
-                        openapiv3::SecurityScheme::OAuth2 { flows: _, description: _ } => todo!(),
-                        openapiv3::SecurityScheme::OpenIDConnect { open_id_connect_url: _, description: _ } => todo!(),
-                    }
-                }
-            }
-    
-            let token_payload = token_payload.ok_or("Broken token_payload")?;
-            Ok(token_payload)
-        }
-    
-        let token_payload = get_token_payload(&rms.openapi, headers)?;
-
-        if let Some(role) = token_payload.roles.iter().find(|&x| x.path == path) {
-            if check_mask(role.mask, method) {
-                let db_schema = if let Some(customer) = token_payload.extra.get("customer") {
-                    "rufs_customer_".to_owned() + customer.as_str().ok_or("Broken customer_id data")?
-                } else {
-                    "public".to_string()
-                };
-
-                Ok((true, token_payload, db_schema))
-            } else {
-                Ok((false, token_payload, "".to_string()))
-            }
-        } else {
-            Err(format!("404-[RequestFilter.CheckAuthorization] missing service {}.{} in authorized roles", path, method))?
-        }
-    }
-
     fn parse_query_parameters(rms: &RufsMicroService<'_>, rf: &RequestFilter, ignore_null: bool, method: &str) -> Result<Value, Box<dyn std::error::Error>> {
-        let obj = rms.openapi.copy_fields(&rf.path, method, &SchemaPlace::Parameter, true, &rf.query_params, ignore_null, false, false).unwrap();
+        let mut query_params = json!({});
+        rms.openapi.copy_fields(&rf.path, method, &SchemaPlace::Parameter, true, &mut query_params, &rf.query_params, ignore_null, false, false)?;
         //println!("[openapi.parse_query_parameters({})] : {}", self.parameters, obj.to_string());
-        Ok(obj)
+        Ok(query_params)
     }
 
-    async fn get_object(rms: &RufsMicroService<'_>, rf: &RequestFilter, use_document :bool, method: &str) -> Result<Box<Value>, Box<dyn std::error::Error>> {
+    async fn get_object(rms: &RufsMicroService<'_>, rf: &RequestFilter, use_document :bool, method: &str) -> Result<Value, Box<dyn std::error::Error>> {
         let key = parse_query_parameters(rms, rf, false, method)?;
         let obj = rms.entity_manager.find_one(&rms.openapi, &rf.db_schema, &rf.open_api_schema, &key).await?.ok_or_else(|| format!("Missing data in {} for key {}", rf.open_api_schema, key))?;
 
@@ -140,8 +144,18 @@ pub async fn process_request<'b>(rms: &'b RufsMicroService<'b>, path: &'b str, q
             order_by
         }
 
-        let schema = rms.openapi.get_schema_from_parameters(&rf.path, method, true).unwrap();
-        let fields = parse_query_parameters(rms, rf, true, method).unwrap();
+        let schema = rms.openapi.get_schema_from_parameters(&rf.path, method, true)?;
+        let mut query_params = parse_query_parameters(rms, rf, true, method)?;
+
+        for name in ["filter", "filterRangeMin", "filterRangeMax"] {
+            if query_params.get(name).is_none() {
+                if let Some(data_in) = rf.query_params.get(name) {
+                    let mut data_out = json!({});
+                    rms.openapi.copy_fields(&rf.path, method, &SchemaPlace::Schemas, false, &mut data_out, &data_in, true, true, false)?;
+                    query_params[name] = data_out;
+                }
+            }
+        }
 
         let order_by = match &schema.schema_kind {
             openapiv3::SchemaKind::Type(typ) => match typ {
@@ -152,13 +166,14 @@ pub async fn process_request<'b>(rms: &'b RufsMicroService<'b>, path: &'b str, q
             _ => todo!(),
         };
 
-        let list = rms.entity_manager.find(&rms.openapi, &rf.db_schema, &rf.open_api_schema, &fields, &order_by).await?;
+        let list = rms.entity_manager.find(&rms.openapi, &rf.db_schema, &rf.open_api_schema, &query_params, &order_by).await?;
+        #[cfg(debug_assertions)]
         println!("[RequestFilter.process_query] : returning {} registers.", list.len());
         Ok(Value::Array(list))
     }
 
     async fn process_read(rms: &RufsMicroService<'_>, rf: &RequestFilter, method: &str) -> Result<Value, Box<dyn std::error::Error>> {
-        let obj = get_object(rms, rf, false, method).await?.as_ref().clone();
+        let obj = get_object(rms, rf, false, method).await?.clone();
         Ok(obj)
     }
 
@@ -171,7 +186,8 @@ pub async fn process_request<'b>(rms: &'b RufsMicroService<'b>, path: &'b str, q
             primary_key :Value
         }
         
-        let parameters = rms.openapi.copy_fields(&rf.path, method, &SchemaPlace::Schemas, false, obj, false, false, true).unwrap();
+        let mut parameters = json!({});
+        rms.openapi.copy_fields(&rf.path, method, &SchemaPlace::Schemas, false, &mut parameters, obj, false, false, true).unwrap();
         let mut msg = NotifyMessage{service: rf.open_api_schema.to_string(), action: "notify".to_string(), primary_key: parameters};
 
         if is_remove {
@@ -183,7 +199,7 @@ pub async fn process_request<'b>(rms: &'b RufsMicroService<'b>, path: &'b str, q
         let rufs_group = rms.openapi.get_primary_key_foreign(&rf.open_api_schema, "rufsGroup", obj).unwrap();
         println!("[RequestFilter.notify] broadcasting {:?} ...", msg);
         #[cfg(feature = "tide")]
-        let map = rms.ws_server_connections_tide.read().unwrap();
+        let map = rms.ws_server_connections_tide.read()?;
         #[cfg(feature = "warp")]
         let mut map = rms.ws_server_connections_warp.write().unwrap();
 
@@ -216,6 +232,7 @@ pub async fn process_request<'b>(rms: &'b RufsMicroService<'b>, path: &'b str, q
                 for role in token_data.roles.iter() {
                     if role.path == rf.path {
                         if (role.mask & 0x01) != 0 {
+                            #[cfg(debug_assertions)]
                             println!("[RequestFilter.notify] send to client {}", token_data.name);
                             let rt = tokio::runtime::Runtime::new().unwrap();
                             #[cfg(feature = "tide")]
@@ -228,7 +245,7 @@ pub async fn process_request<'b>(rms: &'b RufsMicroService<'b>, path: &'b str, q
                                 use warp::ws::Message;
 
                                 if let Err(error) = rt.block_on(ws_server_connection.send(Message::text(msg.to_string()))) {
-                                    println!("[RequestFilter.notify] send to client : {}", error);
+                                    eprintln!("[RequestFilter.notify] send to client : {}", error);
                                 }
                             }
                         }
@@ -237,6 +254,7 @@ pub async fn process_request<'b>(rms: &'b RufsMicroService<'b>, path: &'b str, q
             }
         }
 
+        #[cfg(debug_assertions)]
         println!("[RequestFilter.notify] ...broadcasting");
     }
 
@@ -293,22 +311,32 @@ pub async fn process_request<'b>(rms: &'b RufsMicroService<'b>, path: &'b str, q
 
     async fn process_update(rms: &RufsMicroService<'_>, rf: &mut RequestFilter, obj_in: &mut Value, token_payload: &Claims, method: &str) -> Result<Value, Box<dyn std::error::Error>> {
         check_object_access(rms, rf, obj_in, token_payload)?;
-        let primary_key = parse_query_parameters(rms, rf, false, method).unwrap();
+        let primary_key = parse_query_parameters(rms, rf, false, method)?;
         let new_obj = rms.entity_manager.update(&rms.openapi, &rf.db_schema, &rf.open_api_schema, &primary_key, obj_in).await?;
+        notify(rms, rf, &new_obj, false, method);
+        Ok(new_obj)
+    }
+
+    async fn process_patch(rms: &RufsMicroService<'_>, rf: &mut RequestFilter, data_patched: &mut Value, token_payload: &Claims, method: &str) -> Result<Value, Box<dyn std::error::Error>> {
+        let data = get_object(rms, rf, false, method).await?;
+        rms.openapi.copy_fields(&rf.path, method, &SchemaPlace::Schemas, false, data_patched, &data, true, true, false)?;
+        check_object_access(rms, rf, data_patched, token_payload)?;
+        let primary_key = parse_query_parameters(rms, rf, false, method)?;
+        let new_obj = rms.entity_manager.update(&rms.openapi, &rf.db_schema, &rf.open_api_schema, &primary_key, &data).await?;
         notify(rms, rf, &new_obj, false, method);
         Ok(new_obj)
     }
 
     async fn process_delete(rms: &RufsMicroService<'_>, rf: &mut RequestFilter, method: &str) -> Result<Value, Box<dyn std::error::Error>> {
         let obj_deleted = get_object(rms, rf, false, method).await?;
-        let primary_key = parse_query_parameters(rms, rf, false, method).unwrap();
+        let primary_key = parse_query_parameters(rms, rf, false, method)?;
         rms.entity_manager.delete_one(&rms.openapi, &rf.db_schema, &rf.open_api_schema, &primary_key).await?;
         notify(rms, rf, &obj_deleted, true, method);
-        Ok(obj_deleted.as_ref().clone())
+        Ok(obj_deleted.clone())
     }
 
     let query_params = if let Some(query) = query {
-        queryst::parse(query).unwrap()
+        queryst::parse(query).or_else(|err| Err(format!("[process_request] queryst::parse({query}) {:?}", err)))?
     } else {
         Value::default()
     };
@@ -319,14 +347,16 @@ pub async fn process_request<'b>(rms: &'b RufsMicroService<'b>, path: &'b str, q
         path
     };
 
-    let path = rms.openapi.get_path_params(path, &query_params).unwrap();
-    let (authorized, token_payload, db_schema) = check_authorization::<RufsMicroService>(rms, &headers_out, &path, method).await?;
+    let path = rms.openapi.get_path_params(path, &query_params)?;
+    let token_payload = check_authorization::<RufsMicroService>(rms, &headers_out, &path, method).await?;
+    let open_api_schema = rms.openapi.get_schema_name(&path, method, false)?;
 
-    if authorized == false {
-        return Err("401-Unauthorized.")?
-    }
+    let db_schema = if let Some(customer) = token_payload.extra.get("customer") {
+        "rufs_customer_".to_owned() + customer.as_str().ok_or("Broken customer_id data")?
+    } else {
+        "public".to_string()
+    };
 
-    let open_api_schema = rms.openapi.get_schema_name(&path, method, false).unwrap();
     let mut rf = RequestFilter {path, open_api_schema, db_schema, query_params};
 
     if method == "get" {
@@ -344,6 +374,8 @@ pub async fn process_request<'b>(rms: &'b RufsMicroService<'b>, path: &'b str, q
         return process_create(rms, &mut rf, &mut obj_in, &token_payload).await;
     } else if method == "put" {
         return process_update(rms, &mut rf, &mut obj_in, &token_payload, method).await;
+    } else if method == "patch" {
+        return process_patch(rms, &mut rf, &mut obj_in, &token_payload, method).await;
     } else if method == "delete" {
         return process_delete(rms, &mut rf, method).await;
     } else {
