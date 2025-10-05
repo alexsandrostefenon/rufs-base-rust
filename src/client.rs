@@ -51,6 +51,7 @@ impl HttpRestRequest {
            let resp = client.post(&format!("{}/{}", self.url, path)).basic_auth(username, Some(password)).send().await?;
 
            if resp.status() != reqwest::StatusCode::OK {
+               #[cfg(debug_assertions)]
                println!("[login_basic] : {:?}", resp);
            }
 
@@ -76,18 +77,20 @@ impl HttpRestRequest {
 
         let request = if let Some(token) = &self.token { request.bearer_auth(token) } else { request };
 
+        #[cfg(debug_assertions)]
         println!("[HttpRestRequest::request_text] : waiting for {} {} ...", method, url);
 
         let response = match request.send().await {
             Ok(response) => response,
             Err(err) => {
-                println!("[request_text] Error : {}", err);
+                eprintln!("[request_text] Error : {}", err);
                 return Err(Box::new(err) as Box<dyn std::error::Error>);
             }
         };
 
         let status = response.status();
         let data_in = response.text().await?;
+        #[cfg(debug_assertions)]
         println!("[HttpRestRequest::request_text] : ... returned {} from {}", status, url);
 
         if status != reqwest::StatusCode::OK {
@@ -296,6 +299,7 @@ impl Service {
  */
             let pos = service.find_pos(&primary_key)?.ok_or_else(|| format!("[build_field_reference] Don't found item for primary_key {}.\nOptions : {:?}", primary_key, service.map_list))?;
 /*
+            #[cfg(debug_assertions)]
             if schema_name == "request" {
                 println!("{:9} [DEBUG - build_field_str] {}.{} : {}.", debug_now.elapsed()?.as_millis(), schema_name, field_name, primary_key);
             }
@@ -620,6 +624,7 @@ impl DataView {
         let data_view_id = element_id.data_view_id.clone();
         let mut params = DataViewParams::default();
         params.page = 1;
+        #[cfg(debug_assertions)]
         println!("[DataView::new()] : {}", data_view_id.id);
 
         Self {
@@ -1999,7 +2004,7 @@ impl DataView {
         Ok(())
     }
 
-    fn set_values(&mut self, server_connection: &ServerConnection, watcher: &Box<dyn DataViewWatch>, obj: &Value, element_id: Option<&HtmlElementId>) -> Result<(), Box<dyn std::error::Error>> {
+    fn set_values(&mut self, server_connection: &ServerConnection, watcher: &Box<dyn DataViewWatch>, obj_in: &Value, element_id: Option<&HtmlElementId>) -> Result<(), Box<dyn std::error::Error>> {
         fn set_values_process(data_view: &mut DataView, element_id: Option<&HtmlElementId>, server_connection: &ServerConnection, watcher: &Box<dyn DataViewWatch>, obj: &Value) -> Result<(), Box<dyn std::error::Error>> {
             let data_view = if let Some(element_id) = element_id {
                 if data_view.data_view_id.id != element_id.data_view_id.id {
@@ -2039,13 +2044,14 @@ impl DataView {
         // if filter.length == 0) filter = list.filter(([fieldName, field]) => field.hidden != true && field.readOnly != true);
         // if filter.length == 0) filter = list.filter(([fieldName, field]) => field.hidden != true);
         //self.get_document(self, obj, false);
-        let obj = {
+        let mut obj = json!({});
+        {
             let may_be_array = false;//true
             let ignore_null = true;
             let ignore_hidden = false;
             let only_primary_keys = false;
-            server_connection.login_response.openapi.copy_fields_using_properties(&self.properties, &self.extensions, may_be_array, obj, ignore_null, ignore_hidden, only_primary_keys)?
-        };
+            server_connection.login_response.openapi.copy_fields_using_properties(&self.properties, &self.extensions, may_be_array, &mut obj, obj_in, ignore_null, ignore_hidden, only_primary_keys)?
+        }
         //println!("[DEBUG - set_values - 1] {}.instance = {}", self.data_view_id.form_id, obj);
         set_values_process(self, element_id, server_connection, watcher, &obj)?;
 /*
@@ -2241,7 +2247,8 @@ impl ServerConnection {
         let service = self.service_map.get_mut(schema_name).ok_or_else(|| format!("[ServerConnection.save({})] missing service {}", path, schema_name))?;
         let schema_place = SchemaPlace::Request; //data_view.schema_place
         let method = "post"; //data_view.method
-        let data_out = self.login_response.openapi.copy_fields(&service.path, method, &schema_place, false, item_send, false, false, false)?;
+        let mut data_out = json!({});
+        self.login_response.openapi.copy_fields(&service.path, method, &schema_place, false, &mut data_out, item_send, false, false, false)?;
         let data_in = self.http_rest.save(&service.path, &data_out).await?;
         let primary_key = &service.get_primary_key(&data_in).ok_or_else(|| format!("[ServerConnection.save] {}  - data_in : Missing primary key", schema_name))?;
         self.update_list(schema_name, primary_key, data_in.clone())?;
@@ -2253,7 +2260,8 @@ impl ServerConnection {
         let service = self.service_map.get_mut(schema_name).unwrap();
         let schema_place = SchemaPlace::Request; //data_view.schema_place
         let method = "put"; //data_view.method
-        let data_out = self.login_response.openapi.copy_fields(&service.path, method, &schema_place, false, item_send, false, false, false)?;
+        let mut data_out = json!({});
+        self.login_response.openapi.copy_fields(&service.path, method, &schema_place, false, &mut data_out, item_send, false, false, false)?;
         let primary_key = &service.get_primary_key(&data_out).ok_or_else(|| format!("[ServerConnection.update] {}  - data_out : Missing primary key", schema_name))?;
         let data_in = self.http_rest.update(&service.path, primary_key, &data_out).await?;
         let primary_key = &service.get_primary_key(&data_in).ok_or_else(|| format!("[ServerConnection.update] {} - data_in : Missing primary key", schema_name))?;
@@ -2512,6 +2520,7 @@ impl ServerConnection {
                     let service = self.service_map.get_mut(&schema_name).unwrap();
                     service.map_list = map_list;
                     service.list = list;
+                    #[cfg(debug_assertions)]
                     println!("login 1.1 : service {}, list_str.len = {}", schema_name, list_str.len());
                     service.list_str = list_str;
                 }
@@ -2630,6 +2639,7 @@ macro_rules! data_view_get_parent_mut {
             })?
         };
 
+        #[cfg(debug_assertions)]
         println!("[{} - data_view_get_parent_mut] : {:?}", function!(), $element_id);
         data_view
     }};
@@ -2794,7 +2804,8 @@ impl DataViewManager<'_> {
                             (service.list.clone(), service.list_str.clone())
                         }
                     } else {
-                        println!("[build_field_filter_results] don't have acess to service {}", reference);
+                        #[cfg(debug_assertions)]
+                        eprintln!("[build_field_filter_results] don't have acess to service {}", reference);
                         (vec![], vec![])
                     }
                 } else if let Some(enumeration) = extensions.get("x-enum") {
@@ -2820,15 +2831,17 @@ impl DataViewManager<'_> {
 
         #[cfg_attr(target_arch = "wasm32", async_recursion::async_recursion(?Send))]
         #[cfg_attr(not(target_arch = "wasm32"), async_recursion::async_recursion)]
-        async fn data_view_get(watcher: &Box<dyn DataViewWatch>, data_view: &mut DataView, server_connection: &mut ServerConnection, primary_key: &Value, element_id: Option<&HtmlElementId>) -> Result<(), Box<dyn std::error::Error>> {
+        async fn data_view_get(watcher: &Box<dyn DataViewWatch>, data_view: &mut DataView, server_connection: &mut ServerConnection, primary_key_in: &Value, element_id: Option<&HtmlElementId>) -> Result<(), Box<dyn std::error::Error>> {
             let schema_name = &data_view.data_view_id.schema_name;
             
-            let primary_key = {
+            let mut primary_key = json!({});
+
+            {
                 let service = server_connection.service_map.get(schema_name).ok_or_else(|| format!("[data_view_get] Missing service {} in server_connection.service_map.", data_view.data_view_id.schema_name))?;
                 let schema_place = SchemaPlace::Parameter;
                 let method = "get";
-                server_connection.login_response.openapi.copy_fields(&service.path, method, &schema_place, false, primary_key, false, false, true)?        
-            };
+                server_connection.login_response.openapi.copy_fields(&service.path, method, &schema_place, false, &mut primary_key, primary_key_in, false, false, true)?        
+            }
             
             let Some(value) = server_connection.get(schema_name, &primary_key).await? else {
                 return Ok(())

@@ -6,6 +6,8 @@ use openapiv3::{OpenAPI, SecurityRequirement};
 use jsonwebtoken::{encode, EncodingKey, Header};
 use async_std::path::PathBuf;
 use async_trait::async_trait;
+#[cfg(feature = "warp")]
+use tokio::sync::Mutex;
 
 use crate::{db_adapter_postgres::DbAdapterSql,entity_manager::EntityManager,openapi::{FillOpenAPIOptions, RufsOpenAPI, Role}};
 
@@ -194,10 +196,15 @@ impl RufsMicroService<'_> {
             rms.entity_manager.exec("CREATE SCHEMA IF NOT EXISTS rufs_customer_template;").await?;
 
             for name in ["rufsGroupOwner", "rufsUser", "rufsGroup"] { // , "rufsGroupUser"
+                println!("[connect.create_rufs_tables] check table {name}...");
+
                 if rms.openapi.components.as_ref().unwrap().schemas.get(name).is_none() {
                     println!("don't matched schema {}, existents :\n{:?}", name, rms.openapi.components.as_ref().unwrap().schemas.keys());
                     let schema = openapi_rufs.components.as_ref().unwrap().schemas.get(name).unwrap().as_item().unwrap();
                     rms.entity_manager.create_table(db_schema, &name, schema).await?;
+                    println!("[connect.create_rufs_tables] ... table {name} created!");
+                } else {
+                    println!("[connect.create_rufs_tables] ... table {name} already exists.");
                 }
             }
 
@@ -303,9 +310,9 @@ impl RufsMicroService<'_> {
 
         if exec_migrations(&mut rufs, migration_path).await? {
             #[cfg(debug_assertions)]
-            let status = std::process::Command::new("/usr/bin/podman").arg("exec").arg("postgres").arg("/usr/bin/pg_dump").arg(db_uri).arg("--inserts").arg("-n").arg("rufs_customer_template").arg("-f").arg("/app/data/template.sql").status().expect("Failed to run pg_dump");
+            let status = std::process::Command::new("/usr/bin/podman").arg("exec").arg("postgres").arg("pg_dump").arg(db_uri).arg("--inserts").arg("-n").arg("rufs_customer_template").arg("-f").arg("/app/data/rufs_customer_template.sql").status().expect("Failed to run pg_dump");
             #[cfg(not(debug_assertions))]
-            let status = std::process::Command::new("/usr/bin/pg_dump").arg(db_uri).arg("--inserts").arg("-n").arg("rufs_customer_template").arg("-f").arg("data/template.sql").status().expect("Failed to run pg_dump");
+            let status = std::process::Command::new("pg_dump").arg(db_uri).arg("--inserts").arg("-n").arg("rufs_customer_template").arg("-f").arg("data/rufs_customer_template.sql").status().expect("Failed to run pg_dump");
             
             if status.success() == false {
                 return Err("Broken pg_dump")?;
@@ -327,7 +334,7 @@ impl RufsMicroService<'_> {
         Ok(rufs)
     }
 
-    pub fn build_login_response(&self, user: RufsUser, remote_addr: &str, extra_claims: Value, extra: Value) -> Result<LoginResponse, Box<dyn std::error::Error>> {
+    pub fn build_login_response(&self, user: RufsUser, remote_addr: &str, extra_claims: Value, extra: Value) -> Result<LoginResponse<'_>, Box<dyn std::error::Error>> {
         let claims = Claims {
             sub: "".to_string(),
             exp: 10000000000,
@@ -393,7 +400,7 @@ impl Authenticator for RufsMicroServiceAuthenticator {
         let openapi_schema = "rufsUser";
         rufs.entity_manager.check_schema(&db_schema, user_id.as_str(), user_password).await?;
         let user = rufs.entity_manager.find_one(&rufs.openapi, &db_schema, &openapi_schema, &json!({ "name": user_id.as_str() })).await?.ok_or("Fail to find user.")?;
-        let user = RufsUser::deserialize(*user)?;
+        let user = RufsUser::deserialize(user)?;
 
         if user.password.len() > 0 && user.password != user_password {
             return Err("Don't match user and password.")?;
@@ -492,7 +499,7 @@ pub async fn rufs_tide(app: &mut Box<tide::Server<RufsMicroService<'static>>>) -
 
         let method = request.method().to_string().to_lowercase();
         let auth = request.header("Authorization").unwrap().as_str();
-        print!("\n\ncurl -X '{}' {} -H 'Authorization: {}'", method, request.url(), auth);
+        println!("\n\ncurl -X '{}' {} -H 'Authorization: {}'", method, request.url(), auth);
     
         let obj_in = if ["post", "put", "patch"].contains(&method.as_str()) {
             let obj_in = request.body_json::<Value>().await?;
@@ -622,8 +629,16 @@ pub async fn rufs_tide(app: &mut Box<tide::Server<RufsMicroService<'static>>>) -
 }
 
 #[cfg(feature = "warp")]
-pub async fn rufs_warp<'a, T>(rufs: RufsMicroService<'static>, authenticator: &'a T) -> impl warp::Filter<Extract = (impl warp::Reply + 'a,), Error = warp::Rejection> + Clone + 'a where T : Authenticator + std::marker::Send + Sync {
-    use std::{sync::Mutex, convert::Infallible};
+pub fn rufs_warp_with_rufs(rufs: Arc<Mutex<RufsMicroService<'static>>>) -> impl warp::Filter<Extract = (Arc<Mutex<RufsMicroService<'static>>>,), Error = std::convert::Infallible> + Clone {
+    use warp::Filter;
+    warp::any().map(move || {
+        rufs.clone()
+    })
+}
+
+#[cfg(feature = "warp")]
+pub async fn rufs_warp<'a, T>(rufs: &Arc<Mutex<RufsMicroService<'static>>>, authenticator: &'a T) -> impl warp::Filter<Extract = (impl warp::Reply + 'a,), Error = warp::Rejection> + Clone + 'a where T : Authenticator + std::marker::Send + Sync {
+    use std::{convert::Infallible};
     use jsonwebtoken::{decode, DecodingKey, Validation};
     use futures_util::StreamExt;
     use warp::Reply;
@@ -631,13 +646,6 @@ pub async fn rufs_warp<'a, T>(rufs: RufsMicroService<'static>, authenticator: &'
     use warp::path::FullPath;
     use warp::Filter;
     use warp::ws::WebSocket;
-
-    let api_path = rufs.params.api_path.clone();
-    let rufs = Arc::new(Mutex::new(rufs));
-
-    fn with_rufs(rufs: Arc<Mutex<RufsMicroService<'static>>>) -> impl Filter<Extract = (Arc<Mutex<RufsMicroService<'static>>>,), Error = Infallible> + Clone {
-        warp::any().map(move || rufs.clone())
-    }
 
     macro_rules! warp_try {
         ($expr:expr) => {
@@ -668,11 +676,13 @@ pub async fn rufs_warp<'a, T>(rufs: RufsMicroService<'static>, authenticator: &'
         };
     }
 
-    async fn handle_api(rufs: Arc<Mutex<RufsMicroService<'static>>>, method: Method, path: FullPath, headers: HeaderMap, query: String, obj_in: Value) -> Result<impl Reply, Infallible> {
+    let api_path = {
+        let rufs = rufs.lock().await.to_owned();
+        rufs.params.api_path.clone()
+    };
+
+    async fn handle_api(rufs: Arc<Mutex<RufsMicroService<'static>>>, method: Method, path: &str, headers: HeaderMap, query: String, obj_in: Value) -> Result<impl Reply, Infallible> {
         let method = method.to_string().to_lowercase();
-        let path = path.as_str();
-        let header = warp_try!(headers.get("Authorization").ok_or("400-Missing Authorization header."));
-        let auth = warp_try!(header.to_str());
 
         let query = if !query.is_empty() {
             Some(query.as_str())
@@ -688,40 +698,51 @@ pub async fn rufs_warp<'a, T>(rufs: RufsMicroService<'static>, authenticator: &'
             headers_out.insert(key, value.to_string());
         }
 
-        print!("\n\ncurl -X '{}' {} -H 'Authorization: {}'", method, path, auth);
-        let rufs = &rufs.lock().unwrap().to_owned();
+        #[cfg(debug_assertions)]
+        {
+            let header = warp_try!(headers.get("Authorization").ok_or("400-Missing Authorization header."));
+            let auth = warp_try!(header.to_str());
+            println!("\n\ncurl -X '{method}' {path}?{:?} -H 'Authorization: {auth}'", query);
+        }
+
+        let rufs = &rufs.lock().await.to_owned();
         let ret = warp_try!(crate::request_filter::process_request(rufs, path, query, &method, &headers_out, obj_in).await);
         let ret = warp::reply::json(&ret);
+        #[cfg(debug_assertions)]
         println!("[handle_api()] : ...exiting");
         Ok(Box::new(ret))
     }
     
+    async fn handle_api_put(rufs: Arc<Mutex<RufsMicroService<'static>>>, method: Method, path: FullPath, headers: HeaderMap, query: String, obj_in: Value) -> Result<impl Reply, Infallible> {
+        handle_api(rufs, method, path.as_str(), headers, query, obj_in).await
+    }
+
     let route_api_put = warp::path(api_path.clone()).
-        and(with_rufs(rufs.clone())).and(warp::method()).and(warp::path::full()).and(warp::header::headers_cloned()).
-        and(warp::query::raw()).and(warp::body::json()).and_then(handle_api);
+        and(rufs_warp_with_rufs(rufs.clone())).and(warp::method()).and(warp::path::full()).and(warp::header::headers_cloned()).
+        and(warp::query::raw()).and(warp::body::json()).and_then(handle_api_put);
 
     async fn handle_api_post(rufs: Arc<Mutex<RufsMicroService<'static>>>, method: Method, path: FullPath, headers: HeaderMap, obj_in: Value) -> Result<impl Reply, Infallible> {
-        handle_api(rufs, method, path, headers, String::new(), obj_in).await
+        handle_api(rufs.clone(), method, path.as_str(), headers, String::new(), obj_in).await
     }
 
     let route_api_post = warp::path(api_path.clone()).
-        and(with_rufs(rufs.clone())).and(warp::method()).and(warp::path::full()).and(warp::header::headers_cloned()).and(warp::body::json()).
+        and(rufs_warp_with_rufs(rufs.clone())).and(warp::method()).and(warp::path::full()).and(warp::header::headers_cloned()).and(warp::body::json()).
         and_then(handle_api_post);
     
     async fn handle_api_get_delete(rufs: Arc<Mutex<RufsMicroService<'static>>>, method: Method, path: FullPath, headers: HeaderMap, query: String) -> Result<impl Reply, Infallible> {
-        handle_api(rufs, method, path, headers, query, json!({})).await
+        handle_api(rufs.clone(), method, path.as_str(), headers, query, json!({})).await
     }
 
     let route_api_get_delete = warp::path(api_path.clone()).
-        and(with_rufs(rufs.clone())).and(warp::method()).and(warp::path::full()).and(warp::header::headers_cloned()).and(warp::query::raw()).
+        and(rufs_warp_with_rufs(rufs.clone())).and(warp::method()).and(warp::path::full()).and(warp::header::headers_cloned()).and(warp::query::raw()).
         and_then(handle_api_get_delete);
     
     async fn handle_api_list_all(rufs: Arc<Mutex<RufsMicroService<'static>>>, method: Method, path: FullPath, headers: HeaderMap) -> Result<impl Reply, Infallible> {
-        handle_api(rufs, method, path, headers, String::new(), json!({})).await
+        handle_api(rufs.clone(), method, path.as_str(), headers, String::new(), json!({})).await
     }
 
     let route_api_list_all = warp::path(api_path.clone()).
-        and(with_rufs(rufs.clone())).and(warp::method()).and(warp::path::full()).and(warp::header::headers_cloned()).
+        and(rufs_warp_with_rufs(rufs.clone())).and(warp::method()).and(warp::path::full()).and(warp::header::headers_cloned()).
         and_then(handle_api_list_all);
     
     async fn handle_ws(rufs: Arc<Mutex<RufsMicroService<'static>>>, ws: warp::ws::Ws) -> Result<impl Reply, Infallible> {
@@ -730,13 +751,12 @@ pub async fn rufs_warp<'a, T>(rufs: RufsMicroService<'static>, authenticator: &'
             
             if let Some(Ok(msg)) = user_ws_rx.next().await {
                 if let Ok(token) = msg.to_str() {
-                    if let Ok(rufs) = rufs.lock() {
-                        let secret = std::env::var("RUFS_JWT_SECRET").unwrap_or("123456".to_string());
+                    let rufs = rufs.lock().await.to_owned();
+                    let secret = std::env::var("RUFS_JWT_SECRET").unwrap_or("123456".to_string());
 
-                        if let Ok(token_data) = decode::<Claims>(&token, &DecodingKey::from_secret(secret.as_ref()), &Validation::default()) {
-                            rufs.ws_server_connections_warp.write().unwrap().insert(token.to_string(), user_ws_tx);
-                            rufs.ws_server_connections_tokens.write().unwrap().insert(token.to_string(), token_data.claims);
-                        }
+                    if let Ok(token_data) = decode::<Claims>(&token, &DecodingKey::from_secret(secret.as_ref()), &Validation::default()) {
+                        rufs.ws_server_connections_warp.write().unwrap().insert(token.to_string(), user_ws_tx);
+                        rufs.ws_server_connections_tokens.write().unwrap().insert(token.to_string(), token_data.claims);
                     }
                 }
             }
@@ -746,10 +766,10 @@ pub async fn rufs_warp<'a, T>(rufs: RufsMicroService<'static>, authenticator: &'
         Ok(res)
     }
 
-    let route_websocket = warp::path("websocket").and(with_rufs(rufs.clone())).and(warp::ws()).and_then(handle_ws);
+    let route_websocket = warp::path("websocket").and(rufs_warp_with_rufs(rufs.clone())).and(warp::ws()).and_then(handle_ws);
 
     async fn wasm_ws_login_warp(rufs: Arc<Mutex<RufsMicroService<'static>>>, full_path: FullPath, data_in: Value, _remote: Option<std::net::SocketAddr>) -> Result<impl Reply, Infallible> {
-        let rufs = &rufs.lock().unwrap().to_owned();
+        let rufs = &rufs.lock().await.to_owned();
         let full_path_str = full_path.as_str();
 
         let path = if let Some(pos) = full_path_str.find("/wasm_ws/") {
@@ -763,10 +783,10 @@ pub async fn rufs_warp<'a, T>(rufs: RufsMicroService<'static>, authenticator: &'
         Ok(Box::new(warp::reply::json(&ret)))
     }
         
-    let route_wasm_login = warp::path("wasm_ws").and(warp::path("login")).and(with_rufs(rufs.clone())).and(warp::path::full()).and(warp::body::json()).and(warp::addr::remote()).and_then(wasm_ws_login_warp);
+    let route_wasm_login = warp::path("wasm_ws").and(warp::path("login")).and(rufs_warp_with_rufs(rufs.clone())).and(warp::path::full()).and(warp::body::json()).and(warp::addr::remote()).and_then(wasm_ws_login_warp);
 
     async fn handle_login<T>(rufs: Arc<Mutex<RufsMicroService<'static>>>, login_request: LoginRequest, remote: Option<std::net::SocketAddr>, authenticator: &T) -> Result<impl Reply, Infallible> where T : Authenticator + std::marker::Send + Sync {
-        let rufs = &rufs.lock().unwrap().to_owned();
+        let rufs = &rufs.lock().await.to_owned();
         let (user, extra_claims, extra) = warp_try!(authenticator.authenticate_user(rufs, &login_request.user, &login_request.password).await);
         let remote = warp_try!(remote.ok_or("400-Missing remote address."));
         let login_response = warp_try!(rufs.build_login_response(user, &remote.to_string(), extra_claims, extra));
@@ -781,7 +801,7 @@ pub async fn rufs_warp<'a, T>(rufs: RufsMicroService<'static>, authenticator: &'
     let cors = warp::cors().allow_any_origin().allow_methods(vec!["GET", "PUT", "OPTIONS", "POST", "DELETE"]).allow_headers(vec!["access-control-allow-origin","content-type"]);
     let route_options = warp::options().and(warp::header::headers_cloned()).and_then(handle_options).with(cors);
 */
-    let route_login = warp::path(api_path).and(warp::path("login")).and(with_rufs(rufs.clone())).and(warp::body::json()).and(warp::addr::remote()).and_then(|rufs: Arc<Mutex<RufsMicroService<'static>>>, login_request: LoginRequest, remote: Option<std::net::SocketAddr>| {
+    let route_login = warp::path(api_path).and(warp::path("login")).and(rufs_warp_with_rufs(rufs.clone())).and(warp::body::json()).and(warp::addr::remote()).and_then(|rufs: Arc<Mutex<RufsMicroService<'static>>>, login_request: LoginRequest, remote: Option<std::net::SocketAddr>| {
         handle_login(rufs, login_request, remote, authenticator)
     });
     
