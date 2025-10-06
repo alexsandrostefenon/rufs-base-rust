@@ -191,7 +191,7 @@ impl DbAdapterSql<'_> {
 			});
 
 			client
-		};	
+		};
 
         let client = Arc::new(client);
         self.client = Some(client);
@@ -272,7 +272,7 @@ impl DbAdapterSql<'_> {
 			let filter = &query_params["filter"];
 			let filter_range_min = &query_params["filterRangeMin"];
 			let filter_range_max = &query_params["filterRangeMax"];
-	
+
 			if !filter.is_null() || !filter_range_min.is_null() || !filter_range_max.is_null() {
 				if !filter.is_null() {
 					build_conditions(properties, filter, params, "=", &mut conditions)?
@@ -316,7 +316,7 @@ impl DbAdapterSql<'_> {
 	async fn query(&self, sql: &str, params: &[&(dyn ToSql + Sync)]) -> Result<Vec<Value>, Box<dyn std::error::Error>> {
         #[cfg(debug_assertions)]
 		println!("[DbAdapterSql.query] {} - {:?}", sql.replace("\n", " "), params);
-		
+
 		let list = match self.client.as_ref().unwrap().query(sql, params).await {
 			Ok(list) => list,
 			Err(err) => {
@@ -412,8 +412,8 @@ impl EntityManager for DbAdapterSql<'_> {
 									str_values.push(format!("${}", count));
 									params.push(value);
 									count += 1;
-								}, 
-							}							
+								},
+							}
 						},
 						_ => todo!(),
 					}
@@ -445,7 +445,7 @@ impl EntityManager for DbAdapterSql<'_> {
 				return Err(err)?;
 			},
 		};
-		
+
 		let obj = list.get(0).ok_or("Missing response data")?;
 		Self::get_json(obj)
 	}
@@ -460,11 +460,11 @@ impl EntityManager for DbAdapterSql<'_> {
 
 		for (field_name, property) in properties {
 			match property {
-	            #[cfg(debug_assertions)]
+				#[cfg(debug_assertions)]
 				openapiv3::ReferenceOr::Reference { reference } => {
 					println!("{} -> {}", field_name, reference);
 				},
-	            #[cfg(not(debug_assertions))]
+				#[cfg(not(debug_assertions))]
 				openapiv3::ReferenceOr::Reference { reference: _ } => {
 				},
 				openapiv3::ReferenceOr::Item(property) => {
@@ -667,7 +667,7 @@ impl EntityManager for DbAdapterSql<'_> {
 				} else {
 					json!({})
 				};
-				
+
 				let mut unique_keys = if let Some(unique_keys) = extensions.get_mut("x-uniqueKeys") {
 					unique_keys.clone()
 				} else {
@@ -796,7 +796,7 @@ impl EntityManager for DbAdapterSql<'_> {
 
 						match foreign_key.get("tableRef") {
 							Some(table_ref) => set_ref(&mut object_type.properties, &candidates[0], table_ref.as_str().unwrap()),
-							None => println!("[DbAdapterSql.update_open_api.process_constraints] : missing table_ref from {}.", name),													
+							None => println!("[DbAdapterSql.update_open_api.process_constraints] : missing table_ref from {}.", name),
 						}
 					}
 				}
@@ -857,7 +857,7 @@ impl EntityManager for DbAdapterSql<'_> {
 			let sql_types = ["boolean", "character varying", "character", "integer", "jsonb", "jsonb array", "numeric", "timestamp without time zone", "timestamp with time zone", "time without time zone", "bigint", "smallint", "text", "date", "double precision", "bytea"];
 			let rufs_types = ["boolean", "string", "string", "integer", "object", "array", "number", "date-time", "date-time", "date-time", "integer", "integer", "string", "date-time", "number", "string"];
 			let sql_info_tables = "
-			select 
+			select
 			LOWER(TRIM(c.data_type)) as data_type,
 			LOWER(TRIM(c.udt_name)) as udt_name,
 			LOWER(TRIM(c.table_schema)) as table_schema,
@@ -959,12 +959,12 @@ impl EntityManager for DbAdapterSql<'_> {
 
 				let schema_kind = match rufs_type {
 					"date-time" => SchemaKind::Type(openapiv3::Type::String(openapiv3::StringType { format: VariantOrUnknownOrEmpty::Item(StringFormat::DateTime), ..Default::default() })),
-					"boolean" => SchemaKind::Type(openapiv3::Type::Boolean {  }), 
+					"boolean" => SchemaKind::Type(openapiv3::Type::Boolean {  }),
 					"number" => SchemaKind::Type(openapiv3::Type::Number(openapiv3::NumberType { format: VariantOrUnknownOrEmpty::Empty, multiple_of: None, exclusive_minimum: false, exclusive_maximum: false, minimum: None, maximum: None, enumeration: vec![] })),
-					"integer" => SchemaKind::Type(openapiv3::Type::Integer(openapiv3::IntegerType { format: VariantOrUnknownOrEmpty::Empty, multiple_of: None, exclusive_minimum: false, exclusive_maximum: false, minimum: None, maximum: None, enumeration: vec![] })), 
-					"array"=> SchemaKind::Type(openapiv3::Type::Array(openapiv3::ArrayType { items: Some(ReferenceOr::Item(Box::new(Schema {schema_data: SchemaData::default(), schema_kind: SchemaKind::Type(openapiv3::Type::String(openapiv3::StringType { format: VariantOrUnknownOrEmpty::Empty, pattern: None, enumeration: vec![], min_length: None, max_length: None }))}))), min_items: None, max_items: None, unique_items: false })), 
+					"integer" => SchemaKind::Type(openapiv3::Type::Integer(openapiv3::IntegerType { format: VariantOrUnknownOrEmpty::Empty, multiple_of: None, exclusive_minimum: false, exclusive_maximum: false, minimum: None, maximum: None, enumeration: vec![] })),
+					"array"=> SchemaKind::Type(openapiv3::Type::Array(openapiv3::ArrayType { items: Some(ReferenceOr::Item(Box::new(Schema {schema_data: SchemaData::default(), schema_kind: SchemaKind::Type(openapiv3::Type::String(openapiv3::StringType { format: VariantOrUnknownOrEmpty::Empty, pattern: None, enumeration: vec![], min_length: None, max_length: None }))}))), min_items: None, max_items: None, unique_items: false })),
 					"object" => SchemaKind::Type(openapiv3::Type::Object(ObjectType { properties: IndexMap::default(), required: vec![], additional_properties: None, min_properties: None, max_properties: None })),
-					_ => SchemaKind::Type(openapiv3::Type::String(openapiv3::StringType { format: VariantOrUnknownOrEmpty::Empty, pattern: None, enumeration: vec![], min_length: None, max_length })), 
+					_ => SchemaKind::Type(openapiv3::Type::String(openapiv3::StringType { format: VariantOrUnknownOrEmpty::Empty, pattern: None, enumeration: vec![], min_length: None, max_length })),
 				};
 
 				if rec.column_default.is_empty() == false {
@@ -1005,7 +1005,7 @@ impl EntityManager for DbAdapterSql<'_> {
 									None
 								}
 							},
-							_ => Some(Value::String(str2)), 
+							_ => Some(Value::String(str2)),
 						}
 					};
 				}
@@ -1091,7 +1091,7 @@ impl EntityManager for DbAdapterSql<'_> {
 			},
 			SchemaKind::Any(x) => &x.properties,
 			_ => todo!(),
-		};		
+		};
 		// add foreign keys
 		let mut list = vec![];
 
@@ -1160,7 +1160,7 @@ impl EntityManager for DbAdapterSql<'_> {
 
 		//#[cfg(not(debug_assertions))]
 		let current_dir = std::env::current_dir()?;
-    	println!("The current directory is: {}", current_dir.display());
+		println!("The current directory is: {}", current_dir.display());
 		println!(r#"[check_schema] std::fs::read_to_string("./data/rufs_customer_template.sql") ..."#);
 		let sql = std::fs::read_to_string("./data/rufs_customer_template.sql")?;
 		let regex = Regex::new(r#"\\\w+ \w+"#)?;

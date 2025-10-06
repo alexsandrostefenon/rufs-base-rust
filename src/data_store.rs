@@ -3,7 +3,7 @@ use serde_json::Value;
 pub struct Filter;
 
 impl Filter {
-    
+
     pub fn check_match_exact(item: &Value, key: &Value) -> Result<bool, Box<dyn std::error::Error>> {
         let mut _match = Ok(true);
 
@@ -23,7 +23,7 @@ impl Filter {
             } else {
                 expected_value.to_string()
             };
-            
+
             if item_value != expected_value {
                 _match = Ok(false);
                 break;

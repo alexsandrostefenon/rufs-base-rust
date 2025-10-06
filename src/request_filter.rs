@@ -95,7 +95,7 @@ pub async fn process_request<'b>(rms: &'b RufsMicroService<'b>, path: &'b str, q
         open_api_schema: String,
         db_schema: String
     }
-    
+
     fn parse_query_parameters(rms: &RufsMicroService<'_>, rf: &RequestFilter, ignore_null: bool, method: &str) -> Result<Value, Box<dyn std::error::Error>> {
         let mut query_params = json!({});
         rms.openapi.copy_fields(&rf.path, method, &SchemaPlace::Parameter, true, &mut query_params, &rf.query_params, ignore_null, false, false)?;
@@ -185,7 +185,7 @@ pub async fn process_request<'b>(rms: &'b RufsMicroService<'b>, path: &'b str, q
             action     :String,
             primary_key :Value
         }
-        
+
         let mut parameters = json!({});
         rms.openapi.copy_fields(&rf.path, method, &SchemaPlace::Schemas, false, &mut parameters, obj, false, false, true).unwrap();
         let mut msg = NotifyMessage{service: rf.open_api_schema.to_string(), action: "notify".to_string(), primary_key: parameters};

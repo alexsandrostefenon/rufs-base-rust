@@ -72,8 +72,8 @@ pub trait RufsOpenAPI {
     fn create(&mut self, security: &str);
     fn copy_value_field(&self, field: &Schema, essential: bool, value :&Value) -> Result<Value, Box<dyn std::error::Error>>;
     fn copy_value(&self, path :&str, method :&str, schema_place :&SchemaPlace, may_be_array: bool, property_name :&str, value :&Value) -> Result<Value, Box<dyn std::error::Error>>;
-    fn get_value_from_properties<'a>(&'a self, properties: &SchemaProperties, property_name :&str, obj: &'a Value) -> Option<&'a Value>;    
-    fn copy_fields_using_properties(&self, properties: &SchemaProperties, extensions: &SchemaExtensions, may_be_array: bool, data_out :&mut Value, data_in: &Value, ignore_null: bool, ignore_hidden: bool, only_primary_keys: bool) -> Result<(), Box<dyn std::error::Error>>;    
+    fn get_value_from_properties<'a>(&'a self, properties: &SchemaProperties, property_name :&str, obj: &'a Value) -> Option<&'a Value>;
+    fn copy_fields_using_properties(&self, properties: &SchemaProperties, extensions: &SchemaExtensions, may_be_array: bool, data_out :&mut Value, data_in: &Value, ignore_null: bool, ignore_hidden: bool, only_primary_keys: bool) -> Result<(), Box<dyn std::error::Error>>;
     fn copy_fields(&self, path :&str, method :&str, schema_place :&SchemaPlace, may_be_array: bool, data_out :&mut Value, data_in: &Value, ignore_null: bool, ignore_hidden: bool, only_primary_keys: bool) -> Result<(), Box<dyn std::error::Error>>;
     fn fill(&mut self, options: &mut FillOpenAPIOptions) -> Result<(), Box<dyn std::error::Error>>;
     fn get_schema_from_schemas(&self, reference :&str) -> Result<Option<&Schema>, Box<dyn std::error::Error>>;
@@ -207,7 +207,7 @@ impl RufsOpenAPI for OpenAPI {
                 },
                 _ => todo!(),
             }
-        
+
             if let Some(value) = &field.schema_data.default {
                 return Ok(value.clone());
             }
@@ -255,7 +255,7 @@ impl RufsOpenAPI for OpenAPI {
                 if let Some(value) = obj.get(property_name) {
                     return Some(value);
                 }
-                
+
                 if let Some(internal_name) = property.schema_data.extensions.get("x-internalName") {
                     if let Value::String(internal_name) = internal_name {
                         if let Some(value) = obj.get(internal_name) {
@@ -291,7 +291,7 @@ impl RufsOpenAPI for OpenAPI {
                     continue;
                 }
             }
-    
+
             if let Some(primary_keys) = extensions.get("x-primaryKeys") {
                 let primary_keys = primary_keys.as_array().unwrap();
 
@@ -299,12 +299,12 @@ impl RufsOpenAPI for OpenAPI {
                     continue;
                 }
             }
-    
+
             if let Some(value) = self.get_value_from_properties(properties, field_name, data_in) {
                 match field {
                     ReferenceOr::Reference { reference: _ } => todo!(),
                     ReferenceOr::Item(field) => data_out[field_name] = self.copy_value_field(field, !ignore_null, value)?,
-                }                
+                }
             } else {
                 if ignore_null {
                     continue;
@@ -373,7 +373,7 @@ impl RufsOpenAPI for OpenAPI {
         } else {
             let schema_extensions_to_preserve = ["x-title"];
             let field_extensions_to_preserve = ["x-title"];
-            
+
             for (schema_name, schema_new) in &options.schemas {
                 if let Some(schema_old) = components.schemas.insert(schema_name.clone(), schema_new.clone()) {
                     let schema_new = if let Some(schema_new) = components.schemas.get_mut(schema_name) {
@@ -783,7 +783,7 @@ impl RufsOpenAPI for OpenAPI {
                                     if may_be_array {
                                         return Some(schema);
                                     }
-        
+
                                     match &array.items {
                                         Some(schema) => match schema {
                                             ReferenceOr::Reference { reference } => return Some(self.get_schema_from_ref(reference, may_be_array).unwrap()),
@@ -886,7 +886,7 @@ impl RufsOpenAPI for OpenAPI {
             },
         }
     }
-    
+
     fn get_path_params(&self, uri: &str, _params: &Value) -> Result<String, Box<dyn std::error::Error>> {
         let openapi = self;
         let uri_segments: Vec<&str> = uri.split('/').collect();
@@ -1062,7 +1062,7 @@ impl RufsOpenAPI for OpenAPI {
                     }
                 }
             }
-           
+
             return Err(format!("[OpenAPI.get_response_schema] missing OperationObject 1 {}", path))?;
         } else {
             return Err(format!("[OpenAPI.get_response_schema] missing PathItemObject 2 {}", path))?;
@@ -1171,7 +1171,7 @@ impl RufsOpenAPI for OpenAPI {
             let Some(schema) = self.get_property_from_schema(schema, schema_name) else {
                 return None;
             };
-            
+
             schema
         } else {
             schema
@@ -1252,14 +1252,14 @@ impl RufsOpenAPI for OpenAPI {
                                         },
                                         _ => todo!(),
                                     }
-        
+
                                 },
                                 _ => {
                                     let extensions = &mut field.schema_data.extensions;
                                     if extensions.get("x-shortDescription").is_none() {extensions.insert("x-shortDescription".to_string(), json!(false));};
                                     if extensions.get("x-orderIndex").is_none() {extensions.insert("x-orderIndex".to_string(), json!(properties_len));};
                                     if extensions.get("x-tableVisible").is_none() {extensions.insert("x-tableVisible".to_string(), json!(true));};
-                        
+
                                     if let Some(hidden) = extensions.get("x-hidden") {
                                         if let Value::Bool(hidden) = hidden {
                                             if hidden == &true {
@@ -1268,7 +1268,7 @@ impl RufsOpenAPI for OpenAPI {
                                             }
                                         }
                                     }
-                        
+
                                     if let Some(short_description) = extensions.get("x-shortDescription") {
                                         if let Value::Bool(short_description) = short_description {
                                             if short_description == &true {
@@ -1300,7 +1300,7 @@ impl RufsOpenAPI for OpenAPI {
         } else {
             vec![]
         };
-        
+
         let mut short_description_list = vec![];
         let mut not_table_visible = vec![];
         process_properties(&mut properties, &mut not_table_visible, &mut short_description_list)?;
@@ -1316,7 +1316,7 @@ impl RufsOpenAPI for OpenAPI {
                 for (field_name, field) in &mut properties {
                     if let ReferenceOr::Item(field) = field {
                         let extensions = &mut field.schema_data.extensions;
-    
+
                         if extensions.get("x-hidden").is_none() && extensions.get("x-identityGeneration").is_some() {
                             extensions.insert("x-hidden".to_string(), json!(true));
                             not_table_visible.push(field_name.clone());
@@ -1327,7 +1327,7 @@ impl RufsOpenAPI for OpenAPI {
             }
 
             let mut short_description_list_size = 0;
-            
+
             if primary_keys.iter().find(|field_name| not_table_visible.contains(field_name)) == None {
                 for field_name in &primary_keys {
                     short_description_list.push(field_name.clone());
@@ -1528,7 +1528,7 @@ impl RufsOpenAPI for OpenAPI {
                 } else {
                     continue;
                 };
-        
+
                 if reference == schema_name_target || OpenAPI::get_schema_name_from_ref(reference) == schema_name_target {
                     if only_in_document != true || openapi.get_properties_from_schema(field).is_some() {
                         if list.iter().find(|&item| item.schema == schema_name && &item.field == field_name).is_none() {
@@ -1599,7 +1599,7 @@ impl RufsOpenAPI for OpenAPI {
                     }
                 }
             }
-    
+
             if ret.fields_ref.len() != primary_keys.len() {
                 return Err(format!("[OpenAPI.getForeignKeyDescription({:?}, {})] : don't full fields key {:?} : {:?}", schema, property_name, primary_keys, ret.fields_ref))?;
             }
@@ -1615,7 +1615,7 @@ impl RufsOpenAPI for OpenAPI {
             for (field_ref, field_map) in &foreign_key_description.fields_ref {
                 key_in[field_map] = obj[field_ref].clone();
             }
-    
+
             let mut key = json!({});
             self.copy_fields_using_properties(schema, extensions, false, &mut key, &key_in, true, false, false)?;
             Some((foreign_key_description, key))
@@ -1636,9 +1636,9 @@ impl RufsOpenAPI for OpenAPI {
         let foreign_key_description = foreign_key_description.unwrap();
         let key = json!({});
         let mut ret = PrimaryKeyForeign{
-            schema: foreign_key_description.schema_ref, 
-            primary_key: key, 
-            valid: true, 
+            schema: foreign_key_description.schema_ref,
+            primary_key: key,
+            valid: true,
         };
 
         for (field_ref, field_name_map) in &foreign_key_description.fields_ref {
