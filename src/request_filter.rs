@@ -115,14 +115,18 @@ pub async fn process_request<'b>(rms: &'b RufsMicroService<'b>, path: &'b str, q
     }
 
     async fn process_query(rms: &RufsMicroService<'_>, rf: &RequestFilter, method: &str) -> Result<Value, Box<dyn std::error::Error>> {
-        fn get_order_by(properties: &SchemaProperties) -> Vec<String> {
-            let mut order_by = Vec::<String>::new();
-
+        fn get_order_by(order_by :&mut Vec<String>, properties: &SchemaProperties) {
             for (field_name, field) in properties {
+                if order_by.contains(field_name) {
+                    continue;
+                }
+
                 match field {
                     ReferenceOr::Item(schema) => match &schema.schema_kind {
                         openapiv3::SchemaKind::Type(typ) => match typ {
-                            openapiv3::Type::Integer(_) => order_by.push(format!("{} desc", field_name)),
+                            openapiv3::Type::Integer(_) => {
+                                order_by.push(format!("{} desc", field_name))
+                            },
                             openapiv3::Type::String(x) => {
                                 match &x.format {
                                     openapiv3::VariantOrUnknownOrEmpty::Item(format) => match format {
@@ -130,18 +134,20 @@ pub async fn process_request<'b>(rms: &'b RufsMicroService<'b>, path: &'b str, q
                                         openapiv3::StringFormat::DateTime => order_by.push(format!("{} desc", field_name)),
                                         _ => todo!(),
                                     },
-                                    _ => order_by.push(field_name.to_string()),
+                                    _ => {
+                                        order_by.push(field_name.to_string())
+                                    },
                                 };
                             },
                             _ => todo!(),
                         },
                         _ => todo!(),
                     },
-                    ReferenceOr::Reference { reference: _ } => order_by.push(format!("{} desc", field_name)),
+                    ReferenceOr::Reference { reference: _ } => {
+                        order_by.push(format!("{} desc", field_name))
+                    },
                 }
             }
-
-            order_by
         }
 
         let schema = rms.openapi.get_schema_from_parameters(&rf.path, method, true)?;
@@ -157,14 +163,34 @@ pub async fn process_request<'b>(rms: &'b RufsMicroService<'b>, path: &'b str, q
             }
         }
 
-        let order_by = match &schema.schema_kind {
-            openapiv3::SchemaKind::Type(typ) => match typ {
-                openapiv3::Type::Object(object_type) => get_order_by(&object_type.properties),
+        let mut order_by = vec![];
+
+        for name in ["filterRangeMin", "filterRangeMax"] {
+            if let Some(obj) = query_params.get(name) {
+                for (field_name, _value) in obj.as_object().ok_or("Broken order by")? {
+                    order_by.push(field_name.clone());
+                }
+            }
+        }
+
+        if order_by.is_empty() {
+            if rms.openapi.get_property_from_schemas(&rf.path, "dateLastChange").is_some() {
+                order_by.push("date_last_change desc".into());
+            }
+        }
+
+        if order_by.is_empty() {
+            let properties = match &schema.schema_kind {
+                openapiv3::SchemaKind::Type(typ) => match typ {
+                    openapiv3::Type::Object(object_type) => &object_type.properties,
+                    _ => todo!(),
+                },
+                openapiv3::SchemaKind::Any(any) => &any.properties,
                 _ => todo!(),
-            },
-            openapiv3::SchemaKind::Any(any) => get_order_by(&any.properties),
-            _ => todo!(),
-        };
+            };
+
+            get_order_by(&mut order_by, properties);
+        }
 
         let list = rms.entity_manager.find(&rms.openapi, &rf.db_schema, &rf.open_api_schema, &query_params, &order_by).await?;
         #[cfg(debug_assertions)]
@@ -177,7 +203,7 @@ pub async fn process_request<'b>(rms: &'b RufsMicroService<'b>, path: &'b str, q
         Ok(obj)
     }
 
-    fn notify(rms: &RufsMicroService<'_>, rf: &RequestFilter, obj :&Value, is_remove :bool, method: &str) {
+    async fn notify(rms: &RufsMicroService<'_>, rf: &RequestFilter, obj :&Value, is_remove :bool, method: &str) -> Result<(), Box<dyn std::error::Error>> {
         #[derive(Serialize, Deserialize, Debug)]
         #[serde(rename_all = "camelCase")]
         struct NotifyMessage {
@@ -201,12 +227,12 @@ pub async fn process_request<'b>(rms: &'b RufsMicroService<'b>, path: &'b str, q
         #[cfg(feature = "tide")]
         let map = rms.ws_server_connections_tide.read()?;
         #[cfg(feature = "warp")]
-        let mut map = rms.ws_server_connections_warp.write().unwrap();
+        let mut map = rms.web_socket_server_connections_warp.write().await;
 
         for (token_string, ws_server_connection) in map.iter_mut() {
             // enviar somente para os clients de "rufsGroupOwner"
             let key = &token_string.clone();
-            let map = rms.ws_server_connections_tokens.read().unwrap();
+            let map = rms.web_socket_server_connections_tokens.read().await;
             let token_data = map.get(key).unwrap();
             let mut check_rufs_group_owner = obj_rufs_group_owner.is_none();
 
@@ -234,7 +260,7 @@ pub async fn process_request<'b>(rms: &'b RufsMicroService<'b>, path: &'b str, q
                         if (role.mask & 0x01) != 0 {
                             #[cfg(debug_assertions)]
                             println!("[RequestFilter.notify] send to client {}", token_data.name);
-                            let rt = tokio::runtime::Runtime::new().unwrap();
+                            //let rt = tokio::runtime::Runtime::new().unwrap();
                             #[cfg(feature = "tide")]
                             if let Err(error) = rt.block_on(ws_server_connection.send_string(msg.to_string())) {
                                 println!("[RequestFilter.notify] send to client : {}", error);
@@ -244,7 +270,7 @@ pub async fn process_request<'b>(rms: &'b RufsMicroService<'b>, path: &'b str, q
                                 use futures_util::SinkExt;
                                 use warp::ws::Message;
 
-                                if let Err(error) = rt.block_on(ws_server_connection.send(Message::text(msg.to_string()))) {
+                                if let Err(error) = ws_server_connection.send(Message::text(msg.to_string())).await {
                                     eprintln!("[RequestFilter.notify] send to client : {}", error);
                                 }
                             }
@@ -256,6 +282,7 @@ pub async fn process_request<'b>(rms: &'b RufsMicroService<'b>, path: &'b str, q
 
         #[cfg(debug_assertions)]
         println!("[RequestFilter.notify] ...broadcasting");
+        Ok(())
     }
 
     fn check_object_access(rms: &RufsMicroService<'_>, rf: &mut RequestFilter, obj: &mut Value, token_payload: &Claims) -> Result<(), Box<dyn std::error::Error>> {
@@ -313,7 +340,7 @@ pub async fn process_request<'b>(rms: &'b RufsMicroService<'b>, path: &'b str, q
         check_object_access(rms, rf, obj_in, token_payload)?;
         let primary_key = parse_query_parameters(rms, rf, false, method)?;
         let new_obj = rms.entity_manager.update(&rms.openapi, &rf.db_schema, &rf.open_api_schema, &primary_key, obj_in).await?;
-        notify(rms, rf, &new_obj, false, method);
+        notify(rms, rf, &new_obj, false, method).await?;
         Ok(new_obj)
     }
 
@@ -323,7 +350,7 @@ pub async fn process_request<'b>(rms: &'b RufsMicroService<'b>, path: &'b str, q
         check_object_access(rms, rf, data_patched, token_payload)?;
         let primary_key = parse_query_parameters(rms, rf, false, method)?;
         let new_obj = rms.entity_manager.update(&rms.openapi, &rf.db_schema, &rf.open_api_schema, &primary_key, &data).await?;
-        notify(rms, rf, &new_obj, false, method);
+        notify(rms, rf, &new_obj, false, method).await?;
         Ok(new_obj)
     }
 
@@ -331,7 +358,7 @@ pub async fn process_request<'b>(rms: &'b RufsMicroService<'b>, path: &'b str, q
         let obj_deleted = get_object(rms, rf, false, method).await?;
         let primary_key = parse_query_parameters(rms, rf, false, method)?;
         rms.entity_manager.delete_one(&rms.openapi, &rf.db_schema, &rf.open_api_schema, &primary_key).await?;
-        notify(rms, rf, &obj_deleted, true, method);
+        notify(rms, rf, &obj_deleted, true, method).await?;
         Ok(obj_deleted.clone())
     }
 

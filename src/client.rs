@@ -5,34 +5,37 @@ use openapiv3::{OpenAPI, ReferenceOr, Schema, SchemaKind, StringFormat, Type, Va
 use regex;
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{cmp::Ordering, collections::HashMap, vec};
+//use serde_json::map;
 
-//#[cfg(target_arch = "wasm32")]
-//use web_log::println;
+#[cfg(target_arch = "wasm32")]
+use tokio_with_wasm as tokio;
+#[cfg(target_arch = "wasm32")]
+use idb::{Database, DatabaseEvent, KeyPath, ObjectStoreParams};
+
+//#[cfg(debug_assertions)]
+#[cfg(target_arch = "wasm32")]
+use web_log::{println, eprintln};
 
 #[derive(Debug, PartialEq, Clone, Copy, Default, Deserialize, Serialize)]
 pub enum FieldSortType {
     #[default]
-    None,
-    Asc,
     Desc,
+    Asc,
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
 pub struct FieldSort {
-    sort_type: FieldSortType,
-    order_index: i64,
-    table_visible: bool,
-    hidden: bool,
+    sort_type: Option<FieldSortType>,
+    order_index: Option<i64>,
+    table_visible: Option<bool>,
+    hidden: Option<bool>,
 }
 
 #[derive(Default)]
 struct HttpRestRequest {
     server_url_api: String,
-    // message_working :String,
-    // message_error :String,
-    //http_error: String,
     token: Option<String>,
 }
 
@@ -175,34 +178,29 @@ impl std::convert::From<&str> for DataViewProcessAction {
     }
 }
 
+#[derive(Default)]
 pub struct Service {
     schema_name: String,
     path: String,
-    method_response: String,
     short_description_list: Vec<String>,
     primary_keys: Vec<String>,
-    list: Vec<Value>,
-    list_str: Vec<String>,
-    map_list: IndexMap<String, usize>,
+    // TODO : remover, utilizar index "description" no map_items
+    pub map_description_to_hash: HashMap<String, String>,
+    //pub map_description_to_hash: IndexMap<String, String>,
 }
 
 impl Service {
-    pub fn new(openapi: &OpenAPI, path: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        let (short_description_list, primary_keys, _, method_response) = openapi.get_properties_with_extensions(path, &["get", "post", "put", "delete"], &SchemaPlace::Response)?;
-
+    fn new(path: &str, primary_keys: Vec<String>, short_description_list: Vec<String>) -> Result<Self, Box<dyn std::error::Error>> {
         Ok(Self {
             path: path.to_string(),
             schema_name: path[1..].to_string().to_case(convert_case::Case::Camel),
-            method_response: method_response.to_string(),
             primary_keys,
             short_description_list,
-            list: vec![],
-            list_str: vec![],
-            map_list: IndexMap::default()
+            ..Default::default()
         })
     }
 
-    pub fn get_primary_key(&self, obj: &Value) -> Option<Value> {
+    fn get_primary_key(&self, obj: &Value) -> Option<Value> {
         let mut ret = json!({});
 
         for field_name in &self.primary_keys {
@@ -213,7 +211,7 @@ impl Service {
         Some(ret)
     }
 
-    pub fn get_primary_key_hash(&self, obj: &Value) -> Result<String, Box<dyn std::error::Error>> {
+    fn get_primary_key_hash(&self, obj: &Value) -> Result<String, Box<dyn std::error::Error>> {
         let mut list = Vec::with_capacity(self.primary_keys.len());
 
         for field_name in &self.primary_keys {
@@ -224,166 +222,6 @@ impl Service {
         }
 
         Ok(list.join("-"))
-    }
-
-    async fn query_remote(&self, server_connection: &ServerConnection, params: &Value) -> Result<(IndexMap<String, usize>, Vec<Value>, Vec<String>), Box<dyn std::error::Error>> {
-        fn build_list_str(service: &Service, server_connection: &ServerConnection, list: &Vec<Value>) -> Result<(IndexMap<String, usize>, Vec<String>), Box<dyn std::error::Error>> {
-            let mut list_str = Vec::with_capacity(list.len());
-            let mut map_list = IndexMap::with_capacity(list.len());
-            let mut index = 0;
-
-            for item in list {
-                let str = service.build_item_str(server_connection, item)?;
-                let primary_key_hash = service.get_primary_key_hash(item)?;
-                map_list.insert(primary_key_hash, index);
-                list_str.push(str);
-                index += 1;
-            }
-
-            Ok((map_list, list_str))
-        }
-
-        let access = server_connection.login_response.roles.iter().find(|role| role.path == self.path).ok_or_else(|| format!("query_remote broken role."))?.mask;
-
-        if access & 1 != 0 {
-            //console.log("[ServerConnection] loading", service.label, "...");
-            //callback_partial("loading... " + service.label);
-            let value = server_connection.http_rest.query(&self.path, params).await?;
-
-            let list = match value {
-                Value::Array(list) => list,
-                Value::Null => todo!(),
-                Value::Bool(_) => todo!(),
-                Value::Number(_) => todo!(),
-                Value::String(_) => todo!(),
-                Value::Object(_) => todo!(),
-            };
-
-            let (map_list, list_str) = build_list_str(self, server_connection, &list)?;
-            /*
-            let dependents = server_connection.login_response.openapi.get_dependents(&self.name, false);
-            let mut list_processed = vec![];
-            // também atualiza a lista de nomes de todos os serviços que dependem deste
-            for item in &dependents {
-                if list_processed.contains(&item.schema) == false {
-                    if let Some(service) = server_connection.services.get_mut(&item.schema) {
-                        service.list_str = service.build_list_str(server_connection);
-                        list_processed.push(item.schema.clone());
-                    }
-                }
-            }
-            */
-            return Ok((map_list, list, list_str));
-        }
-
-        Ok((IndexMap::default(), vec![], vec![]))
-    }
-
-    pub fn find_pos(&self, primary_key: &Value) -> Result<Option<usize>, Box<dyn std::error::Error>> {
-        let primary_key = self.get_primary_key_hash(primary_key)?;
-        Ok(self.map_list.get(&primary_key).copied())
-    }
-
-    fn build_field_str(server_connection: &ServerConnection, parent_name: &Option<String>, schema_name: &str, field_name: &str, obj: &Value) -> Result<String, Box<dyn std::error::Error>> {
-        fn build_field_reference(server_connection: &ServerConnection, schema_name: &str, field_name: &str, obj: &Value, _reference: &String) -> Result<String, Box<dyn std::error::Error>> {
-            let item = server_connection.login_response.openapi.get_primary_key_foreign(schema_name, field_name, obj).unwrap().unwrap();
-
-            if item.valid == false {
-                return Ok("".to_string());
-            }
-
-            let service = server_connection.service_map.get(&item.schema).ok_or_else(|| format!("[build_field_reference] Don't found service {}", item.schema))?;
-            let primary_key = item.primary_key;
-/*
-            let debug_now = std::time::SystemTime::now();
- */
-            let pos = service.find_pos(&primary_key)?.ok_or_else(|| format!("[build_field_reference] Don't found item for primary_key {}.\nOptions : {:?}", primary_key, service.map_list))?;
-/*
-            #[cfg(debug_assertions)]
-            if schema_name == "request" {
-                println!("{:9} [DEBUG - build_field_str] {}.{} : {}.", debug_now.elapsed()?.as_millis(), schema_name, field_name, primary_key);
-            }
- */
-            let str = service.list_str[pos].clone();
-            Ok(str)
-        }
-
-        let value = if let Some(value) = obj.get(field_name) {
-            match value {
-                //Value::Null => return,
-                //Value::Bool(_) => todo!(),
-                //Value::Number(_) => todo!(),
-                Value::String(str) => {
-                    if str.is_empty() {
-                        return Ok("".to_string());
-                    }
-                }
-                Value::Array(_array) => {
-                    //println!("[build_field()] array = {:?}", array);
-                    //todo!()
-                    return Ok("".to_string());
-                }
-                Value::Object(_) => {
-                    //string_buffer.push(value.to_string());
-                    return Ok("".to_string());
-                }
-                _ => {}
-            }
-
-            value
-        } else {
-            return Ok("".to_string());
-        };
-
-        let properties = server_connection.login_response.openapi
-            .get_properties_from_schema_name(parent_name, schema_name, &SchemaPlace::Schemas)
-            .ok_or_else(|| format!("Missing properties in openapi schema {:?}.{}", parent_name, schema_name))?;
-        let field = properties.get(field_name).ok_or_else(|| format!("Don't found field {} in properties", field_name))?;
-
-        match &field {
-            ReferenceOr::Reference { reference } => {
-                return build_field_reference(server_connection, schema_name, field_name, obj, reference);
-            }
-            ReferenceOr::Item(field) => {
-                let extensions = &field.schema_data.extensions;
-
-                if let Some(reference) = extensions.get("x-$ref") {
-                    if let Value::String(reference) = reference {
-                        return build_field_reference(server_connection, schema_name, field_name, obj, &reference);
-                    }
-                }
-            }
-        }
-
-        // TODO : verificar se o uso do "trim" não tem efeitos colaterais.
-        let str = match value {
-            Value::String(str) => str.trim().to_string(),
-            Value::Null => "".to_string(),
-            Value::Bool(value) => value.to_string(),
-            Value::Number(value) => {
-                if field_name == "id" && value.is_u64() {
-                    format!("{:04}", value.as_u64().unwrap())
-                } else {
-                    value.to_string()
-                }
-            }
-            Value::Array(_) => "".to_string(),
-            Value::Object(_) => "".to_string(),
-        };
-
-        Ok(str)
-    }
-
-    fn build_item_str(&self, server_connection: &ServerConnection, item: &Value) -> Result<String, Box<dyn std::error::Error>> {
-        let mut string_buffer = vec![];
-
-        for field_name in &self.short_description_list {
-            let str = Service::build_field_str(server_connection, &None, &self.schema_name, field_name, item)?;
-            string_buffer.push(str); //trim
-        }
-
-        let str = string_buffer.join(" - ");
-        Ok(str)
     }
 
 }
@@ -434,7 +272,7 @@ pub struct DataViewId {
 }
 
 impl DataViewId {
-    pub fn new(schema_name: String, parent: Option<DataViewId>, action: DataViewProcessAction) -> Self {
+    fn new(schema_name: String, parent: Option<DataViewId>, action: DataViewProcessAction) -> Self {
         let schema_name_snake = schema_name.to_case(convert_case::Case::Snake);//.replace(".", "/");
 
         let schema_name_snake = if schema_name_snake.starts_with("v_") {
@@ -477,11 +315,11 @@ pub struct HtmlElementId {
 }
 
 impl HtmlElementId {
-    pub fn new_with_data_view_id(data_view_id: DataViewId, form_type_ext: Option<String>, field_name: Option<String>, index: Option<usize>) -> Self {
+    fn new_with_data_view_id(data_view_id: DataViewId, form_type_ext: Option<String>, field_name: Option<String>, index: Option<usize>) -> Self {
         Self {data_view_id, form_type_ext, field_name, index}
     }
 
-    pub fn new(schema_name: String, parent: Option<DataViewId>, form_type_ext: Option<String>, action: DataViewProcessAction, field_name: Option<String>, index: Option<usize>) -> Self {
+    fn new(schema_name: String, parent: Option<DataViewId>, form_type_ext: Option<String>, action: DataViewProcessAction, field_name: Option<String>, index: Option<usize>) -> Self {
         let data_view_id = DataViewId::new(schema_name, parent, action);
         Self {data_view_id, form_type_ext, field_name, index}
     }
@@ -574,14 +412,12 @@ pub struct DataView {
     aggregate_results: HashMap<String, usize>,
     // list data
     pub filter_results: Vec<Value>,
-    field_filter_results: IndexMap<String, Value>,
-    pub field_results: IndexMap<String, Vec<Value>>,
-    field_results_str: IndexMap<String, Vec<String>>,
+    pub field_results_str: IndexMap<String, Vec<String>>,
     field_external_references_str: IndexMap<String, String>,
 }
 
 impl DataView {
-    pub fn new(path_or_name: &str, typ: DataViewType, parent: Option<DataViewId>, action: DataViewProcessAction) -> Self {
+    fn new(path_or_name: &str, typ: DataViewType, parent: Option<DataViewId>, action: DataViewProcessAction) -> Self {
         let (path, schema_name) = if path_or_name.starts_with("/") {
             (Some(path_or_name.to_string()), path_or_name[1..].to_string().to_case(convert_case::Case::Camel))
         } else {
@@ -638,7 +474,7 @@ impl DataView {
         }
     }
 
-    pub fn set_schema(&mut self, server_connection: &ServerConnection) -> Result<(), Box<dyn std::error::Error>> {
+    fn set_schema(&mut self, server_connection: &ServerConnection) -> Result<(), Box<dyn std::error::Error>> {
         let Some(path) = &self.path else {
             return Ok(());
         };
@@ -649,7 +485,7 @@ impl DataView {
             _ => (["get","post"], SchemaPlace::Response),
         };
 
-        let (short_description_list, _, properties, _method) = server_connection.login_response.openapi.get_properties_with_extensions(path, &methods, &schema_place)?;
+        let (short_description_list, _primary_keys, properties, _method) = server_connection.login_response.openapi.get_properties_with_extensions(path, &methods, &schema_place)?;
         self.properties = properties;
         self.short_description_list = short_description_list;
 
@@ -681,7 +517,7 @@ impl DataView {
         Ok(())
     }
 
-    pub fn clear(&mut self, server_connection: &ServerConnection, watcher: &Box<dyn DataViewWatch>) -> Result<(), Box<dyn std::error::Error>> {
+    fn clear(&mut self, server_connection: &ServerConnection, watcher: &Box<dyn DataViewWatch>) -> Result<(), Box<dyn std::error::Error>> {
         self.set_values(server_connection, watcher, &json!({}), None)?;
         self.original.as_object_mut().ok_or_else(|| format!("broken original"))?.clear();
         self.params.instance.as_object_mut().ok_or_else(|| format!("broken params.instance"))?.clear();
@@ -1201,11 +1037,12 @@ impl DataView {
             &data_view.filter_results
         } else {
             let schema_name = &data_view.data_view_id.schema_name;
-            let service = server_connection.service_map.get(schema_name).ok_or_else(|| format!("3 - service_map : missing {}.", schema_name))?;
-            &service.list
+            server_connection.service_map_list.get(schema_name).ok_or("Broken service_map_list")?
         };
 
-        if list.len() == 0 {
+        let list_size = list.len();
+
+        if list_size == 0 {
             return Ok("".to_string());
         }
 
@@ -1225,28 +1062,43 @@ impl DataView {
             hmtl_header.push(col);
         }
 
-        let mut offset_ini = (data_view.params.page - 1) * data_view.params.page_size;
+        let mut index = {
+            let page_offset = (data_view.params.page - 1) * data_view.params.page_size;
 
-        if offset_ini > list.len() {
-            offset_ini = list.len();
-        }
-
-        let mut offset_end = data_view.params.page * data_view.params.page_size;
-
-        if offset_end > list.len() {
-            offset_end = list.len();
-        }
+            if list_size > page_offset {
+                (list_size-1) - page_offset
+            } else {
+                0
+            }
+        };
 
         let mut hmtl_rows = vec![];
         let mut item_index = 0;
 
-        for index in offset_ini..offset_end {
+        while hmtl_rows.len() < data_view.params.page_size {
             let item = list.get(index).ok_or_else(|| format!("Broken: missing item at index"))?;
 
-            if let Some(obj) = item.as_object() {
+            let is_empty = if let Some(obj) = item.as_object() {
                 if obj.is_empty() {
-                    continue;
+                    true
+                } else {
+                    false
                 }
+            } else if item.is_null() {
+                true
+            } else {
+                false
+            };
+
+            if is_empty {
+                item_index += 1;
+
+                if index == 0 {
+                    break;
+                }
+
+                index -= 1;
+                continue;
             }
 
             let mut html_cols = vec![];
@@ -1262,9 +1114,9 @@ impl DataView {
                 let parent_name = &data_view.data_view_id.parent_schema_name;
 
                 let field_str = if data_view.path.is_some() {
-                    Service::build_field_str(server_connection, &None, &data_view.data_view_id.schema_name, field_name, item)?
+                    server_connection.build_field_str(&None, &data_view.data_view_id.schema_name, field_name, item)?
                 } else {
-                    Service::build_field_str(server_connection, parent_name, &data_view.data_view_id.schema_name, field_name, item)?
+                    server_connection.build_field_str(parent_name, &data_view.data_view_id.schema_name, field_name, item)?
                 };
 
                 html_cols.push(format!(r#"<td><a id="table_row-col-{form_id}--{field_name}-{index}" href="{href_go_to_field}">{field_str}</a></td>"#));
@@ -1306,13 +1158,19 @@ impl DataView {
             "##);
             hmtl_rows.push(row);
             item_index += 1;
+
+            if index == 0 {
+                break;
+            }
+
+            index -= 1;
         }
 
-        let html_page_control = if list.len() > data_view.params.page_size {
-            let max_page = if list.len() % data_view.params.page_size == 0 {
-                list.len() / data_view.params.page_size
+        let html_page_control = if list_size > data_view.params.page_size {
+            let max_page = if list_size % data_view.params.page_size == 0 {
+                (list_size / data_view.params.page_size) + 1
             } else {
-                (list.len() / data_view.params.page_size) + 1
+                (list_size / data_view.params.page_size) + 2
             };
 
             let mut html_pages = vec![];
@@ -1370,6 +1228,7 @@ impl DataView {
             {html_page_control}
         "##
         );
+
         Ok(ret)
     }
 
@@ -1413,8 +1272,7 @@ impl DataView {
         let list = if self.path.is_none() || self.filter_results.len() > 0 {
             &self.filter_results
         } else {
-            let service = server_connection.service_map.get(&self.data_view_id.schema_name).ok_or_else(|| format!("Missing service in service_map"))?;
-            &service.list
+            server_connection.service_map_list.get(&self.data_view_id.schema_name).ok_or("Broken service_map_list")?
         };
 
         for item in list {
@@ -1436,8 +1294,7 @@ impl DataView {
                 let extension = &field.schema_data.extensions;
 
                 let str = if let Some(_ref) = extension.get("x-$ref") {
-                    let service = server_connection.service_map.get(&self.data_view_id.schema_name).ok_or_else(|| format!("[set_value_process] Missing service"))?;
-                    Service::build_field_str(server_connection, &None, &service.schema_name, field_name, item)?
+                    server_connection.build_field_str(&None, &self.data_view_id.schema_name, field_name, item)?
                 } else {
                     match &field.schema_kind {
                         SchemaKind::Type(typ) => match typ {
@@ -1637,8 +1494,7 @@ impl DataView {
             }
         }
 
-        self.filter_results = list
-            .into_iter()
+        self.filter_results = list.iter()
             .filter(|candidate| {
                 if candidate.is_object() {
                     let mut flag = compare_func(candidate, &self.params.filter, 0);
@@ -1667,23 +1523,23 @@ impl DataView {
         // format fieldsTable in correct order;
         {
             let mut entries: Vec<(&String, &FieldSort)> = self.params.sort.iter().collect();
-            entries.sort_by(|a, b| a.1.order_index.cmp(&b.1.order_index));
+            entries.sort_by(|b, a| a.1.order_index.cmp(&b.1.order_index));
             self.fields_table = vec![];
 
             for (field_name, field) in entries {
-                if field.hidden != true && field.table_visible != false {
+                if field.hidden != Some(true) && field.table_visible != Some(false) {
                     self.fields_table.push(field_name.clone());
                 }
             }
         }
 
-        self.filter_results.sort_by(|a, b| {
+        self.filter_results.sort_by(|b, a| {
             let mut ret = Ordering::Equal;
 
             for field_name in &self.fields_table {
                 let field = self.params.sort.get(field_name).unwrap();
 
-                if field.sort_type != FieldSortType::None {
+                if let Some(sort_type) = field.sort_type {
                     let val_a = a.get(field_name);
                     let val_b = b.get(field_name);
 
@@ -1696,7 +1552,7 @@ impl DataView {
                             format!("{:0>9}", val_b.unwrap().to_string()).cmp(&format!("{:0>8}", val_a.unwrap().to_string()))
                         };
 
-                        if field.sort_type == FieldSortType::Desc {
+                        if sort_type == FieldSortType::Asc {
                             ret = ret.reverse()
                         }
 
@@ -1727,13 +1583,28 @@ impl DataView {
 
             if let ReferenceOr::Item(schema) = field {
                 let extension = &schema.schema_data.extensions;
-                let table_visible = extension.get("x-tableVisible").unwrap_or(&Value::Bool(false)).as_bool().unwrap_or(false);
-                let hidden = extension.get("x-hidden").unwrap_or(&Value::Bool(false)).as_bool().unwrap_or(false);
-                let order_index = extension.get("x-orderIndex").unwrap_or(&Value::from(0)).as_i64().unwrap_or(0);
+                let table_visible = extension.get("x-tableVisible").unwrap_or(&Value::Bool(false)).as_bool();
+                let hidden = extension.get("x-hidden").unwrap_or(&Value::Bool(false)).as_bool();
+                let order_index = extension.get("x-orderIndex").unwrap_or(&Value::from(0)).as_i64();
+
+                let sort_type = if let Some(sort_type) = extension.get("x-sortType") {
+                    if let Some(sort_type) = sort_type.as_str() {
+                        if sort_type == "desc" {
+                            Some(FieldSortType::Desc)
+                        } else {
+                            Some(FieldSortType::Asc)
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
                 self.params.sort.insert(
                     field_name.clone(),
                     FieldSort {
-                        sort_type: FieldSortType::None,
+                        sort_type,
                         order_index,
                         table_visible,
                         hidden,
@@ -1876,10 +1747,9 @@ impl DataView {
                 if value.is_null() {
                     data_view.field_external_references_str.insert(field_name.to_string(), "".to_string());
                 } else {
-                    let service = server_connection.service_map.get(&data_view.data_view_id.schema_name).ok_or_else(|| format!("[set_value_process] Missing service"))?;
                     let mut obj = data_view.get_form_type_instance(&element_id.data_view_id.action, &element_id.form_type_ext)?.clone();
                     obj[field_name] = value.clone();
-                    let external_references_str = Service::build_field_str(server_connection, &None, &service.schema_name, field_name, &obj)?;
+                    let external_references_str = server_connection.build_field_str(&None, &data_view.data_view_id.schema_name, field_name, &obj)?;
                     data_view.field_external_references_str.insert(field_name.to_string(), external_references_str.clone());
                 }
             } else if extensions.contains_key("x-flags") && value.is_u64() {
@@ -2067,7 +1937,7 @@ impl DataView {
         Ok(())
     }
 
-    pub async fn save(&self, server_connection: &mut ServerConnection) -> Result<Value, Box<dyn std::error::Error>> {
+    async fn save<'a>(&self, server_connection: &'a mut ServerConnection) -> Result<&'a Value, Box<dyn std::error::Error>> {
         let path = match &self.path {
             Some(path) => path,
             None => None.ok_or_else(|| format!("Missing path information"))?,
@@ -2161,11 +2031,14 @@ pub struct ServerConnection {
     http_rest: HttpRestRequest,
     pub login_response: LoginResponseClient,
     service_map: HashMap<String, Service>,
+    service_map_list: HashMap<String, Vec<Value>>,
+    service_map_key: HashMap<String, IndexMap<String, usize>>,
     //pathname: String,
     //remote_listeners: Vec<dyn RemoteListener>,
     //web_socket :Option<WebSocket>,
 }
 
+static WEB_SOCKET_MESSAGES: tokio::sync::Mutex<Vec<String>> = tokio::sync::Mutex::const_new(vec![]);
 /*
 TODO : no processo de login buscar somente as alterações.
 https://dba.stackexchange.com/questions/233735/track-all-modifications-to-a-postgresql-table
@@ -2178,71 +2051,204 @@ impl ServerConnection {
         }
     }
 
-    pub fn update_list(&mut self, schema_name: &str, primary_key: &Value, value: Value) -> Result<usize, Box<dyn std::error::Error>> {
+    async fn remove_with_primary_key(&mut self, schema_name: &str, primary_key: &Value) -> Result<(), Box<dyn std::error::Error>> {
         let service = self.service_map.get(schema_name).ok_or_else(|| format!("Missing service {} in service_map", schema_name))?;
-        let str = service.build_item_str(self, &value)?;
+        let primary_key_hash = service.get_primary_key_hash(primary_key)?;
+        let map_key_to_index = self.service_map_key.get_mut(schema_name).ok_or("Broken service_map_key")?;
 
-        if let Some(pos) = service.find_pos(&primary_key)? {
-            let service = self.service_map.get_mut(schema_name).ok_or_else(|| format!("Missing service {} in service_map", schema_name))?;
-            service.list_str[pos] = str;
-            service.list[pos] = value;
-            Ok(pos)
+        if let Some(pos_old) = map_key_to_index.remove(&primary_key_hash) {
+            let list_values = self.service_map_list.get_mut(schema_name).ok_or("Broken service_map_list")?;
+            list_values[pos_old] = Value::Null;
+        }
+
+        Ok(())
+    }
+
+    fn get_from_primary_key_hash(&self, schema_name: &str, primary_key_hash: &str) -> Result<Option<&Value>, Box<dyn std::error::Error>> {
+        let map_key_to_index = self.service_map_key.get(schema_name).ok_or("Broken service_map_key")?;
+        let list_values = self.service_map_list.get(schema_name).ok_or("Broken service_map_list")?;
+
+        if list_values.is_empty() {
+            return Ok(None);
+        }
+
+        let Some(pos) = map_key_to_index.get(primary_key_hash) else {
+            return Err("[get_from_primary_key_hash] Broken primary_key_hash")?;
+        };
+
+        let ret = list_values.get(*pos);
+        Ok(ret)
+    }
+    // server_connection.build_field_str(&None, &data_view.data_view_id.schema_name, field_name, item)?
+    fn build_field_str(&self, parent_name: &Option<String>, schema_name: &str, field_name: &str, obj: &Value) -> Result<String, Box<dyn std::error::Error>> {
+        fn build_field_reference(server_connection: &ServerConnection, schema_name: &str, field_name: &str, obj: &Value, _reference: &String) -> Result<String, Box<dyn std::error::Error>> {
+            fn find_description(server_connection: &ServerConnection, schema_name: &str, primary_key: &Value) -> Result<Option<String>, Box<dyn std::error::Error>> {
+                let service = server_connection.service_map.get(schema_name).ok_or_else(|| {
+                    format!("Missing service {} in service_map", schema_name)
+                })?;
+                let primary_key_hash = service.get_primary_key_hash(primary_key)?;
+
+                if let Some(item) = server_connection.get_from_primary_key_hash(schema_name, &primary_key_hash)? {
+                    let description = item.as_object().unwrap().get("rufsDescription").ok_or("Broken rufsDescription")?.as_str().ok_or("Broken rufsDescription as_str")?;
+                    Ok(Some(description.to_string()))
+                } else {
+                    Ok(None)
+                }
+            }
+
+            let item = server_connection.login_response.openapi.get_primary_key_foreign(schema_name, field_name, obj).unwrap().unwrap();
+
+            if item.valid == false {
+                return Ok("".to_string());
+            }
+
+            let primary_key = item.primary_key;
+            let res = find_description(server_connection, &item.schema, &primary_key)?.ok_or_else(|| format!("[build_field_reference] Don't found description for {}.primary_key {}.", item.schema, primary_key))?;
+            Ok(res)
+        }
+
+        let value = if let Some(value) = obj.get(field_name) {
+            match value {
+                //Value::Null => return,
+                //Value::Bool(_) => todo!(),
+                //Value::Number(_) => todo!(),
+                Value::String(str) => {
+                    if str.is_empty() {
+                        return Ok("".to_string());
+                    }
+                }
+                Value::Array(_array) => {
+                    //println!("[build_field()] array = {:?}", array);
+                    //todo!()
+                    return Ok("".to_string());
+                }
+                Value::Object(_) => {
+                    //string_buffer.push(value.to_string());
+                    return Ok("".to_string());
+                }
+                _ => {}
+            }
+
+            value
         } else {
-            let primary_key_hash = service.get_primary_key_hash(&value)?;
-            let service = self.service_map.get_mut(schema_name).ok_or_else(|| format!("Missing service {} in service_map", schema_name))?;
-            let pos = service.list.len();
-            service.list_str.push(str);
-            service.list.push(value);
-            service.map_list.insert(primary_key_hash, pos);
-            Ok(pos)
+            return Ok("".to_string());
+        };
+
+        let properties = self.login_response.openapi
+            .get_properties_from_schema_name(parent_name, schema_name, &SchemaPlace::Schemas)
+            .ok_or_else(|| format!("Missing properties in openapi schema {:?}.{}", parent_name, schema_name))?;
+        let field = properties.get(field_name).ok_or_else(|| format!("Don't found field {} in properties", field_name))?;
+
+        match &field {
+            ReferenceOr::Reference { reference } => {
+                return build_field_reference(self, schema_name, field_name, obj, reference);
+            }
+            ReferenceOr::Item(field) => {
+                let extensions = &field.schema_data.extensions;
+
+                if let Some(reference) = extensions.get("x-$ref") {
+                    if let Value::String(reference) = reference {
+                        return build_field_reference(self, schema_name, field_name, obj, reference);
+                    }
+                }
+            }
+        }
+
+        // TODO : verificar se o uso do "trim" não tem efeitos colaterais.
+        let str = match value {
+            Value::String(str) => str.trim().to_string(),
+            Value::Null => "".to_string(),
+            Value::Bool(value) => value.to_string(),
+            Value::Number(value) => {
+                if field_name == "id" && value.is_u64() {
+                    format!("{:04}", value.as_u64().unwrap())
+                } else {
+                    value.to_string()
+                }
+            }
+            Value::Array(_) => "".to_string(),
+            Value::Object(_) => "".to_string(),
+        };
+
+        Ok(str)
+    }
+
+    async fn store(&mut self, schema_name: &str, mut item: Value) -> Result<&Value, Box<dyn std::error::Error>> {
+        let service = self.service_map.get(schema_name).ok_or_else(|| format!("Missing service {} in service_map", schema_name))?;
+        let mut string_buffer = vec![];
+        string_buffer.reserve(service.short_description_list.len());
+
+        for field_name in &service.short_description_list {
+            let str = self.build_field_str(&None, schema_name, field_name, &item)?;
+            string_buffer.push(str); //trim
+        }
+
+        let description = string_buffer.join(" - ");
+        let service = self.service_map.get_mut(schema_name).ok_or_else(|| format!("Missing service {} in service_map", schema_name))?;
+        let primary_key_hash = service.get_primary_key_hash(&item)?;
+        item.as_object_mut().unwrap().insert("primaryKeyHash".into(), json!(primary_key_hash));
+        item.as_object_mut().unwrap().insert("rufsDescription".into(), json!(&description));
+        service.map_description_to_hash.insert(description.to_string(), primary_key_hash.clone());
+        let list_values = self.service_map_list.get_mut(schema_name).ok_or("Broken service_map_list")?;
+        let map_key_to_index = self.service_map_key.get_mut(schema_name).ok_or("Broken service_map_key")?;
+        let pos_new = list_values.len();
+
+        if let Some(pos_old) = map_key_to_index.insert(primary_key_hash.clone(), pos_new) {
+            list_values[pos_old] = Value::Null;
+        }
+
+        list_values.push(item);
+        let item = list_values.last().ok_or("Broken")?;
+        Ok(item)
+    }
+
+    pub fn get_item_from_description(&self, schema_name: &str, description: &str) -> Result<Option<&Value>, Box<dyn std::error::Error>> {
+        let service = self.service_map.get(schema_name).ok_or_else(|| format!("Missing service {} in service_map", schema_name))?;
+        let primary_key_hash = service.map_description_to_hash.get(description).ok_or_else(|| format!("Missing description in {schema_name}.map_description_to_hash."))?;
+        self.get_from_primary_key_hash(schema_name, primary_key_hash)
+    }
+
+    async fn get_remote(&mut self, schema_name: &str, primary_key: &Value) -> Result<Option<Value>, Box<dyn std::error::Error>> {
+        let service = self.service_map.get_mut(schema_name).ok_or_else(|| format!("Missing service {} in service_map", schema_name))?;
+        let value = self.http_rest.get(&service.path, primary_key).await?;
+
+        match value {
+            Value::Array(mut list) => {
+                if list.len() > 1 {
+                        return Err(format!("Missing parameter {} in query string {}.", "primary_key", ""))?;
+                }
+
+                let Some(value) = list.pop() else {
+                    return Ok(None);
+                };
+
+                let value = self.store(schema_name, value).await?;
+                return Ok(Some(value.clone()));
+            }
+            Value::Null => return Err("Expected array response, found Null")?,
+            Value::Bool(_) => return Err("Expected array response, found Bool")?,
+            Value::Number(_number) => return Err("Expected array response, found Number")?,
+            Value::String(_) => return Err("Expected array response, found String")?,
+            Value::Object(map) => {
+                let value = self.store(schema_name, json!(map)).await?;
+                return Ok(Some(value.clone()));
+            },
         }
     }
 
     async fn get(&mut self, schema_name: &str, primary_key: &Value) -> Result<Option<Value>, Box<dyn std::error::Error>> {
-        let service = self.service_map.get(schema_name).ok_or_else(|| format!("Missing service {} in service_map", schema_name))?;
-        let pos = service.find_pos(primary_key)?;
+        let service = self.service_map.get_mut(schema_name).ok_or_else(|| format!("Missing service {} in service_map", schema_name))?;
+        let primary_key_hash = service.get_primary_key_hash(primary_key)?;        
+        let item = self.get_from_primary_key_hash(schema_name, &primary_key_hash)?;
 
-        let pos = if let Some(pos) = pos {
-            pos
+        if let Some(item) = item {
+            return  Ok(Some(item.clone()));
         } else {
-            #[cfg(debug_assertions)]
-            if service.list_str.len() > 0 {
-                println!("Missing element with primary key ({primary_key}) in list :");
-
-                for ele in &service.list {
-                    println!("{ele}");
-                }
-            }
-
-            let value = self.http_rest.get(&service.path, primary_key).await?;
-
-            match &value {
-                Value::Array(list) => {
-                                if list.len() == 1 {
-                                    let value = list.first().ok_or("broken")?;
-                                    self.update_list(schema_name, primary_key, value.clone())?
-                                } else if list.len() == 0 {
-                                    return Ok(None);
-                                } else {
-                                    return Err(format!("Missing parameter {} in query string {}.", "primary_key", ""))?;
-                                }
-                            }
-                Value::Null => return Err("Expected array response, found Null")?,
-                Value::Bool(_) => return Err("Expected array response, found Bool")?,
-                Value::Number(_number) => return Err("Expected array response, found Number")?,
-                Value::String(_) => return Err("Expected array response, found String")?,
-                Value::Object(_map) => {
-                    self.update_list(schema_name, primary_key, value.clone())?
-                },
-            }
-        };
-
-        let service = self.service_map.get(schema_name).ok_or_else(|| format!("Missing service {} in service_map", schema_name))?;
-        let ret = service.list.get(pos).ok_or("broken")?;
-        Ok(Some(ret.clone()))
+            return self.get_remote(schema_name, primary_key).await;
+        }
     }
 
-    async fn save(&mut self, path: &str, item_send: &Value) -> Result<Value, Box<dyn std::error::Error>> {
+    async fn save(&mut self, path: &str, item_send: &Value) -> Result<&Value, Box<dyn std::error::Error>> {
         let schema_name = &path[1..].to_string().to_case(convert_case::Case::Camel);
         let service = self.service_map.get_mut(schema_name).ok_or_else(|| format!("[ServerConnection.save({})] missing service {}", path, schema_name))?;
         let schema_place = SchemaPlace::Request; //data_view.schema_place
@@ -2250,12 +2256,10 @@ impl ServerConnection {
         let mut data_out = json!({});
         self.login_response.openapi.copy_fields(&service.path, method, &schema_place, false, &mut data_out, item_send, false, false, false)?;
         let data_in = self.http_rest.save(&service.path, &data_out).await?;
-        let primary_key = &service.get_primary_key(&data_in).ok_or_else(|| format!("[ServerConnection.save] {}  - data_in : Missing primary key", schema_name))?;
-        self.update_list(schema_name, primary_key, data_in.clone())?;
-        Ok(data_in)
+        self.store(schema_name, data_in).await
     }
 
-    async fn update(&mut self, path: &str, item_send: &Value) -> Result<Value, Box<dyn std::error::Error>> {
+    async fn update(&mut self, path: &str, item_send: &Value) -> Result<&Value, Box<dyn std::error::Error>> {
         let schema_name = &path[1..].to_string().to_case(convert_case::Case::Camel);
         let service = self.service_map.get_mut(schema_name).unwrap();
         let schema_place = SchemaPlace::Request; //data_view.schema_place
@@ -2264,19 +2268,13 @@ impl ServerConnection {
         self.login_response.openapi.copy_fields(&service.path, method, &schema_place, false, &mut data_out, item_send, false, false, false)?;
         let primary_key = &service.get_primary_key(&data_out).ok_or_else(|| format!("[ServerConnection.update] {}  - data_out : Missing primary key", schema_name))?;
         let data_in = self.http_rest.update(&service.path, primary_key, &data_out).await?;
-        let primary_key = &service.get_primary_key(&data_in).ok_or_else(|| format!("[ServerConnection.update] {} - data_in : Missing primary key", schema_name))?;
-        self.update_list(schema_name, primary_key, data_in.clone())?;
-        Ok(data_in)
+        self.store(schema_name, data_in).await
     }
 
     async fn remove(&mut self, schema_name: &str, primary_key: &Value) -> Result<(), Box<dyn std::error::Error>> {
-        let service = self.service_map.get_mut(schema_name).ok_or_else(|| format!("Missing service {} in service_map", schema_name))?;
+        let service = self.service_map.get(schema_name).ok_or_else(|| format!("Missing service {} in service_map", schema_name))?;
         let _res_data = self.http_rest.remove(&service.path, primary_key).await?;
-
-        if let Some(pos) = service.find_pos(&primary_key)? {
-            service.list.remove(pos);
-        }
-
+        self.remove_with_primary_key(schema_name, &primary_key).await?;
         Ok(())
     }
     /*
@@ -2391,7 +2389,7 @@ impl ServerConnection {
         }
     */
     // devolve o rufsService apontado por field
-    fn get_foreign_service<'a>(&'a self, service: &Service, field_name: &str, debug: bool) -> Option<&'a Service> {
+    fn get_foreign_service<'a>(&'a self, service: &Service, field_name: &str, debug: bool) -> Result<Option<&'a Service>, Box<dyn std::error::Error>> {
         // TODO : refatorar consumidores da função getForeignService(field), pois pode haver mais de uma referência
         let field = self.login_response.openapi.get_property(&service.schema_name, field_name);
 
@@ -2399,17 +2397,12 @@ impl ServerConnection {
             Some(field) => {
                 match field.schema_data.extensions.get("x-$ref") {
                     Some(reference) => {
-                        let reference = reference.as_str().unwrap();
-                        let schema_name = OpenAPI::get_schema_name_from_ref(reference)/*.to_case(convert_case::Case::Snake) */;
-                        self.service_map.get(&schema_name)
+                        let schema_name = OpenAPI::get_schema_name_from_ref(reference.as_str().ok_or("Broken reference.as_str().")?, convert_case::Case::Camel);
+                        let service = self.service_map.get(&schema_name);
+                        Ok(service)
                     }
                     None => {
-                        #[cfg(debug_assertions)]
-                        if debug {
-                            self.get_foreign_service(service, field_name, true);
-                        }
-
-                        None
+                        Ok(None)
                     }
                 }
             }
@@ -2417,7 +2410,7 @@ impl ServerConnection {
                 if debug {
                     self.get_foreign_service(service, field_name, true)
                 } else {
-                    None
+                    Ok(None)
                 }
             }
         }
@@ -2433,101 +2426,297 @@ impl ServerConnection {
         }
     */
     // private -- used in login()
-    fn web_socket_connect(&self, _path: &str) {
-        /*
-        struct WebSocketData {
-            service :String,
-            action :String,
-            primary_key : Value,
-        }
-        */
-        // Open a WebSocket connection
-        // 'wss://localhost:8443/xxx/websocket'
-        /*
-        let mut url = if self.http_rest.url.starts_with("https://") {
-            format!("wss://{}", self.http_rest.url[..8].to_string())
-        } else if self.http_rest.url.starts_with("http://") {
-            format!("ws://{}", self.http_rest.url[..7].to_string())
+    async fn web_socket_connect(url :&str, jwt :&str) -> Result<(), Box<dyn std::error::Error>> {
+        let url = if url.ends_with("/rest") {
+            &url[..url.len()-5]
         } else {
-            format!("ws://{}", self.http_rest.url.to_string())
+            url
+        };
+
+        let mut url = if url.starts_with("https://") {
+            format!("wss://{}", url[8..].to_string())
+        } else if url.starts_with("http://") {
+            format!("ws://{}", url[7..].to_string())
+        } else {
+            format!("ws://{}", url.to_string())
         };
 
         if url.ends_with("/") == false {
-            url = url + "/";
+            url += "/";
         }
 
-        url = url + path;
+        url += "websocket";
+        use tokio_tungstenite_wasm::Message;
+        use futures_util::{StreamExt}; // For StreamExt::next and SinkExt::send
 
-        if url.ends_with("/") == false {
-            url = url + "/";
-        }
-        */
-        /*
-        let url = url + "websocket";
-        self.web_socket = WebSocket::new(url);
+        let mut ws_stream = match tokio_tungstenite_wasm::connect(&url).await {
+            Ok(ret) => ret,
+            Err(err) => {
+                eprintln!("[web_socket_connect] {url} : {err}");
+                return Err(err)?;
+            }
+        };
 
-        self.web_socket.onopen = |event| self.web_socket.send(self.http_rest.get_token());
+        use futures_util::{SinkExt};
+        ws_stream.send(Message::from(jwt)).await?;
 
-        self.web_socket.onmessage = |event| {
-            let item: WebSocketData = serde_json::from_str(event.data);
-            //console.log("[ServerConnection] webSocketConnect : onMessage :", item);
-            if let Some(service) = self.services.get(item.service) {
-                if item.action == "delete" {
-                    if let Some(primary_key) = service.find_one(item.primary_key) {
-                        self.remove_internal(&item.service, primary_key);
-                    } else {
-                        //console.log("[ServerConnection] webSocketConnect : onMessage : delete : alread removed", item);
-                    }
-                } else {
-                    if let Some(res) = self.get(&item.service, &item.primary_key, true).await {
-                        /*
-                        for listener in self.remote_listeners {
-                            listener.on_notify(&item.service, &item.primary_key, &item.action);
+        tokio::spawn(async move {
+            while let Some(message) = ws_stream.next().await {
+                match message {
+                    Ok(msg) => {
+                        match msg {
+                            Message::Text(text) => {
+                                let mut list = WEB_SOCKET_MESSAGES.lock().await;
+                                let text = text.to_string();
+                                list.push(text.clone());
+
+                                #[cfg(target_arch = "wasm32")]
+                                {
+                                    #[wasm_bindgen]
+                                    extern "C" {
+                                        fn rufs_js_callback(message: &str);
+                                    }
+
+                                    rufs_js_callback(text.as_str());
+                                }
+                            }
+                            Message::Close(close_frame) => {
+                                println!("Received close frame: {:?}", close_frame);
+                                break; // Connection closed
+                            }
+                            _ => {}
                         }
-                        */
+                    }
+                    Err(e) => {
+                        eprintln!("Error receiving message: {}", e);
+                        break;
                     }
                 }
             }
-        };
-        */
+        });
+
+        Ok(())
     }
     // public
-    pub async fn login_from_response(&mut self, login_response: LoginResponseClient) -> Result<(), Box<dyn std::error::Error>> {
-        self.http_rest.token = Some(login_response.jwt_header.clone());
-        self.login_response = login_response;
+    //#[cfg_attr(target_arch = "wasm32", async_recursion::async_recursion(?Send))]
+    //#[cfg_attr(not(target_arch = "wasm32"), async_recursion::async_recursion(?Send))]
+    async fn login_from_response(&mut self, login_response: LoginResponseClient) -> Result<(), Box<dyn std::error::Error>> {
+        async fn query_remote(service :&Service, server_connection: &ServerConnection, last_login_date: &str) -> Result<Vec<Value>, Box<dyn std::error::Error>> {
+            let params = if last_login_date.len() > 0 {
+                json!({"filterRangeMin": {"dateLastChange": last_login_date}})
+            } else {
+                Value::Null
+            };
 
-        self.service_map.clear();
-        let mut list_dependencies = vec![];
-        // depois carrega os serviços autorizados
-        for role in self.login_response.roles.clone() {
-            let schema_name = role.path[1..].to_string().to_case(convert_case::Case::Camel);
-            let service = Service::new(&self.login_response.openapi, &role.path)?;
-            self.service_map.insert(schema_name.clone(), service);
-            self.login_response.openapi.get_dependencies(&schema_name, &mut list_dependencies);
+            let value = server_connection.http_rest.query(&service.path, &params).await?;
 
-            if list_dependencies.contains(&schema_name) == false {
-                list_dependencies.push(schema_name);
-            }
+            let list = match value {
+                Value::Array(list) => list,
+                Value::Null => todo!(),
+                Value::Bool(_) => todo!(),
+                Value::Number(_) => todo!(),
+                Value::String(_) => todo!(),
+                Value::Object(_) => todo!(),
+            };
+
+            Ok(list)
         }
 
-        for schema_name in list_dependencies {
-            //console.log(`login ${schemaName}`)
-            let service = self.service_map.get(&schema_name);
+        self.http_rest.token = Some(login_response.jwt_header.clone());
+        self.login_response = login_response;
+        self.service_map.clear();
+        self.service_map_key.clear();
+        self.service_map_list.clear();
+        let mut list_dependencies = vec![];
+        let mut list_with_date_last_change = vec![];
 
-            if let Some(service) = service {
-                if &service.method_response == "get" {
-                    let (map_list, list, list_str) = service.query_remote(self, &Value::Null).await?;
-                    let service = self.service_map.get_mut(&schema_name).unwrap();
-                    service.map_list = map_list;
-                    service.list = list;
-                    #[cfg(debug_assertions)]
-                    println!("login 1.1 : service {}, list_str.len = {}", schema_name, list_str.len());
-                    service.list_str = list_str;
+        for role in self.login_response.roles.clone() {
+            let schema_name = role.path[1..].to_string().to_case(convert_case::Case::Camel);
+            let (short_description_list, primary_keys, properties, method_response) = self.login_response.openapi.get_properties_with_extensions(&role.path, &["get", "post", "put", "delete"], &SchemaPlace::Response)?;
+            let query_remote = method_response == "get" && (role.mask & 1) != 0;
+            let service = Service::new(&role.path, primary_keys, short_description_list)?;
+            self.service_map.insert(schema_name.clone(), service);
+            self.service_map_key.insert(schema_name.to_string(), IndexMap::new());
+            self.service_map_list.insert(schema_name.to_string(), vec![]);
+            self.login_response.openapi.get_dependencies(&schema_name, &mut list_dependencies);
+
+            if query_remote && list_dependencies.contains(&schema_name) == false {
+                list_dependencies.push(schema_name.clone());
+
+                if properties.get("dateLastChange").is_some() {
+                    list_with_date_last_change.push(schema_name);
                 }
             }
         }
 
-        self.web_socket_connect("websocket");
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            for schema_name in &list_dependencies {
+                let mut list = if let Some(service) = self.service_map.get(schema_name) {
+                    query_remote(service, self, "").await?
+                } else {
+                    continue;
+                };
+
+                list.reverse();
+                let service = self.service_map.get_mut(schema_name).ok_or("Broken service mut")?;
+                service.map_description_to_hash.reserve(list.len());
+
+                for item in list {
+                    self.store(schema_name, item).await?;
+                }
+            }
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            async fn get_database(list_dependencies: Vec<String>, app_name :&str, version: u32) -> Result<Database, Box<dyn std::error::Error>> {
+                let factory = idb::Factory::new()?;
+                let mut open_request = factory.open(app_name, Some(version)).unwrap();
+
+                open_request.on_upgrade_needed(move |event| {
+                    println!("[get_database.on_upgrade_needed] ...");
+                    let database = event.database().unwrap();
+                    let old_version = event.old_version().unwrap();
+
+                    if old_version > 0 {
+                        for schema_name in database.store_names() {
+                            println!("[get_database.on_upgrade_needed] : database.delete_object_store({schema_name})");
+
+                            if let Err(e) = database.delete_object_store(&schema_name) {
+                                println!("[HttpRestRequest::request_text] : Error deleting object store '{schema_name}': {}", e);
+                            }
+                        }
+                    }
+
+                    let mut store_params = ObjectStoreParams::new();
+                    store_params.auto_increment(false);
+                    store_params.key_path(Some(KeyPath::new_single("primaryKeyHash")));
+
+                    for schema_name in &list_dependencies {
+                        let _res = database.create_object_store(schema_name, store_params.clone()).unwrap();
+                    }
+                });
+
+                let res = open_request.await?;
+                Ok(res)
+            }
+
+            let db_version = crate::openapi::parse_version_number(&self.login_response.openapi.info.version)?;
+
+            let last_login_date: String = {
+                use gloo_storage::{Storage, LocalStorage};
+                use gloo_storage::errors::StorageError;
+                let res : Result<String, StorageError> = LocalStorage::get("last_login_version");
+                match res {
+                    Ok(last_login_version) => {
+                        let res = if db_version == last_login_version.parse::<u32>()? {
+                            match LocalStorage::get("last_login_date") {
+                                Ok(value) => value,
+                                Err(_) => "".to_string(),
+                            }
+                        } else {
+                            "".to_string()
+                        };
+
+                        res
+                    },
+                    Err(_) => "".to_string(),
+                }
+            };
+
+            let database = get_database(list_dependencies.clone(), "rufs_xxx", db_version).await?;
+
+            let element = {
+                let window = web_sys::window().ok_or("Broken window")?;
+                let document = window.document().ok_or("Broken document")?;
+                document.get_element_by_id("http-working").ok_or("Broken http-working")?
+            };
+
+            for schema_name in &list_dependencies {
+                let Some(service) = self.service_map.get_mut(schema_name) else {
+                    continue;
+                };
+
+                if database.store_names().contains(schema_name) == false {
+                    continue;
+                }
+
+                let transaction = database.transaction(&[schema_name], idb::TransactionMode::ReadOnly)?;
+                let object_store = transaction.object_store(schema_name)?;
+                element.set_inner_html(&format!("Carregando '{schema_name}' ..."));
+                let list_js: Vec<JsValue> = object_store.get_all(None, None)?.await?;
+                service.map_description_to_hash.reserve(list_js.len());
+                let list_values = self.service_map_list.get_mut(schema_name).ok_or("Broken service_map_list")?;
+                let map_key_to_index = self.service_map_key.get_mut(schema_name).ok_or("Broken service_map_key")?;
+                list_values.reserve(list_js.len());
+                map_key_to_index.reserve(list_js.len());
+
+                for item in list_js {
+                    let item :Value = serde_wasm_bindgen::from_value(item)?;
+                    let primary_key_hash = item.as_object().unwrap().get("primaryKeyHash").ok_or("Broken primaryKeyHash")?.as_str().ok_or("Broken primary_key_hash as_str")?;
+                    let description = item.as_object().unwrap().get("rufsDescription").ok_or("Broken rufsDescription")?.as_str().ok_or("Broken rufsDescription as_str")?;
+                    let service = self.service_map.get_mut(schema_name).ok_or("Broken service")?;
+                    service.map_description_to_hash.insert(description.to_string(), primary_key_hash.to_string());
+                    map_key_to_index.insert(primary_key_hash.to_string(), list_values.len());
+                    list_values.push(item.clone());
+                }
+
+                transaction.await?;
+            }
+
+            for schema_name in &list_dependencies {
+                let Some(service) = self.service_map.get(schema_name) else {
+                    continue;
+                };
+
+                let is_local_stored = database.store_names().contains(&schema_name);
+
+                let mut list = if is_local_stored == false || last_login_date.is_empty() {
+                    query_remote(service, self, "").await?
+                } else if list_with_date_last_change.contains(schema_name) {
+                    query_remote(service, self, &last_login_date).await?
+                } else {
+                    vec![]
+                };
+
+                list.reverse();
+                self.service_map_list.get_mut(schema_name).ok_or("Broken service_map_list")?.reserve(list.len());
+                self.service_map_key.get_mut(schema_name).ok_or("Broken service_map_key")?.reserve(list.len());
+                let service = self.service_map.get_mut(schema_name).ok_or("Broken service mut")?;
+                service.map_description_to_hash.reserve(list.len());
+
+                if is_local_stored {
+                    let transaction = database.transaction(&[schema_name], idb::TransactionMode::ReadWrite)?;
+                    let object_store = transaction.object_store(schema_name)?;
+
+                    for item in list {
+                        let item = self.store(schema_name, item).await?;
+                        use serde_wasm_bindgen::Serializer;
+                        object_store.put(&item.serialize(&Serializer::json_compatible()).unwrap(), None)?.await?;
+                    }
+
+                    transaction.commit()?.await?;
+                } else {
+                    for item in list {
+                        self.store(schema_name, item).await?;
+                    }
+                }
+            }
+
+            let now = chrono::Local::now().to_rfc3339();
+            use gloo_storage::{Storage, LocalStorage};
+            LocalStorage::set("last_login_version", db_version.to_string())?;
+            LocalStorage::set("last_login_date", now)?;
+            database.close();
+        }
+
+        let res = Self::web_socket_connect(&self.http_rest.server_url_api, &self.login_response.jwt_header).await;
+
+        if let Err(err) =  res {
+            eprintln!("[web_socket_connect] {} : {err}", self.http_rest.server_url_api);
+        }
+
         Ok(())
     }
 
@@ -2552,7 +2741,6 @@ pub trait DataViewWatch: std::marker::Sync + Send {
     fn menu(&self) -> Value;
 }
 
-//#[derive(Default)]
 pub struct DataViewManager<'a> {
     pub server_connection: ServerConnection,
     data_view_map: HashMap<String, DataView>,
@@ -2667,7 +2855,38 @@ impl DataViewManager<'_> {
         Ok(json!({"menu": self.watcher.menu(), "path": self.server_connection.login_response.path, "jwt_header": self.server_connection.login_response.jwt_header}))
     }
 
-    pub async fn login_from_response(&mut self, params: Value) -> Result<Value, Box<dyn std::error::Error>> {
+    async fn process_ws_messages(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        #[derive(Deserialize, Debug)]
+        #[serde(rename_all = "camelCase")]
+        struct WebSocketData {
+            service :String,
+            action :String,
+            primary_key : Value,
+        }
+
+        let mut list_messages = WEB_SOCKET_MESSAGES.lock().await;
+        let mut list_updates = vec![];
+
+        while list_messages.len() > 0 {
+            let msg = list_messages.remove(0);
+            let item: WebSocketData = serde_json::from_str(&msg).unwrap();
+
+            if item.action == "delete" {
+                self.server_connection.remove_with_primary_key(&item.service, &item.primary_key).await?;
+            } else {
+                if let Some(_value) = self.server_connection.get_remote(&item.service, &item.primary_key).await.unwrap() {
+                    if list_updates.contains(&item.service) == false {
+                        list_updates.push(item.service);
+                    }
+                }
+            }
+        }
+        // TODO : examinar todos os data_view (raiz e childs) contidos no list_updates e atualizar
+        Ok(())
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    async fn login_from_response(&mut self, params: Value) -> Result<Value, Box<dyn std::error::Error>> {
         let data_in = serde_json::from_value::<LoginResponseClient>(params)?;
         self.server_connection.login_from_response(data_in).await?;
         Ok(json!({"menu": self.watcher.menu(), "path": self.server_connection.login_response.path, "jwt_header": self.server_connection.login_response.jwt_header}))
@@ -2751,10 +2970,11 @@ impl DataViewManager<'_> {
                 let field = field.as_item().unwrap();
                 let extensions = &field.schema_data.extensions;
 
-                let (list, list_str) = if let Some(reference) = extensions.get("x-$ref") {
-                    let reference = reference.as_str().ok_or_else(|| format!("reference is not string"))?;
+                let list_str = if let Some(reference) = extensions.get("x-$ref") {
+                    let reference = reference.as_str().ok_or("Broken reference.as_str().")?;
+                    let schema_name = OpenAPI::get_schema_name_from_ref(reference, convert_case::Case::Camel);
 
-                    if let Some(_service_ref) = server_connection.service_map.get(reference) {
+                    if let Some(_service_ref) = server_connection.service_map.get(&schema_name) {
                         //data_view.serverConnection.getDocuments(service_ref, service.list).await;
                     }
 
@@ -2763,50 +2983,33 @@ impl DataViewManager<'_> {
                         data_view.data_view_id.schema_name
                     ))?;
 
-                    if let Some(service) = server_connection.get_foreign_service(service, field_name, true) {
-                        let mut filter = if let Some(filter) = data_view.field_filter_results.get(field_name) {
-                            filter.clone()
-                        } else {
-                            json!({})
-                        };
+                    if let Some(service) = server_connection.get_foreign_service(service, field_name, true)? {
+                        let mut filter = json!({});
 
-                        if filter.as_object().ok_or_else(|| format!("filter is not object"))?.is_empty() {
-                            if let Some(pos) = reference.chars().position(|c| c == '?') {
-                                let primary_key = queryst::parse(&reference[pos..]).unwrap();
+                        if let Some(pos) = reference.chars().position(|c| c == '?') {
+                            let primary_key = queryst::parse(&reference[pos..]).unwrap();
 
-                                for (field_name, value) in primary_key.as_object().unwrap() {
-                                    if let Some(value) = value.as_str() {
-                                        if value.starts_with("*") {
-                                            let value = json!(value[1..]);
-                                            let field = data_view.properties.get(field_name).ok_or_else(|| format!("[build_field_filter_results]"))?;
-                                            let field = field.as_item().ok_or_else(|| format!("as_ref"))?;
-                                            filter[field_name] = server_connection.login_response.openapi.copy_value_field(field, true, &value).unwrap();
-                                        }
+                            for (field_name, value) in primary_key.as_object().unwrap() {
+                                if let Some(value) = value.as_str() {
+                                    if value.starts_with("*") {
+                                        let value = json!(value[1..]);
+                                        let field = data_view.properties.get(field_name).ok_or_else(|| format!("[build_field_filter_results]"))?;
+                                        let field = field.as_item().ok_or_else(|| format!("as_ref"))?;
+                                        filter[field_name] = server_connection.login_response.openapi.copy_value_field(field, true, &value).unwrap();
                                     }
                                 }
                             }
                         }
 
                         if filter.as_object().ok_or_else(|| format!("filter is not object"))?.is_empty() == false {
-                            let list = vec![];
-                            let list_str = vec![];
-
-                            for _candidate in &service.list {
-                                // if Filter::match(filter, candidate) {
-                                //     list.push(candidate);
-                                //     let str = rufs_service.list_str[i];
-                                //     list_str.push(str);
-                                // }
-                            }
-
-                            (list, list_str)
+                            vec![]
                         } else {
-                            (service.list.clone(), service.list_str.clone())
+                            service.map_description_to_hash.keys().map(|s| s.to_string()).collect()
                         }
                     } else {
                         #[cfg(debug_assertions)]
                         eprintln!("[build_field_filter_results] don't have acess to service {}", reference);
-                        (vec![], vec![])
+                        vec![]
                     }
                 } else if let Some(enumeration) = extensions.get("x-enum") {
                     let enumeration = enumeration.as_array().ok_or_else(|| format!("x-enum is not array"))?;
@@ -2817,12 +3020,11 @@ impl DataViewManager<'_> {
                         enumeration.iter().map(|s| s.to_string()).collect()
                     };
 
-                    (enumeration.clone(), list_str)
+                    list_str
                 } else {
-                    (vec![], vec![])
+                    vec![]
                 };
 
-                data_view.field_results.insert(field_name.clone(), list.clone());
                 data_view.field_results_str.insert(field_name.clone(), list_str.clone());
             }
 
@@ -2870,8 +3072,6 @@ impl DataViewManager<'_> {
 
                 if data_view_item.path.is_some() {
                     data_view_item.filter_results.clear();
-                    let schema_name = &data_view_item.data_view_id.schema_name;
-                    let service = server_connection.service_map.get(schema_name).ok_or_else(|| format!("Missing service"))?;
 
                     if data_view_item.is_one_to_one {
                         if data_view_item.data_view_id.action != DataViewProcessAction::Search {
@@ -2879,7 +3079,9 @@ impl DataViewManager<'_> {
                         }
                     } else {
                         if data_view_item.data_view_id.action == DataViewProcessAction::Search {
-                            for item in &service.list {
+                            let schema_name = &data_view_item.data_view_id.schema_name;
+
+                            for item in server_connection.service_map_list.get(schema_name).ok_or("Broken service_map_list")? {
                                 if crate::data_store::Filter::check_match_exact(item, &foreign_key)? {
                                     data_view_item.filter_results.push(item.clone());
                                 }
@@ -3053,8 +3255,7 @@ impl DataViewManager<'_> {
                     }
 
                     if have_filter {
-                        let service = self.server_connection.service_map.get(&data_view.data_view_id.schema_name).ok_or_else(|| format!("Missing service in service_map"))?;
-                        data_view.apply_filter(&service.list);
+                        data_view.apply_filter(self.server_connection.service_map_list.get(&data_view.data_view_id.schema_name).ok_or("Broken service_map_list")?);
                     }
                 }
 
@@ -3063,7 +3264,26 @@ impl DataViewManager<'_> {
                 }
 
                 if params_search.sort.is_empty() == false {
-                    data_view.params.sort = params_search.sort.clone();
+                    for (name, field) in data_view.params.sort.iter_mut() {
+                        if let Some(field_query) = params_search.sort.get(&name.to_case(convert_case::Case::Snake)) {
+                            if field_query.order_index.is_some() {
+                                field.order_index = field_query.order_index;
+                            }
+
+                            if field_query.hidden.is_some() {
+                                field.hidden = field_query.hidden;
+                            }
+
+                            if field_query.sort_type.is_some() {
+                                field.sort_type = field_query.sort_type;
+                            }
+
+                            if field_query.table_visible.is_some() {
+                                field.table_visible = field_query.table_visible;
+                            }
+                        }
+                    }
+
                     data_view.apply_sort()?;
                 }
             }
@@ -3078,7 +3298,7 @@ impl DataViewManager<'_> {
         }
 
         if data_view.data_view_id.action == DataViewProcessAction::Search {
-            let table = DataView::build_table(&self.server_connection, data_view, params_search)?;
+            let table = DataView::build_table(&mut self.server_connection, data_view, params_search)?;
             data_view_response.tables[&data_view.data_view_id.id] = json!(table);
             return Ok(());
         }
@@ -3086,7 +3306,7 @@ impl DataViewManager<'_> {
         for data_view in &mut data_view.childs {
             // TODO : verificar se não está processando em actions desnecessários
             if data_view.filter_results.len() > 0 {
-                let table = DataView::build_table(&self.server_connection, data_view, params_search)?;
+                let table = DataView::build_table(&mut self.server_connection, data_view, params_search)?;
                 data_view_response.tables[&data_view.data_view_id.id] = json!(table);
             }
         }
@@ -3119,7 +3339,7 @@ impl DataViewManager<'_> {
         Ok(())
     }
 
-    pub fn parse_query_string(query_string :&str) -> Result<(DataViewParams, Value), Box<dyn std::error::Error>> {
+    fn parse_query_string(query_string :&str) -> Result<(DataViewParams, Value), Box<dyn std::error::Error>> {
         let pairs = if query_string.len() > 0 {
             let str = &query_string[1..];
             nested_qs::from_str::<Value>(str)?
@@ -3149,6 +3369,36 @@ impl DataViewManager<'_> {
                 if obj_out.get(field_name).is_none() {
                     obj_out[field_name] = json!({});
                 }
+            }
+
+            if let Some(sort) = obj_out.get_mut("sort") {
+                if let Some(map) = sort.as_object_mut() {
+                    for (_name, field_sort) in map {
+                        if let Some(order_index) = field_sort.get_mut("order_index") {
+                            match order_index {
+                                Value::String(str) => {
+                                    let value : i64 = str.parse()?;
+                                    *order_index = json!(value);
+                                },
+                                _ => {},
+                            }
+                        }
+/*
+                        if field_sort.get("sort_type").is_none() {
+                            field_sort["sort_type"] = json!(FieldSortType::Desc);
+                        }
+
+                        if field_sort.get("table_visible").is_none() {
+                            field_sort["table_visible"] = json!(true);
+                        }
+
+                        if field_sort.get("hidden").is_none() {
+                            field_sort["hidden"] = json!(false);
+                        }
+*/
+                    }
+                }
+
             }
 
             if obj_out.get("page").is_none() {
@@ -3232,12 +3482,12 @@ impl DataViewManager<'_> {
                     let (is_ok, action) = self.watcher.check_save(data_view, &element_id, &self.server_connection)?;
 
                     if is_ok {
-                        let obj_in = data_view.save(&mut self.server_connection).await?;
+                        let obj_in = data_view.save(&mut self.server_connection).await?.clone();
                         let data_view = data_view_get_mut!(self, element_id);
 
                         let params_extra = if element_id.data_view_id.parent_schema_name.is_some() {
                             if data_view.path.is_some() {
-                                data_view.save(&mut self.server_connection).await?
+                                data_view.save(&mut self.server_connection).await?.clone()
                             } else {
                                 json!({})
                             }
@@ -3245,9 +3495,13 @@ impl DataViewManager<'_> {
                             obj_in
                         };
 
+                        let mut update_table = None;
+
                         if data_view.typ == DataViewType::ObjectProperty {
                             if let Some(index) = data_view.active_index {
                                 data_view.filter_results[index] = params_extra.clone();
+                                let element_id = HtmlElementId::new_with_regex(&cap)?;
+                                update_table = Some(element_id);
                             }
                         } else {
                             data_view.state.hidden = true;
@@ -3260,6 +3514,13 @@ impl DataViewManager<'_> {
                         element_id.data_view_id.set_action(action);
                         let params_search = DataViewParams::default();
                         self.process_data_view_action(&element_id, &params_search, &params_extra, &mut data_view_response).await?;
+
+                        if let Some(element_id) = update_table && data_view_response.tables.get(&element_id.data_view_id.id).is_none() {
+                            let data_view = data_view_get_mut!(self, element_id);
+                            let table = DataView::build_table(&mut self.server_connection, data_view, &params_search)?;
+                            data_view_response.tables[&data_view.data_view_id.id] = json!(table);
+                        }
+
                         data_view_response
                     } else {
                         DataViewResponse::default()
@@ -3290,12 +3551,12 @@ impl DataViewManager<'_> {
                 let list = if data_view.path.is_none() || data_view.filter_results.len() > 0 {
                     &data_view.filter_results
                 } else {
-                    let service = self.server_connection.service_map.get(schema_name).ok_or_else(|| format!("2 - service_map : missing {}.", schema_name))?;
-                    &service.list
+                    self.server_connection.service_map_list.get(schema_name).ok_or("Broken service_map_list")?
                 };
 
                 data_view.active_index = Some(active_index);
-                list.get(active_index).ok_or_else(|| format!("Missing {}.filter_results[{}], size = {}", schema_name, active_index, list.len()))?.clone()
+                let res = list.get(active_index).ok_or_else(|| format!("Missing {}.filter_results[{}], size = {}", schema_name, active_index, list.len()))?;
+                res.clone()
             } else {
                 data_view.params.instance.clone()
             };
@@ -3303,8 +3564,6 @@ impl DataViewManager<'_> {
             let params_search = DataViewParams { ..Default::default() };
             element_id.data_view_id.set_action(DataViewProcessAction::from(cap.name("action_exec").ok_or("broken action_exec")?.as_str()));
             let mut data_view_response = DataViewResponse::default();
-            #[cfg(debug_assertions)]
-            println!("{target}:\nelement_id = {:?}\nparams_search = {:?}\nparams_extra: {params_extra}", element_id, params_search);
             self.process_data_view_action(&element_id, &params_search, &params_extra, &mut data_view_response).await?;
             return Ok(data_view_response);
         }
@@ -3318,23 +3577,26 @@ impl DataViewManager<'_> {
             let field = data_view.params.sort.get_mut(field_name).ok_or_else(|| format!("Missing field sort : {}", field_name))?;
 
             match cap.name("act").ok_or_else(|| format!("broken"))?.as_str() {
-                "sort_left" => field.order_index -= 1,
-                "sort_rigth" => field.order_index += 1,
+                "sort_left" => field.order_index = Some(field.order_index.unwrap_or(0) + 1),
+                "sort_rigth" => field.order_index = Some(field.order_index.unwrap_or(0) - 1),
                 _ => {
-                    field.sort_type = if field.sort_type == FieldSortType::Asc { FieldSortType::Desc } else { FieldSortType::Asc };
+                    field.sort_type = if field.sort_type == Some(FieldSortType::Asc) {
+                        Some(FieldSortType::Desc)
+                    } else {
+                        Some(FieldSortType::Asc)
+                    };
                 }
             }
 
             if data_view.filter_results.is_empty() {
-                let service = self.server_connection.service_map.get(&data_view.data_view_id.schema_name).ok_or_else(|| format!("Missing service in service_map"))?;
-                data_view.filter_results = service.list.clone();
+                data_view.filter_results = self.server_connection.service_map_list.get(&data_view.data_view_id.schema_name).ok_or("Broken service_map_list")?.clone();
             }
 
             data_view.apply_sort()?;
             let params_search = DataViewParams { ..Default::default() };
             let mut data_view_response = DataViewResponse::default();
             data_view_response.tables = json!({});
-            let table = DataView::build_table(&self.server_connection, data_view, &params_search)?;
+            let table = DataView::build_table(&mut self.server_connection, data_view, &params_search)?;
             data_view_response.tables[&data_view.data_view_id.id] = json!(table);
             return Ok(data_view_response);
         }
@@ -3348,7 +3610,7 @@ impl DataViewManager<'_> {
             let params_search = DataViewParams { ..Default::default() };
             let mut data_view_response = DataViewResponse::default();
             data_view_response.tables = json!({});
-            let table = DataView::build_table(&self.server_connection, data_view, &params_search)?;
+            let table = DataView::build_table(&mut self.server_connection, data_view, &params_search)?;
             data_view_response.tables[&data_view.data_view_id.id] = json!(table);
             return Ok(data_view_response);
         }
@@ -3375,16 +3637,7 @@ impl DataViewManager<'_> {
             if let Some(origin) = &data_view.params.origin {
                 let obj = {
                     let index = element_id.index.ok_or_else(|| format!("Missing index"))?;
-
-                    let list = if data_view.path.is_none() || data_view.filter_results.len() > 0 {
-                        &data_view.filter_results
-                    } else {
-                        let schema_name = &data_view.data_view_id.schema_name;
-                        let service = self.server_connection.service_map.get(schema_name).ok_or_else(|| format!("1 - service_map : missing {}.", schema_name))?;
-                        &service.list
-                    };
-
-                    list.get(index).ok_or_else(|| format!("List broken of index"))?
+                    data_view.filter_results.get(index).ok_or_else(|| format!("List broken of index"))?
                 };
 
                 let re = regex::Regex::new(r"(?P<form_type>instance|filter|aggregate|sort)--((?P<parent_name>\pL[\w_]+)-)?(?P<name>\pL[\w_]+)--(?P<field_name>\pL[\w_]+)(?P<form_type_ext>@min|@max)?(-(?P<index>\d+))?")?;
@@ -3461,8 +3714,6 @@ impl DataViewManager<'_> {
             };
 
             let mut data_view_response = DataViewResponse::default();
-            #[cfg(debug_assertions)]
-            println!("{target}:\nelement_id = {:?}\nparams_search = {:?}\nparams_extra: {params_extra}", element_id, params_search);
             self.process_data_view_action(&element_id, &params_search, &params_extra, &mut data_view_response).await?;
             return Ok(data_view_response);
         }
@@ -3485,7 +3736,7 @@ impl DataViewManager<'_> {
     }
 
     async fn process_edit_target(&mut self, target: &str, value: &str) -> Result<DataViewResponse, Box<dyn std::error::Error>> {
-        fn parse_value_process(data_view: &DataView, server_connection: &ServerConnection, element_id: &HtmlElementId, value: &str) -> Result<(Value, bool), Box<dyn std::error::Error>> {
+        fn parse_value_process(data_view: &DataView, server_connection: &ServerConnection, element_id: &HtmlElementId, item_description: &str) -> Result<(Value, bool), Box<dyn std::error::Error>> {
             //data_view.field_external_references_str.insert(field_name.to_string(), value.to_string());
             let Some(field_name) = &element_id.field_name else {
                 return None.ok_or_else(|| format!("[process_edit_target] missing field field_name"))?;
@@ -3495,7 +3746,7 @@ impl DataViewManager<'_> {
                 format!("[process_edit_target.parse_value()] Missing field {}.{}", data_view.data_view_id.schema_name, field_name)
             })?;
 
-            let field = field.as_item().ok_or_else(|| format!("[process_edit_target.parse_value({})] broken", value))?;
+            let field = field.as_item().ok_or_else(|| format!("[process_edit_target.parse_value({})] broken", item_description))?;
             let extensions = &field.schema_data.extensions;
             let mut is_flags = false;
 
@@ -3512,7 +3763,7 @@ impl DataViewManager<'_> {
                     Value::Object(map) => return Err(format!("Expected u64, found Object({:?})", map))?,
                 };
 
-                let bit_mask = if ["true", "on"].contains(&value) {
+                let bit_mask = if ["true", "on"].contains(&item_description) {
                     field_value | (1 << index)
                 } else {
                     field_value & !(1 << index)
@@ -3520,21 +3771,18 @@ impl DataViewManager<'_> {
 
                 is_flags = true;
                 json!(bit_mask)
-            } else if let Some(_reference) = extensions.get("x-$ref") {
-                if value.len() > 0 {
-                    let field_results = data_view.field_results.get(field_name).ok_or_else(|| format!("Missing field_results"))?;
-                    let field_results_str = data_view.field_results_str.get(field_name).ok_or_else(|| format!("value not found in field_results_str"))?;
-                    let pos = field_results_str
-                        .iter()
-                        .position(|s| s.as_str() == value)
-                        .ok_or_else(|| format!("(x-$ref) Missing foreign description {} in {}.", value, field_name))?;
-                    let foreign_data = field_results.get(pos).ok_or_else(|| format!("broken 1 in parse_value"))?;
+            } else if let Some(reference) = extensions.get("x-$ref") {
+                if item_description.len() > 0 {
+                    let foreign_data = {
+                        let schema_name = OpenAPI::get_schema_name_from_ref(reference.as_str().ok_or("Broken reference.as_str().")?, convert_case::Case::Camel);
+                        server_connection.get_item_from_description(&schema_name, item_description)?.ok_or("Broken get_item_from_description")?
+                    };
+
                     let (_, foreign_key) = server_connection
                         .login_response
                         .openapi
-                        .get_foreign_key(&data_view.properties, &data_view.extensions, field_name, foreign_data)
-                        .unwrap()
-                        .unwrap();
+                        .get_foreign_key(&data_view.properties, &data_view.extensions, field_name, foreign_data)?
+                        .ok_or("Broken get_foreign_key")?;
                     foreign_key.get(field_name).ok_or_else(|| format!("broken 1 in parse_value"))?.clone()
                 } else {
                     Value::Null
@@ -3548,7 +3796,7 @@ impl DataViewManager<'_> {
                         .iter()
                         .position(|item| {
                             if let Some(enum_label) = item.as_str() {
-                                if enum_label == value {
+                                if enum_label == item_description {
                                     true
                                 } else {
                                     false
@@ -3557,14 +3805,14 @@ impl DataViewManager<'_> {
                                 false
                             }
                         })
-                        .ok_or_else(|| format!("(x-enum) Missing foreign description {} in {}.", value, field_name))?;
+                        .ok_or_else(|| format!("(x-enum) Missing foreign description {} in {}.", item_description, field_name))?;
 
                     enumeration.get(pos).ok_or_else(|| format!("expected value at pos"))?.clone()
                 } else {
-                    json!(value)
+                    json!(item_description)
                 }
             } else {
-                json!(value)
+                json!(item_description)
             };
 
             Ok((value, is_flags))
@@ -3585,7 +3833,7 @@ impl DataViewManager<'_> {
             if is_flags {
                 let data_view = data_view_get_mut!(self, element_id);
                 let params_search = DataViewParams::default();
-                let table = DataView::build_table(&self.server_connection, data_view, &params_search)?;
+                let table = DataView::build_table(&mut self.server_connection, data_view, &params_search)?;
                 data_view_response.tables[&data_view.data_view_id.id] = json!(table);
             }
 
@@ -3609,6 +3857,8 @@ impl DataViewManager<'_> {
         #[cfg(debug_assertions)]
         println!("Request:\n{}", params);
 
+        self.process_ws_messages().await?;
+
         #[derive(Deserialize)]
         struct EventIn {
             form_id: String,
@@ -3618,15 +3868,19 @@ impl DataViewManager<'_> {
 
         let params = serde_json::from_value::<EventIn>(params)?;
 
-        let data_view_response = if params.event == "OnClick" {
+        let data_view_response = if params.event == "click" {
             self.process_click_target(&params.form_id).await?
-        } else {
+        } else if params.event == "change" {
             let mut ret = DataViewResponse::default();
 
             for (target, value) in params.data.as_object().ok_or_else(|| format!("Param 'data' is not object "))? {
                 ret = self.process_edit_target(target, value.as_str().ok_or_else(|| format!("not string"))?).await?;
             }
 
+            ret
+        } else {
+            // TODO : tratar evento "keydown"
+            let ret = DataViewResponse::default();
             ret
         };
 
@@ -3659,6 +3913,8 @@ impl DataViewManagerWrapper<'_> {
     }
 
     pub async fn process(&mut self, params: JsValue) -> Result<JsValue, JsValue> {
+        #[cfg(debug_assertions)]
+        println!("[process] ini...");
         let params = serde_wasm_bindgen::from_value::<Value>(params)?;
 
         let ret = match self.data_view_manager.process(params).await {
@@ -3666,6 +3922,8 @@ impl DataViewManagerWrapper<'_> {
             Err(err) => return Err(JsValue::from_str(&err.to_string())),
         };
 
+        #[cfg(debug_assertions)]
+        println!("[process] ...end");
         Ok(serde_wasm_bindgen::to_value(&ret)?)
     }
 }
@@ -3858,19 +4116,8 @@ pub mod tests {
                             let data_view = data_view_get_mut!(data_view_manager, element_id);
 
                             let str = if let Some(index) = cap.name("index") {
-                                let list = if data_view.path.is_none() || data_view.filter_results.len() > 0 {
-                                    &data_view.filter_results
-                                } else {
-                                    let service = data_view_manager
-                                        .server_connection
-                                        .service_map
-                                        .get(&data_view.data_view_id.schema_name)
-                                        .ok_or_else(|| format!("Missing service in service_map"))?;
-                                    &service.list
-                                };
-
                                 let index = index.as_str().parse::<usize>()?;
-                                let value = list.get(index).ok_or_else(|| format!("Don't found value of index {}", index))?;
+                                let value = data_view.filter_results.get(index).ok_or_else(|| format!("Don't found value of index {}", index))?;
                                 value
                                     .get(field_name)
                                     .ok_or_else(|| format!(
@@ -3935,26 +4182,9 @@ pub mod tests {
                                 let primary_key = if let Some(primary_key) = &params_search.primary_key { primary_key } else { &params_extra };
                                 let data_view = data_view_get!(data_view_manager, element_id);
 
-                                let is_broken = if data_view.path.is_some() {
-                                    let service = data_view_manager
-                                        .server_connection
-                                        .service_map
-                                        .get(&data_view.data_view_id.schema_name)
-                                        .ok_or_else(|| format!("Missing service {}", &data_view.data_view_id.schema_name))?;
-
-                                    if let Some(value) = service.find_pos(primary_key)? {
-                                        println!("Unexpected existence of item in service.list : pos = {}", value);
-                                        true
-                                    } else {
-                                        false
-                                    }
-                                } else {
-                                    false
-                                };
-
                                 if let Some(index) = Filter::find_index(&data_view.filter_results, primary_key).unwrap() {
                                     println!("Unexpected existence of item of index {} in filter_results.", index);
-                                } else if !is_broken {
+                                } else {
                                     continue;
                                 }
                             }

@@ -1,21 +1,13 @@
-
-use std::{collections::HashMap, fs, path::Path, sync::{RwLock, Arc}};
+use std::{collections::HashMap, fs, path::Path, sync::Arc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value,json};
 use openapiv3::{OpenAPI, SecurityRequirement};
 use jsonwebtoken::{encode, EncodingKey, Header};
 use async_std::path::PathBuf;
 use async_trait::async_trait;
-#[cfg(feature = "warp")]
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 
 use crate::{db_adapter_postgres::DbAdapterSql,entity_manager::EntityManager,openapi::{FillOpenAPIOptions, RufsOpenAPI, Role}};
-
-#[derive(Deserialize, Serialize, Default)]
-#[serde(rename_all = "camelCase")]
-struct RufsGroupOwner {
-    name: String,
-}
 
 #[derive(Deserialize, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -31,14 +23,6 @@ pub struct Route {
 pub struct MenuItem {
     group: String,
     label: String,
-    path: String,
-}
-
-#[derive(Deserialize, Serialize, Default)]
-#[serde(rename_all = "camelCase")]
-struct RufsUserPublic {
-    routes: Box<[Route]>,
-    menu: Box<[MenuItem]>,
     path: String,
 }
 
@@ -124,13 +108,13 @@ impl Default for RufsParams {
 pub struct RufsMicroService<'a> {
     pub params: RufsParams,
     pub openapi: OpenAPI,
-    pub entity_manager: DbAdapterSql<'a>,
-    pub ws_server_connections_tokens : Arc<RwLock<HashMap<String, Claims>>>,
     pub watcher: &'static Box<dyn DataViewWatch>,
+    pub entity_manager: DbAdapterSql<'a>,
+    pub web_socket_server_connections_tokens : Arc<RwLock<HashMap<String, Claims>>>,
     #[cfg(feature = "tide")]
     pub ws_server_connections_tide : Arc<RwLock<HashMap<String, tide_websockets::WebSocketConnection>>>,
     #[cfg(feature = "warp")]
-    pub ws_server_connections_warp : Arc<RwLock<HashMap<String, futures_util::stream::SplitSink<warp::ws::WebSocket, warp::ws::Message>>>>,
+    pub web_socket_server_connections_warp : Arc<RwLock<HashMap<String, futures_util::stream::SplitSink<warp::ws::WebSocket, warp::ws::Message>>>>,
 }
 
 impl RufsMicroService<'_> {
@@ -223,25 +207,6 @@ impl RufsMicroService<'_> {
         }
 
         async fn exec_migrations(rms: &mut RufsMicroService<'_>, migration_path: &str) -> Result<bool, Box<dyn std::error::Error>> {
-            fn get_version(name: &str) -> Result<usize, Box<dyn std::error::Error>> {
-                let reg_exp = regex::Regex::new(r"(\d{1,3})\.(\d{1,3})\.(\d{1,3})").unwrap();
-                let reg_exp_result = reg_exp.captures(name).unwrap();
-
-                if reg_exp_result.len() != 4 {
-                    return Err(format!("Missing valid version in name {}", name))?;
-                }
-
-                let str_version = format!(
-                    "{:03}{:03}{:03}",
-                    reg_exp_result.get(1).unwrap().as_str().parse::<usize>().unwrap(),
-                    reg_exp_result.get(2).unwrap().as_str().parse::<usize>().unwrap(),
-                    reg_exp_result.get(3).unwrap().as_str().parse::<usize>().unwrap()
-                );
-
-                println!("str_version {}", str_version);
-                Ok(str_version.parse().unwrap())
-            }
-
             async fn migrate(rms: &mut RufsMicroService<'_>, migration_path: &str, file_name: &str) -> Result<(), Box<dyn std::error::Error>> {
                 println!("Migrating to version {}...", file_name);
                 let text = fs::read_to_string(PathBuf::from(migration_path).join(file_name))?;
@@ -250,7 +215,7 @@ impl RufsMicroService<'_> {
                     rms.entity_manager.exec(sql).await?;
                 }
 
-                let new_version = get_version(file_name)?;
+                let new_version = crate::openapi::parse_version_number(file_name)?;
                 rms.openapi.info.version = format!("{}.{}.{}", ((new_version / 1000) / 1000) % 1000, (new_version / 1000) % 1000, new_version % 1000);
                 println!("... Migrated version {}", file_name);
                 Ok(())
@@ -260,13 +225,13 @@ impl RufsMicroService<'_> {
                 return Ok(false);
             }
 
-            let old_version = get_version(&rms.openapi.info.version)?;
+            let old_version = crate::openapi::parse_version_number(&rms.openapi.info.version)?;
             let files = fs::read_dir(migration_path)?;
             let mut list: Vec<String> = vec![];
 
             for file_info in files {
                 let path = file_info.unwrap().file_name().into_string().unwrap();
-                let version = get_version(&path)?;
+                let version = crate::openapi::parse_version_number(&path)?;
 
                 if version > old_version {
                     list.push(path);
@@ -274,8 +239,8 @@ impl RufsMicroService<'_> {
             }
 
             list.sort_by(|a, b| {
-                let version_i = get_version(a).unwrap();
-                let version_j = get_version(b).unwrap();
+                let version_i = crate::openapi::parse_version_number(a).unwrap();
+                let version_j = crate::openapi::parse_version_number(b).unwrap();
                 return version_i.cmp(&version_j);
             });
 
@@ -291,11 +256,11 @@ impl RufsMicroService<'_> {
             watcher,
             openapi: Default::default(),
             entity_manager: DbAdapterSql::default(),
-            ws_server_connections_tokens: Arc::default(),
+            web_socket_server_connections_tokens: Arc::default(),
             #[cfg(feature = "tide")]
             ws_server_connections_tide: Arc::default(),
             #[cfg(feature = "warp")]
-            ws_server_connections_warp: Arc::default(),
+            web_socket_server_connections_warp: Arc::default(),
         };
 
         println!("[connect] : load_open_api...");
@@ -309,6 +274,7 @@ impl RufsMicroService<'_> {
         println!("[connect] : exec_migrations...");
 
         if exec_migrations(&mut rufs, migration_path).await? {
+            println!("[connect] : pg_dump --inserts -n rufs_customer_template -f data/rufs_customer_template.sql...");
             #[cfg(debug_assertions)]
             let status = std::process::Command::new("/usr/bin/podman").arg("exec").arg("postgres").arg("pg_dump").arg(db_uri).arg("--inserts").arg("-n").arg("rufs_customer_template").arg("-f").arg("/app/data/rufs_customer_template.sql").status().expect("Failed to run pg_dump");
             #[cfg(not(debug_assertions))]
@@ -677,11 +643,10 @@ pub async fn rufs_warp<'a, T>(rufs: &Arc<Mutex<RufsMicroService<'static>>>, auth
     }
 
     let api_path = {
-        let rufs = rufs.lock().await.to_owned();
-        rufs.params.api_path.clone()
+        rufs.lock().await.params.api_path.clone()
     };
 
-    async fn handle_api(rufs: Arc<Mutex<RufsMicroService<'static>>>, method: Method, path: &str, headers: HeaderMap, query: String, obj_in: Value) -> Result<impl Reply, Infallible> {
+    async fn handle_api(rufs: Arc<Mutex<RufsMicroService<'static>>>, method: Method, path: &str, headers: HeaderMap, query: String, obj_in: Value) -> Result<impl Reply + use<>, Infallible> {
         let method = method.to_string().to_lowercase();
 
         let query = if !query.is_empty() {
@@ -745,7 +710,7 @@ pub async fn rufs_warp<'a, T>(rufs: &Arc<Mutex<RufsMicroService<'static>>>, auth
         and(rufs_warp_with_rufs(rufs.clone())).and(warp::method()).and(warp::path::full()).and(warp::header::headers_cloned()).
         and_then(handle_api_list_all);
 
-    async fn handle_ws(rufs: Arc<Mutex<RufsMicroService<'static>>>, ws: warp::ws::Ws) -> Result<impl Reply, Infallible> {
+    async fn handle_web_socket(rufs: Arc<Mutex<RufsMicroService<'static>>>, ws: warp::ws::Ws) -> Result<impl Reply, Infallible> {
         async fn user_connected(ws: WebSocket, rufs: Arc<Mutex<RufsMicroService<'static>>>) {
             let (user_ws_tx, mut user_ws_rx) = ws.split();
 
@@ -755,8 +720,8 @@ pub async fn rufs_warp<'a, T>(rufs: &Arc<Mutex<RufsMicroService<'static>>>, auth
                     let secret = std::env::var("RUFS_JWT_SECRET").unwrap_or("123456".to_string());
 
                     if let Ok(token_data) = decode::<Claims>(&token, &DecodingKey::from_secret(secret.as_ref()), &Validation::default()) {
-                        rufs.ws_server_connections_warp.write().unwrap().insert(token.to_string(), user_ws_tx);
-                        rufs.ws_server_connections_tokens.write().unwrap().insert(token.to_string(), token_data.claims);
+                        rufs.web_socket_server_connections_warp.write().await.insert(token.to_string(), user_ws_tx);
+                        rufs.web_socket_server_connections_tokens.write().await.insert(token.to_string(), token_data.claims);
                     }
                 }
             }
@@ -766,7 +731,7 @@ pub async fn rufs_warp<'a, T>(rufs: &Arc<Mutex<RufsMicroService<'static>>>, auth
         Ok(res)
     }
 
-    let route_websocket = warp::path("websocket").and(rufs_warp_with_rufs(rufs.clone())).and(warp::ws()).and_then(handle_ws);
+    let route_websocket = warp::path("websocket").and(rufs_warp_with_rufs(rufs.clone())).and(warp::ws()).and_then(handle_web_socket);
 
     async fn wasm_ws_login_warp(rufs: Arc<Mutex<RufsMicroService<'static>>>, full_path: FullPath, data_in: Value, _remote: Option<std::net::SocketAddr>) -> Result<impl Reply, Infallible> {
         let rufs = &rufs.lock().await.to_owned();

@@ -68,7 +68,7 @@ pub type SchemaProperties = IndexMap<String, ReferenceOr<Box<Schema>>>;
 pub type SchemaExtensions = IndexMap<String, Value>;
 
 pub trait RufsOpenAPI {
-    fn get_schema_name_from_ref(reference: &str) -> String;
+    fn get_schema_name_from_ref(reference: &str, case: Case) -> String;
     fn create(&mut self, security: &str);
     fn copy_value_field(&self, field: &Schema, essential: bool, value :&Value) -> Result<Value, Box<dyn std::error::Error>>;
     fn copy_value(&self, path :&str, method :&str, schema_place :&SchemaPlace, may_be_array: bool, property_name :&str, value :&Value) -> Result<Value, Box<dyn std::error::Error>>;
@@ -136,18 +136,37 @@ pub struct ForeignKey {
     pub fields    :HashMap<String, String>,
 }
 
+pub fn parse_version_number(name: &str) -> Result<u32, Box<dyn std::error::Error>> {
+    let reg_exp = regex::Regex::new(r"(\d{1,3})\.(\d{1,3})\.(\d{1,3})")?;
+    let reg_exp_result = reg_exp.captures(name).ok_or(format!("Broken format for version: {}", name))?;
+
+    if reg_exp_result.len() != 4 {
+        return Err(format!("Missing valid version in name {}", name))?;
+    }
+
+    let str_version = format!(
+        "{:03}{:03}{:03}",
+        reg_exp_result.get(1).unwrap().as_str().parse::<u32>()?,
+        reg_exp_result.get(2).unwrap().as_str().parse::<u32>()?,
+        reg_exp_result.get(3).unwrap().as_str().parse::<u32>()?
+    );
+
+    println!("str_version {}", str_version);
+    Ok(str_version.parse()?)
+}
+
 impl RufsOpenAPI for OpenAPI {
 
-    fn get_schema_name_from_ref(reference: &str) -> String {
+    fn get_schema_name_from_ref(reference: &str, case: Case) -> String {
         if let Some(pos) = reference.rfind("/") {
-            return reference[pos + 1..].to_string().to_case(Case::Camel);
+            return reference[pos + 1..].to_string().to_case(case);
         }
 
         if let Some(pos) = reference.find("?") {
-            return reference[..pos].to_string().to_case(Case::Camel);
+            return reference[..pos].to_string().to_case(case);
         }
 
-        return reference.to_case(Case::Camel);
+        return reference.to_case(case);
     }
 
     fn create(&mut self, security: &str) {
@@ -282,8 +301,8 @@ impl RufsOpenAPI for OpenAPI {
     }
 
     fn copy_fields_using_properties(&self, properties :&SchemaProperties, extensions :&SchemaExtensions, _may_be_array :bool, data_out :&mut Value, data_in :&Value, ignore_null :bool, ignore_hidden: bool, only_primary_keys: bool) -> Result<(), Box<dyn std::error::Error>> {
-        #[cfg(debug_assertions)]
-        println!("[RufsOpenAPI.copy_fields_using_properties(ignore_null: {ignore_null}, ignore_hidden: {ignore_hidden}, only_primary_keys: {only_primary_keys})]");
+        //#[cfg(debug_assertions)]
+        //println!("[RufsOpenAPI.copy_fields_using_properties(ignore_null: {ignore_null}, ignore_hidden: {ignore_hidden}, only_primary_keys: {only_primary_keys})]");
 
         for (field_name, field) in properties {
             if let Some(hidden) = extensions.get("x-hidden") {
@@ -328,8 +347,8 @@ impl RufsOpenAPI for OpenAPI {
     }
 
     fn copy_fields(&self, path :&str, method :&str, schema_place :&SchemaPlace, may_be_array: bool, data_out :&mut Value, data_in: &Value, ignore_null: bool, ignore_hidden: bool, only_primary_keys: bool) -> Result<(), Box<dyn std::error::Error>> {
-        #[cfg(debug_assertions)]
-        println!("[RufsOpenAPI.copy_fields(path :{path}, method :{method}, schema_place :{schema_place}, ignore_null: {ignore_null}, ignore_hidden: {ignore_hidden}, only_primary_keys: {only_primary_keys})]");
+        //#[cfg(debug_assertions)]
+        //println!("[RufsOpenAPI.copy_fields(path :{path}, method :{method}, schema_place :{schema_place}, ignore_null: {ignore_null}, ignore_hidden: {ignore_hidden}, only_primary_keys: {only_primary_keys})]");
         let (_method, schema) = self.get_schema(path, &[method], schema_place, may_be_array)?;
         let extensions = &schema.schema_data.extensions;
         let properties = self.get_properties_from_schema(schema).unwrap();
@@ -729,7 +748,7 @@ impl RufsOpenAPI for OpenAPI {
     }
 
     fn get_schema_from_schemas(&self, reference :&str) -> Result<Option<&Schema>, Box<dyn std::error::Error>> {
-        let schema_name = OpenAPI::get_schema_name_from_ref(reference);
+        let schema_name = OpenAPI::get_schema_name_from_ref(reference, convert_case::Case::Camel);
         let components = self.components.as_ref().ok_or("Missing 'components' in OpenAPI.")?;
         let schema = components.schemas.get(&schema_name).ok_or_else(|| {
             format!("Missing schema {} in components.schemas.", schema_name)
@@ -742,7 +761,7 @@ impl RufsOpenAPI for OpenAPI {
     }
 
     fn get_schema_from_request_bodies(&self, schema_name: &str, may_be_array: bool) -> Option<&Schema> {
-        let schema_name = OpenAPI::get_schema_name_from_ref(schema_name);
+        let schema_name = OpenAPI::get_schema_name_from_ref(schema_name, convert_case::Case::Camel);
         let request_body_object = self.components.as_ref().unwrap().request_bodies.get(&schema_name)?.as_item()?;
 
         for (_, media_type_object) in &request_body_object.content {
@@ -762,7 +781,7 @@ impl RufsOpenAPI for OpenAPI {
 
     fn get_schema_from_responses(&self, schema_name: &str, may_be_array: bool) -> Option<&Schema> {
         let openapi = self;
-        let schema_name = &OpenAPI::get_schema_name_from_ref(schema_name);
+        let schema_name = &OpenAPI::get_schema_name_from_ref(schema_name, convert_case::Case::Camel);
         let responses = &openapi.components.as_ref().unwrap().responses;
 
         let response_object = match responses.get(schema_name) {
@@ -819,7 +838,7 @@ impl RufsOpenAPI for OpenAPI {
 
     fn get_schema_from_ref(&self, reference: &str, may_be_array: bool) -> Result<&Schema, Box<dyn std::error::Error>> {
         let openapi = self;
-        let schema_name = OpenAPI::get_schema_name_from_ref(reference);
+        let schema_name = OpenAPI::get_schema_name_from_ref(reference, convert_case::Case::Camel);
 
         let schema = if reference.starts_with("#/components/parameters/") {
             if let Some(parameter_object) = openapi.components.as_ref().unwrap().parameters.get(&schema_name) {
@@ -1076,7 +1095,7 @@ impl RufsOpenAPI for OpenAPI {
 
         if method == "post" {
             match operation_object.request_body.as_ref().unwrap() {
-                ReferenceOr::Reference { reference } => return Ok(OpenAPI::get_schema_name_from_ref(&reference)),
+                ReferenceOr::Reference { reference } => return Ok(OpenAPI::get_schema_name_from_ref(reference, convert_case::Case::Camel)),
                 ReferenceOr::Item(_) => todo!(),
             }
         } else {
@@ -1087,7 +1106,7 @@ impl RufsOpenAPI for OpenAPI {
                     ReferenceOr::Reference { reference } => self.get_schema_from_ref(reference, may_be_array).unwrap(),
                     ReferenceOr::Item(response) => match &response.content.first().as_ref().unwrap().1.schema.as_ref().unwrap() {
                         ReferenceOr::Reference { reference } => {
-                            return Ok(OpenAPI::get_schema_name_from_ref(&reference))
+                            return Ok(OpenAPI::get_schema_name_from_ref(reference, convert_case::Case::Camel))
                         },
                         ReferenceOr::Item(schema) => schema,
                     },
@@ -1098,7 +1117,7 @@ impl RufsOpenAPI for OpenAPI {
                         Type::Array(array) => {
                             match array.items.as_ref().unwrap() {
                                 ReferenceOr::Reference { reference } => {
-                                    return Ok(OpenAPI::get_schema_name_from_ref(&reference))
+                                    return Ok(OpenAPI::get_schema_name_from_ref(reference, convert_case::Case::Camel))
                                 },
                                 ReferenceOr::Item(_) => todo!(),
                             }
@@ -1219,8 +1238,6 @@ impl RufsOpenAPI for OpenAPI {
 		}
 
         fn process_properties(properties: &mut SchemaProperties, not_table_visible: &mut Vec<String>, short_description_list: &mut Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
-            let properties_len = properties.len();
-
             for (field_name, field) in properties {
                 if let ReferenceOr::Item(field) = field {
                     match &mut field.schema_kind {
@@ -1257,7 +1274,23 @@ impl RufsOpenAPI for OpenAPI {
                                 _ => {
                                     let extensions = &mut field.schema_data.extensions;
                                     if extensions.get("x-shortDescription").is_none() {extensions.insert("x-shortDescription".to_string(), json!(false));};
-                                    if extensions.get("x-orderIndex").is_none() {extensions.insert("x-orderIndex".to_string(), json!(properties_len));};
+
+                                    if extensions.get("x-orderIndex").is_none() {
+                                        if field_name == "dateLastChange" {
+                                            extensions.insert("x-orderIndex".to_string(), json!(1));
+                                        } else {
+                                            extensions.insert("x-orderIndex".to_string(), json!(0));
+                                        }
+                                    };
+
+                                    if extensions.get("x-sortType").is_none() {
+                                        if field_name == "dateLastChange" {
+                                            extensions.insert("x-sortType".to_string(), json!("desc"));
+                                        } else {
+                                            extensions.insert("x-sortType".to_string(), json!("asc"));
+                                        }
+                                    };
+
                                     if extensions.get("x-tableVisible").is_none() {extensions.insert("x-tableVisible".to_string(), json!(true));};
 
                                     if let Some(hidden) = extensions.get("x-hidden") {
@@ -1418,7 +1451,7 @@ impl RufsOpenAPI for OpenAPI {
     }
 
     fn get_property<'a>(&'a self, schema_name :&str, property_name :&'a str) -> Option<&'a Schema> {
-        let schema_name = OpenAPI::get_schema_name_from_ref(schema_name);
+        let schema_name = OpenAPI::get_schema_name_from_ref(schema_name, convert_case::Case::Camel);
         let field = self.get_property_from_schemas(&schema_name, property_name);
 
         if field.is_none() {
@@ -1529,7 +1562,7 @@ impl RufsOpenAPI for OpenAPI {
                     continue;
                 };
 
-                if reference == schema_name_target || OpenAPI::get_schema_name_from_ref(reference) == schema_name_target {
+                if reference == schema_name_target || OpenAPI::get_schema_name_from_ref(reference, convert_case::Case::Camel) == schema_name_target {
                     if only_in_document != true || openapi.get_properties_from_schema(field).is_some() {
                         if list.iter().find(|&item| item.schema == schema_name && &item.field == field_name).is_none() {
                             list.push(Dependent{schema: schema_name.to_string(), field: field_name.clone()});
@@ -1575,7 +1608,7 @@ impl RufsOpenAPI for OpenAPI {
         }
 
         let mut ret = ForeignKeyDescription{
-            schema_ref: OpenAPI::get_schema_name_from_ref(reference), ..ForeignKeyDescription::default()
+            schema_ref: OpenAPI::get_schema_name_from_ref(reference, convert_case::Case::Camel), ..ForeignKeyDescription::default()
         };
 
         let primary_keys = if let Some(primary_keys) = service_ref.unwrap().schema_data.extensions.get("x-primaryKeys") {
@@ -1661,7 +1694,7 @@ impl RufsOpenAPI for OpenAPI {
     }
 
     fn get_primary_key_foreign(&self, schema_name :&str, field_name :&str, obj :&Value) -> Result<Option<PrimaryKeyForeign>, Box<dyn std::error::Error>> {
-        let schema_name = OpenAPI::get_schema_name_from_ref(&schema_name);
+        let schema_name = OpenAPI::get_schema_name_from_ref(schema_name, convert_case::Case::Camel);
 
         if let Some(schema) = self.get_schema_from_request_bodies(&schema_name, false) {
             let properties = self.get_properties_from_schema(schema).ok_or("Missing properties in schema.")?;

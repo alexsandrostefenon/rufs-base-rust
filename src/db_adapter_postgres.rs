@@ -208,7 +208,7 @@ impl DbAdapterSql<'_> {
 		};
 
 		if regex_date_time.is_match(text) == false {
-			return Err(format!("[check_date_time_str({value})] parameter in date format '{regex_date_time}'"))?;
+			return Err(format!("[check_date_time_str({value})] parameter '{text}' not in date format '{regex_date_time}'"))?;
 		}
 
 		Ok(text)
@@ -320,8 +320,9 @@ impl DbAdapterSql<'_> {
 		let list = match self.client.as_ref().unwrap().query(sql, params).await {
 			Ok(list) => list,
 			Err(err) => {
-				eprintln!("[DbAdapterSql.query] : {}", err);
-				vec![]
+				let msg = format!("[DbAdapterSql.query] : {} - {:?} : {}", sql.replace("\n", " "), params, err);
+				eprintln!("{msg}");
+				return Err(msg)?;
 			},
 		};
 
@@ -357,6 +358,7 @@ impl EntityManager for DbAdapterSql<'_> {
 	}
 
     async fn insert(&self, openapi: &OpenAPI, db_schema: &str, openapi_schema :&str, obj :&Value) -> Result<Value, Box<dyn std::error::Error>> {
+		let now = json!(chrono::Local::now().to_rfc3339());
 		let mut params: Vec<&(dyn ToSql + Sync)> = vec![];
 		let mut str_fields = vec![];
 		let mut str_values = vec![];
@@ -366,13 +368,16 @@ impl EntityManager for DbAdapterSql<'_> {
 
 		for (field_name, field) in properties {
 			let field = field.as_item().ok_or_else(|| format!("EntityManager.insert({}) : field {} must be item, not reference", openapi_schema, field_name))?;
-			let value = obj.as_object().ok_or("Broken!")?.get(field_name);
-			let value = match value {
-				Some(value) => value,
-				None => match &field.schema_data.default {
-					Some(default) => default,
+
+			let value  = if field_name == "dateLastChange" {
+				&now
+			} else if let Some(value) = obj.get(field_name) {
+				value
+			} else {
+				match &field.schema_data.default {
+					Some(_default) => continue,
 					None => &Value::Null,
-				},
+				}
 			};
 
 			if value.is_null() && field.schema_data.extensions.get("x-identityGeneration").is_some() {
@@ -397,7 +402,7 @@ impl EntityManager for DbAdapterSql<'_> {
 									match &typ.format {
 										VariantOrUnknownOrEmpty::Item(string_format) => match string_format {
 											StringFormat::Date | StringFormat::DateTime => {
-													str_values.push(format!("'{}'", DbAdapterSql::check_date_time_str(value)?));
+												str_values.push(format!("'{}'", DbAdapterSql::check_date_time_str(value)?));
 											},
 											_ => todo!(),
 										},
@@ -521,20 +526,25 @@ impl EntityManager for DbAdapterSql<'_> {
 	async fn update(&self, openapi: &OpenAPI, db_schema: &str, openapi_schema :&str, query_params :&Value, obj :&Value) -> Result<Value, Box<dyn std::error::Error>> {
         println!("[DbAdapterSql.update({}, {})]", openapi_schema, obj.to_string());
 		let obj = obj.as_object().ok_or_else(|| format!("EntityManager.update({}) : value must be json object", openapi_schema))?;
+		let now = json!(chrono::Local::now().to_rfc3339());
 		let mut params: Vec<&(dyn ToSql + Sync)> = vec![];
 		let mut str_values = vec![];
 		let db_schema_and_table_in_snake = self.get_db_table(db_schema, openapi_schema);
 		let properties = openapi.get_properties_from_schema_name(&None, openapi_schema, &crate::openapi::SchemaPlace::Schemas).ok_or_else(|| format!("EntityManager.update({}) : Missing porperties for schema", openapi_schema))?;
 
 		for (field_name, field) in properties {
-			let Some(value) = obj.get(field_name) else {
+			let value  = if field_name == "dateLastChange" {
+				&now
+			} else if let Some(value) = obj.get(field_name) {
+				value
+			} else {
 				continue;
 			};
 
 			let field = field.as_item().ok_or_else(|| format!("EntityManager.insert({}) : field {} must be item, not reference", openapi_schema, field_name))?;
 			let field_name = field_name.to_case(convert_case::Case::Snake);
 
-			match value {
+			match &value {
 				Value::Null => str_values.push(format!("{}=NULL", field_name)),
 				Value::Bool(value) => str_values.push(format!("{}={}", field_name, value)),
 				Value::Number(value) => if value.is_i64() {
@@ -551,7 +561,7 @@ impl EntityManager for DbAdapterSql<'_> {
 								match &string_type.format {
 									VariantOrUnknownOrEmpty::Item(string_format) => match string_format {
 										StringFormat::Date | StringFormat::DateTime => {
-												str_values.push(format!("{}='{}'", field_name, DbAdapterSql::check_date_time_str(value)?));
+											str_values.push(format!("{}='{}'", field_name, DbAdapterSql::check_date_time_str(value)?));
 										},
 										_ => todo!(),
 									},
@@ -582,7 +592,7 @@ impl EntityManager for DbAdapterSql<'_> {
         #[cfg(debug_assertions)]
 		println!("[DbAdapterSql.update()] : {}", sql);
 		let params = params.as_slice();
-		let list = self.client.as_ref().unwrap().query(&sql, params).await.unwrap();
+		let list = self.client.as_ref().unwrap().query(&sql, params).await?;
         #[cfg(debug_assertions)]
 		println!("[DbAdapterSql.update] : returning* = {:?}", list);
 		Ok(self.get_json_list(&list)?.get(0).ok_or(format!("Missing data in table '{db_schema_and_table_in_snake}' with query '{sql_query}'."))?.clone())
@@ -598,7 +608,7 @@ impl EntityManager for DbAdapterSql<'_> {
 		let params = params.as_slice();
         #[cfg(debug_assertions)]
 		println!("[DbAdapterSql.delete_one({})] : {} , {:?}", query_params, sql, params);
-		let _count = self.client.as_ref().unwrap().execute(&sql, params).await.unwrap();
+		let _count = self.client.as_ref().unwrap().execute(&sql, params).await?;
 		Ok(())
 	}
 
@@ -1111,8 +1121,7 @@ impl EntityManager for DbAdapterSql<'_> {
 		for (field_name, field) in properties {
 			if let Some(reference) = field.as_item().unwrap().schema_data.extensions.get("x-$ref") {
 				let reference = reference.as_str().unwrap();
-				let table_out = OpenAPI::get_schema_name_from_ref(reference);
-				let table_out = table_out.to_case(convert_case::Case::Snake);
+				let table_out = OpenAPI::get_schema_name_from_ref(reference, convert_case::Case::Snake);
 				list.push(format!("FOREIGN KEY({}) REFERENCES {db_schema}.{}", field_name.to_case(convert_case::Case::Snake), table_out));
 			}
 		}
