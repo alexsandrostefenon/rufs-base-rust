@@ -4,7 +4,6 @@ use serde_json::{Value,json};
 use openapiv3::{OpenAPI, SecurityRequirement};
 use jsonwebtoken::{encode, EncodingKey, Header};
 use async_std::path::PathBuf;
-use async_trait::async_trait;
 use tokio::sync::{Mutex, RwLock};
 
 use crate::{db_adapter_postgres::DbAdapterSql,entity_manager::EntityManager,openapi::{FillOpenAPIOptions, RufsOpenAPI, Role}};
@@ -63,11 +62,12 @@ pub struct LoginResponse<'a> {
 pub struct Claims {
     sub: String,
     exp: usize,
+    ip: String,
+    pub customer: String,
     pub name: String,
     pub rufs_group_owner: String,
     pub groups: Box<[String]>,
     pub roles: Vec<Role>,
-    ip: String,
     pub extra: Value
 }
 
@@ -76,11 +76,6 @@ pub struct Claims {
 pub struct LoginRequest {
     pub user: String,
     pub password: String,
-}
-
-#[async_trait]
-pub trait Authenticator {
-    async fn authenticate_user(&self, rufs: &RufsMicroService, user_name: &str, user_password: &str) -> Result<(RufsUser, Value, Value), Box<dyn std::error::Error>>;
 }
 
 #[derive(Clone)]
@@ -95,7 +90,10 @@ pub struct RufsParams {
 impl Default for RufsParams {
     fn default() -> Self {
         Self {
+            #[cfg(not(debug_assertions))]
             port: 8080,
+            #[cfg(debug_assertions)]
+            port: 8081,
             api_path: "rest".to_string(),
             app_name: "base".to_string(),
             request_body_content_type: "application/json".to_string(),
@@ -170,43 +168,89 @@ impl RufsMicroService<'_> {
 
     pub fn store_open_api(&self) -> Result<(), Box<dyn std::error::Error>> {
         let contents = serde_json::to_string_pretty(&self.openapi)?;
-        std::fs::write(&self.params.openapi_file_name, contents)?;
+
+        if let Err(err) = std::fs::write(&self.params.openapi_file_name, contents) {
+            eprintln!("[store_open_api] Fail in std::fs::write({}) : {err}.", &self.params.openapi_file_name);
+            return Err(err)?;
+        }
+
         Ok(())
     }
 
     pub async fn connect<'a>(db_uri: &str, migration_path: &str, params: RufsParams, watcher: &'static Box<dyn DataViewWatch>) -> Result<RufsMicroService<'a>, Box<dyn std::error::Error>> {
         async fn create_rufs_tables(rms: &RufsMicroService<'_>, openapi_rufs: &OpenAPI) -> Result<(), Box<dyn std::error::Error>> {
-            let db_schema = "rufs_customer_template";
-            rms.entity_manager.exec("CREATE SCHEMA IF NOT EXISTS rufs_customer_template;").await?;
+            {
+                let db_schema = "public";
 
-            for name in ["rufsGroupOwner", "rufsUser", "rufsGroup"] { // , "rufsGroupUser"
-                println!("[connect.create_rufs_tables] check table {name}...");
+                for name in ["rufsConfig"] {
+                    println!("[connect.create_rufs_tables] check table {db_schema}.{name}...");
 
-                if rms.openapi.components.as_ref().unwrap().schemas.get(name).is_none() {
-                    println!("don't matched schema {}, existents :\n{:?}", name, rms.openapi.components.as_ref().unwrap().schemas.keys());
-                    let schema = openapi_rufs.components.as_ref().unwrap().schemas.get(name).unwrap().as_item().unwrap();
-                    rms.entity_manager.create_table(db_schema, &name, schema).await?;
-                    println!("[connect.create_rufs_tables] ... table {name} created!");
-                } else {
-                    println!("[connect.create_rufs_tables] ... table {name} already exists.");
+                    if rms.openapi.components.as_ref().unwrap().schemas.get(name).is_none() {
+                        println!("don't matched schema {}, existents :\n{:?}", name, rms.openapi.components.as_ref().unwrap().schemas.keys());
+                        let schema = openapi_rufs.components.as_ref().unwrap().schemas.get(name).unwrap().as_item().unwrap();
+                        rms.entity_manager.create_table(db_schema, &name, schema).await?;
+                        println!("[connect.create_rufs_tables] ... table {name} created!");
+                    } else {
+                        println!("[connect.create_rufs_tables] ... table {name} already exists.");
+                    }
                 }
             }
 
-            let default_group_owner_admin: serde_json::Value = serde_json::from_str(DEFAULT_GROUP_OWNER_ADMIN_STR).unwrap();
-            let default_user_admin: serde_json::Value = serde_json::from_str(DEFAULT_USER_ADMIN_STR).unwrap();
+            {
+                let db_schema = "rufs_customer_template";
+                rms.entity_manager.exec("CREATE SCHEMA IF NOT EXISTS rufs_customer_template;").await?;
 
-            if rms.entity_manager.find_one(openapi_rufs, db_schema, "rufsGroupOwner", &json!({"name": "admin"})).await?.is_none() {
-                rms.entity_manager.insert(openapi_rufs, db_schema, "rufsGroupOwner", &default_group_owner_admin).await?;
-            }
+                for name in ["rufsGroupOwner", "rufsUser", "rufsGroup"] { // , "rufsGroupUser"
+                    println!("[connect.create_rufs_tables] check table {db_schema}.{name}...");
 
-            if rms.entity_manager.find_one(openapi_rufs, db_schema, "rufsUser", &json!({"name": "admin"})).await?.is_none() {
-                rms.entity_manager.insert(openapi_rufs, db_schema, "rufsUser", &default_user_admin).await?;
+                    if rms.openapi.components.as_ref().unwrap().schemas.get(name).is_none() {
+                        println!("don't matched schema {}, existents :\n{:?}", name, rms.openapi.components.as_ref().unwrap().schemas.keys());
+                        let schema = openapi_rufs.components.as_ref().unwrap().schemas.get(name).unwrap().as_item().unwrap();
+                        rms.entity_manager.create_table(db_schema, &name, schema).await?;
+                        println!("[connect.create_rufs_tables] ... table {name} created!");
+                    } else {
+                        println!("[connect.create_rufs_tables] ... table {name} already exists.");
+                    }
+                }
+
+                let default_group_owner_admin: serde_json::Value = serde_json::from_str(DEFAULT_GROUP_OWNER_ADMIN_STR).unwrap();
+                let default_user_admin: serde_json::Value = serde_json::from_str(DEFAULT_USER_ADMIN_STR).unwrap();
+
+                if rms.entity_manager.find_one(openapi_rufs, db_schema, "rufsGroupOwner", &json!({"name": "admin"})).await?.is_none() {
+                    rms.entity_manager.insert(openapi_rufs, db_schema, "rufsGroupOwner", &default_group_owner_admin).await?;
+                }
+
+                if rms.entity_manager.find_one(openapi_rufs, db_schema, "rufsUser", &json!({"name": "admin"})).await?.is_none() {
+                    rms.entity_manager.insert(openapi_rufs, db_schema, "rufsUser", &default_user_admin).await?;
+                }
             }
 
             Ok(())
         }
 
         async fn exec_migrations(rms: &mut RufsMicroService<'_>, migration_path: &str) -> Result<bool, Box<dyn std::error::Error>> {
+            async fn get_config(rms: &mut RufsMicroService<'_>, name: &str) -> Result<String, Box<dyn std::error::Error>> {
+                let ret = rms.entity_manager.find_one(&rms.openapi, "public", "rufsConfig", &json!({"name": name})).await?.ok_or(format!("Fail to find config '{name}'."))?.get("value").ok_or(format!("Broken config '{name}.value'."))?.as_str().ok_or(format!("Broken config string '{name}.value'."))?.to_string();
+                Ok(ret)
+            }
+
+            async fn set_config(rms: &mut RufsMicroService<'_>, name: &str, mut value: Value) -> Result<Option<Value>, Box<dyn std::error::Error>> {
+                let old = rms.entity_manager.find_one(&rms.openapi, "public", "rufsConfig", &json!({"name": name})).await?;
+
+                if old.is_some() {
+                    let _ret = rms.entity_manager.update(&rms.openapi, "public", "rufsConfig", &json!({"name": name}), &value).await?;
+                    return Ok(old);
+                } else {
+                    if let Some(map) = value.as_object_mut() {
+                        map.insert("name".to_string(), json!(name));
+                        let _ret = rms.entity_manager.insert(&rms.openapi, "public", "rufsConfig", &value).await?;
+                        return Ok(None)
+                    }
+                }
+
+                return Ok(None);
+            }
+
             async fn migrate(rms: &mut RufsMicroService<'_>, migration_path: &str, file_name: &str) -> Result<(), Box<dyn std::error::Error>> {
                 println!("Migrating to version {}...", file_name);
                 let text = fs::read_to_string(PathBuf::from(migration_path).join(file_name))?;
@@ -216,7 +260,14 @@ impl RufsMicroService<'_> {
                 }
 
                 let new_version = crate::openapi::parse_version_number(file_name)?;
-                rms.openapi.info.version = format!("{}.{}.{}", ((new_version / 1000) / 1000) % 1000, (new_version / 1000) % 1000, new_version % 1000);
+                let str_version = format!("{}.{}.{}", ((new_version / 1000) / 1000) % 1000, (new_version / 1000) % 1000, new_version % 1000);
+                rms.openapi.info.version = str_version.clone();
+
+                match set_config(rms, "database_version", json!({"value": str_version, "description": ""})).await {
+                    Ok(old) => println!("Old version = {:?}.", old),
+                    Err(err) => eprintln!("Broken set 'db_version' : {err}"),
+                }
+
                 println!("... Migrated version {}", file_name);
                 Ok(())
             }
@@ -225,7 +276,21 @@ impl RufsMicroService<'_> {
                 return Ok(false);
             }
 
-            let old_version = crate::openapi::parse_version_number(&rms.openapi.info.version)?;
+            let mut old_version = crate::openapi::parse_version_number(&rms.openapi.info.version)?;
+            println!("[RufsMicroService.connect.exec_migrations] active version : {old_version}");
+
+            match get_config(rms, "database_version").await {
+                Ok(value) => match crate::openapi::parse_version_number(&value) {
+                    Ok(value) => old_version = value,
+                    Err(err) => {
+                        eprintln!("Broken config 'database_version' version number of {value} : {err}")
+                    },
+                },
+                Err(err) => {
+                    eprintln!("{err}")
+                },
+            }
+
             let files = fs::read_dir(migration_path)?;
             let mut list: Vec<String> = vec![];
 
@@ -295,53 +360,14 @@ impl RufsMicroService<'_> {
         options.request_body_content_type = rufs.params.request_body_content_type.clone();
         println!("[connect] : openapi.fill...");
         rufs.openapi.fill(&mut options)?;
+        println!("[connect] : ...openapi.fill.");
         println!("[connect] : store_open_api...");
         rufs.store_open_api()?;
+        println!("[connect] : ...store_open_api.");
         Ok(rufs)
     }
 
-    pub fn build_login_response(&self, user: RufsUser, remote_addr: &str, extra_claims: Value, extra: Value) -> Result<LoginResponse<'_>, Box<dyn std::error::Error>> {
-        let claims = Claims {
-            sub: "".to_string(),
-            exp: 10000000000,
-            name: user.name,
-            rufs_group_owner: user.rufs_group_owner.clone(),
-            groups: Box::new([]),
-            roles: user.roles,
-            ip: remote_addr.to_string(),
-            extra: extra_claims
-        };
-
-        let secret = std::env::var("RUFS_JWT_SECRET").unwrap_or("123456".to_string());
-        let jwt_header = encode(&Header::default(), &claims, &EncodingKey::from_secret(secret.as_ref()))?;
-
-        let login_response = LoginResponse {
-            jwt_header,
-            openapi: &self.openapi,
-            name: claims.name.clone(),
-            rufs_group_owner: claims.rufs_group_owner,
-            groups: claims.groups,
-            roles: claims.roles,
-            ip: claims.ip.clone(),
-            title: claims.name,
-            routes: user.routes,
-            menu: user.menu,
-            path: user.path.clone(),
-            extra
-        };
-
-        Ok(login_response)
-    }
-
-}
-
-#[derive(Clone)]
-pub struct RufsMicroServiceAuthenticator();
-
-#[async_trait]
-impl Authenticator for RufsMicroServiceAuthenticator {
-
-    async fn authenticate_user(&self, rufs: &RufsMicroService, customer_user: &str, user_password: &str) -> Result<(RufsUser, Value, Value), Box<dyn std::error::Error>> {
+    pub async fn authenticate_user(&self, customer_user: &str, user_password: &str, remote_addr: &str) -> Result<LoginResponse<'_>, Box<dyn std::error::Error>> {
         let re = regex::Regex::new(r"^((?P<customer_id>\d{11,14}|\d{3}\.\d{3}\.\d{3}\-\d{2}|\d{2}\.\d{3}\.\d{3}/\d{4}\-\d{2})\.)?(?P<user_id>.*)")?;
 
         let Some(cap) = re.captures(customer_user) else {
@@ -364,17 +390,47 @@ impl Authenticator for RufsMicroServiceAuthenticator {
         };
 
         let openapi_schema = "rufsUser";
-        rufs.entity_manager.check_schema(&db_schema, user_id.as_str(), user_password).await?;
-        let user = rufs.entity_manager.find_one(&rufs.openapi, &db_schema, &openapi_schema, &json!({ "name": user_id.as_str() })).await?.ok_or("Fail to find user.")?;
+        self.entity_manager.check_schema(&db_schema, user_id.as_str(), user_password).await?;
+        let user = self.entity_manager.find_one(&self.openapi, &db_schema, &openapi_schema, &json!({ "name": user_id.as_str() })).await?.ok_or("Fail to find user.")?;
         let user = RufsUser::deserialize(user)?;
 
         if user.password.len() > 0 && user.password != user_password {
             return Err("Don't match user and password.")?;
         }
         // user, extra_claims, extra
-        let extra_claims = json!({"customer": customer_id});
+        let extra_claims = json!({});
         let extra = json!({});
-        Ok((user, extra_claims, extra))
+        let claims = Claims {
+            sub: "".to_string(),
+            exp: 10000000000,
+            ip: remote_addr.to_string(),
+            customer: customer_id,
+            name: user.name,
+            rufs_group_owner: user.rufs_group_owner.clone(),
+            groups: Box::new([]),
+            roles: user.roles,
+            extra: extra_claims
+        };
+
+        let secret = std::env::var("RUFS_JWT_SECRET").unwrap_or("123456".to_string());
+        let jwt_header = encode(&Header::default(), &claims, &EncodingKey::from_secret(secret.as_ref()))?;
+
+        let login_response = LoginResponse {
+            jwt_header,
+            openapi: &self.openapi,
+            ip: claims.ip.clone(),
+            name: claims.name.clone(),
+            rufs_group_owner: claims.rufs_group_owner,
+            groups: claims.groups,
+            roles: claims.roles,
+            title: claims.name,
+            routes: user.routes,
+            menu: user.menu,
+            path: user.path.clone(),
+            extra
+        };
+
+        Ok(login_response)
     }
 
 }
@@ -603,7 +659,7 @@ pub fn rufs_warp_with_rufs(rufs: Arc<Mutex<RufsMicroService<'static>>>) -> impl 
 }
 
 #[cfg(feature = "warp")]
-pub async fn rufs_warp<'a, T>(rufs: &Arc<Mutex<RufsMicroService<'static>>>, authenticator: &'a T) -> impl warp::Filter<Extract = (impl warp::Reply + 'a,), Error = warp::Rejection> + Clone + 'a where T : Authenticator + std::marker::Send + Sync {
+pub async fn rufs_warp<'a>(rufs: &Arc<Mutex<RufsMicroService<'static>>>) -> impl warp::Filter<Extract = (impl warp::Reply + 'a,), Error = warp::Rejection> + Clone + 'a {
     use std::{convert::Infallible};
     use jsonwebtoken::{decode, DecodingKey, Validation};
     use futures_util::StreamExt;
@@ -750,11 +806,10 @@ pub async fn rufs_warp<'a, T>(rufs: &Arc<Mutex<RufsMicroService<'static>>>, auth
 
     let route_wasm_login = warp::path("wasm_ws").and(warp::path("login")).and(rufs_warp_with_rufs(rufs.clone())).and(warp::path::full()).and(warp::body::json()).and(warp::addr::remote()).and_then(wasm_ws_login_warp);
 
-    async fn handle_login<T>(rufs: Arc<Mutex<RufsMicroService<'static>>>, login_request: LoginRequest, remote: Option<std::net::SocketAddr>, authenticator: &T) -> Result<impl Reply, Infallible> where T : Authenticator + std::marker::Send + Sync {
+    async fn handle_login(rufs: Arc<Mutex<RufsMicroService<'static>>>, login_request: LoginRequest, remote: Option<std::net::SocketAddr>) -> Result<impl Reply, Infallible> {
         let rufs = &rufs.lock().await.to_owned();
-        let (user, extra_claims, extra) = warp_try!(authenticator.authenticate_user(rufs, &login_request.user, &login_request.password).await);
         let remote = warp_try!(remote.ok_or("400-Missing remote address."));
-        let login_response = warp_try!(rufs.build_login_response(user, &remote.to_string(), extra_claims, extra));
+        let login_response = warp_try!(rufs.authenticate_user(&login_request.user, &login_request.password, &remote.to_string()).await);
         Ok(Box::new(warp::reply::json(&login_response)))
     }
 /*
@@ -767,7 +822,7 @@ pub async fn rufs_warp<'a, T>(rufs: &Arc<Mutex<RufsMicroService<'static>>>, auth
     let route_options = warp::options().and(warp::header::headers_cloned()).and_then(handle_options).with(cors);
 */
     let route_login = warp::path(api_path).and(warp::path("login")).and(rufs_warp_with_rufs(rufs.clone())).and(warp::body::json()).and(warp::addr::remote()).and_then(|rufs: Arc<Mutex<RufsMicroService<'static>>>, login_request: LoginRequest, remote: Option<std::net::SocketAddr>| {
-        handle_login(rufs, login_request, remote, authenticator)
+        handle_login(rufs, login_request, remote)
     });
 
     async fn wasm_ws_process_warp(headers: HeaderMap, obj_in: Value) -> Result<impl Reply, Infallible> {
@@ -813,6 +868,14 @@ const RUFS_MICRO_SERVICE_OPENAPI_STR: &str = r##"{
 			"rufsGroup": {
 				"properties": {
 					"name": {"type": "string"}
+				},
+				"x-primaryKeys": ["name"]
+			},
+			"rufsConfig": {
+				"properties": {
+					"name": {"type": "string"},
+					"description": {"type": "string"},
+					"value": {"type": "string"}
 				},
 				"x-primaryKeys": ["name"]
 			}

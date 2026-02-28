@@ -378,8 +378,8 @@ pub async fn process_request<'b>(rms: &'b RufsMicroService<'b>, path: &'b str, q
     let token_payload = check_authorization::<RufsMicroService>(rms, &headers_out, &path, method).await?;
     let open_api_schema = rms.openapi.get_schema_name(&path, method, false)?;
 
-    let db_schema = if let Some(customer) = token_payload.extra.get("customer") {
-        "rufs_customer_".to_owned() + customer.as_str().ok_or("Broken customer_id data")?
+    let db_schema = if token_payload.customer.is_empty() == false {
+        "rufs_customer_".to_owned() + token_payload.customer.as_str()
     } else {
         "public".to_string()
     };

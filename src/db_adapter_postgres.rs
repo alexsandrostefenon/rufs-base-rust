@@ -457,7 +457,7 @@ impl EntityManager for DbAdapterSql<'_> {
 
 	async fn find(&self, openapi: &OpenAPI, db_schema: &str, openapi_schema: &str, query_params: &Value, order_by: &Vec<String>) -> Result<Vec<Value>, Box<dyn std::error::Error>> {
 		let db_schema_and_table_in_snake = self.get_db_table(db_schema, openapi_schema);
-		let properties = openapi.get_properties_from_schema_name(&None, openapi_schema, &crate::openapi::SchemaPlace::Schemas).unwrap();
+		let properties = openapi.get_properties_from_schema_name(&None, openapi_schema, &crate::openapi::SchemaPlace::Schemas).ok_or(format!("Missing or broken schema {openapi_schema}."))?;
 		let mut params = vec![];
 		let sql_query = self.build_query(properties, query_params, &mut params, order_by)?;
 		let mut count = 0;
