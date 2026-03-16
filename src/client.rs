@@ -172,7 +172,7 @@ impl std::convert::From<&str> for DataViewFormType {
     fn from(value: &str) -> Self {
         match value {
             "new" => DataViewFormType::New,
-            "edit" | "remove" => DataViewFormType::Edit,
+            "edit" | "delete" => DataViewFormType::Edit,
             "view" => DataViewFormType::View,
             _ => DataViewFormType::Search,
         }
@@ -376,7 +376,7 @@ impl HtmlElementId {
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct DataViewParams {
-    primary_key: Option<Value>,
+    pub primary_key: Option<Value>,
     filter: Value,
     filter_range: Value,
     filter_range_min: Value,
@@ -411,9 +411,6 @@ pub struct DataView {
     pub childs: Vec<DataView>,
     // mutable
     properties_modified: IndexMap<String, Value>,
-    // data
-    original: Value,
-    // data aux
     active_index: Option<usize>, // active index of filter_results
     instance_flags: HashMap<String, Vec<bool>>,
     // data list aggregate
@@ -476,7 +473,6 @@ impl DataView {
             data_view_id,
             path,
             typ,
-            original: json!({}),
             state,
             ..Default::default()
         }
@@ -525,9 +521,8 @@ impl DataView {
         Ok(())
     }
 
-    fn clear(&mut self, server_connection: &ServerConnection, watcher: &Box<dyn DataViewWatch>) -> Result<(), Box<dyn std::error::Error>> {
-        self.set_values(server_connection, watcher, &json!({}), None)?;
-        self.original.as_object_mut().ok_or_else(|| format!("broken original"))?.clear();
+    async fn clear(&mut self, server_connection: &ServerConnection, watcher: &Box<dyn DataViewWatch>) -> Result<(), Box<dyn std::error::Error>> {
+        self.set_values(server_connection, watcher, &json!({}), None).await?;
         self.params.instance.as_object_mut().ok_or_else(|| format!("broken params.instance"))?.clear();
         self.instance_flags.clear();
         self.field_external_references_str.clear();
@@ -541,7 +536,7 @@ impl DataView {
         for data_view in &mut self.childs {
             #[cfg(debug_assertions)]
             println!("[{}.clear()] : {}.clear()", self.data_view_id.id, data_view.data_view_id.id);
-            data_view.clear(server_connection, watcher)?;
+            Box::pin(data_view.clear(server_connection, watcher)).await?;
         }
 
         Ok(())
@@ -1670,7 +1665,7 @@ impl DataView {
         Ok(instance)
     }
 
-    pub fn set_value(&mut self, server_connection: &ServerConnection, watcher: &dyn DataViewWatch, field_name: &str, value: &Value, element_id: Option<&HtmlElementId>) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn set_value(&mut self, server_connection: &ServerConnection, watcher: &dyn DataViewWatch, field_name: &str, value: &Value, element_id: Option<&HtmlElementId>) -> Result<(), Box<dyn std::error::Error>> {
         fn get_value_old_or_default_or_null(field: &Schema, value_old: &Value) -> Value {
             let value_default = if let Some(default) = &field.schema_data.default {
                 match &field.schema_kind {
@@ -1869,7 +1864,7 @@ impl DataView {
 
         let changed_value = value_old != field_value;
 
-        if changed_value && watcher.check_set_value(self, &element_id, server_connection, field_name, &field_value)? == true {
+        if changed_value && watcher.check_set_value(self, &element_id, server_connection, field_name, &field_value).await? == true {
             fn set_value_show(data_view: &mut DataView, field_name: &str, field_value_str: Value, element_id: &HtmlElementId) -> Result<(), Box<dyn std::error::Error>> {
                 #[cfg(debug_assertions)]
                 println!("[DataView::set_value::set_value_show] 1");
@@ -1961,8 +1956,8 @@ impl DataView {
         Ok(())
     }
 
-    fn set_values(&mut self, server_connection: &ServerConnection, watcher: &Box<dyn DataViewWatch>, obj_in: &Value, element_id: Option<&HtmlElementId>) -> Result<(), Box<dyn std::error::Error>> {
-        fn set_values_process(data_view: &mut DataView, element_id: Option<&HtmlElementId>, server_connection: &ServerConnection, watcher: &Box<dyn DataViewWatch>, obj: &Value) -> Result<(), Box<dyn std::error::Error>> {
+    async fn set_values(&mut self, server_connection: &ServerConnection, watcher: &Box<dyn DataViewWatch>, obj_in: &Value, element_id: Option<&HtmlElementId>) -> Result<(), Box<dyn std::error::Error>> {
+        async fn set_values_process(data_view: &mut DataView, element_id: Option<&HtmlElementId>, server_connection: &ServerConnection, watcher: &Box<dyn DataViewWatch>, obj: &Value) -> Result<(), Box<dyn std::error::Error>> {
             let data_view = if let Some(element_id) = element_id {
                 if data_view.data_view_id.id != element_id.data_view_id.id {
                     data_view.childs.iter_mut().find(|data_view| data_view.data_view_id.schema_name == element_id.data_view_id.schema_name).ok_or_else(|| {
@@ -1989,7 +1984,7 @@ impl DataView {
 
             for field_name in &keys {
                 let value = obj.get(field_name).unwrap_or(&Value::Null);
-                data_view.set_value(server_connection, watcher.as_ref(), field_name, value, element_id)?;
+                data_view.set_value(server_connection, watcher.as_ref(), field_name, value, element_id).await?;
             }
 
             Ok(())
@@ -2010,7 +2005,7 @@ impl DataView {
             server_connection.login_response.openapi.copy_fields_using_properties(&self.properties, &self.extensions, may_be_array, &mut obj, obj_in, ignore_null, ignore_hidden, only_primary_keys)?
         }
         //println!("[DEBUG - set_values - 1] {}.instance = {}", self.data_view_id.form_id, obj);
-        set_values_process(self, element_id, server_connection, watcher, &obj)?;
+        set_values_process(self, element_id, server_connection, watcher, &obj).await?;
         Ok(())
     }
 
@@ -2095,6 +2090,7 @@ pub struct LoginResponseClient {
     pub rufs_group_owner: String,
     pub groups: Vec<String>,
     pub roles: Vec<Role>,
+    pub menu: Value,//Vec<MenuItem>,
     pub ip: String,
     pub path: String,
     pub jwt_header: String,
@@ -2314,7 +2310,7 @@ impl ServerConnection {
         }
     }
 
-    async fn get(&mut self, schema_name: &str, primary_key: &Value) -> Result<Option<Value>, Box<dyn std::error::Error>> {
+    pub async fn get(&mut self, schema_name: &str, primary_key: &Value) -> Result<Option<Value>, Box<dyn std::error::Error>> {
         let service = self.service_map.get_mut(schema_name).ok_or_else(|| format!("[ServerConnection::get()] Missing service {} in service_map", schema_name))?;
         let primary_key_hash = service.get_primary_key_hash(primary_key)?;        
         let item = self.get_from_primary_key_hash(schema_name, &primary_key_hash)?;
@@ -2837,16 +2833,16 @@ impl ServerConnection {
     */
 }
 
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 pub trait DataViewWatch: std::marker::Sync + Send {
-    fn check_set_value(&self, data_view: &mut DataView, element_id: &HtmlElementId, server_connection: &ServerConnection, field_name: &str, field_value: &Value) -> Result<bool, Box<dyn std::error::Error>>;
-    fn check_save(&self, data_view: &mut DataView, element_id: &HtmlElementId, server_connection: &ServerConnection) -> Result<(bool, DataViewFormType), Box<dyn std::error::Error>>;
-    fn menu(&self) -> Value;
+    async fn check_set_value(&self, data_view: &mut DataView, element_id: &HtmlElementId, server_connection: &ServerConnection, field_name: &str, field_value: &Value) -> Result<bool, Box<dyn std::error::Error>>;
+    async fn check_save(&self, data_view: &mut DataView, element_id: &HtmlElementId, server_connection: &mut ServerConnection) -> Result<(bool, DataViewFormType), Box<dyn std::error::Error>>;
 }
 
-pub struct DataViewManager<'a> {
+pub struct DataViewManager {
     pub server_connection: ServerConnection,
-    data_view_map: HashMap<String, DataView>,
-    watcher: &'a Box<dyn DataViewWatch>,
+    data_view_map: HashMap<String, DataView>
 }
 
 #[macro_export]
@@ -2941,13 +2937,12 @@ pub struct LoginDataIn {
     password: String
 }
 
-impl DataViewManager<'_> {
-    pub fn new(server_url: &str, watcher: &'static Box<dyn DataViewWatch>) -> Self {
+impl DataViewManager {
+    pub fn new(server_url: &str) -> Self {
         let server_connection = ServerConnection::new(server_url);
         Self {
             server_connection,
-            data_view_map: Default::default(),
-            watcher,
+            data_view_map: Default::default()
         }
     }
 
@@ -2959,7 +2954,7 @@ impl DataViewManager<'_> {
 
         let data_in = serde_json::from_value::<LoginDataIn>(params)?;
         self.server_connection.login(path, &data_in.user, &data_in.password).await?;
-        Ok(json!({"menu": self.watcher.menu(), "path": self.server_connection.login_response.path, "jwt_header": self.server_connection.login_response.jwt_header}))
+        Ok(json!({"menu": self.server_connection.login_response.menu, "path": self.server_connection.login_response.path, "jwt_header": self.server_connection.login_response.jwt_header}))
     }
 
     async fn process_ws_messages(&mut self) -> Result<(), Box<dyn std::error::Error>> {
@@ -3007,12 +3002,13 @@ impl DataViewManager<'_> {
 
     #[cfg(target_arch = "wasm32")]
     async fn login_from_response(&mut self, params: Value) -> Result<Value, Box<dyn std::error::Error>> {
-        let login_response_client = serde_json::from_value::<LoginResponseClient>(params)?;
+        let menu = params.get("menu").ok_or("[login_from_response] Missing 'menu' in params.")?;
+        let login_response_client = serde_json::from_value::<LoginResponseClient>(params.clone())?;
         self.server_connection.login_from_response(login_response_client).await?;
-        Ok(json!({"menu": self.watcher.menu(), "path": self.server_connection.login_response.path, "jwt_header": self.server_connection.login_response.jwt_header}))
+        Ok(json!({"menu": menu, "path": self.server_connection.login_response.path, "jwt_header": self.server_connection.login_response.jwt_header}))
     }
 
-    async fn process_data_view_action(&mut self, element_id: &HtmlElementId, params_search: &DataViewParams, params_extra: &Value, data_view_response :&mut DataViewResponse) -> Result<(), Box<dyn std::error::Error>> {
+    async fn process_data_view_action(&mut self, element_id: &HtmlElementId, params_search: &DataViewParams, params_extra: &Value, data_view_response :&mut DataViewResponse, watcher: &Box<dyn DataViewWatch>) -> Result<(), Box<dyn std::error::Error>> {
         fn set_filter_range(data_view: &mut DataView, field_name: &str, range: &str) {
             let period_labels = [" minuto ", " hora ", " dia ", " semana ", " quinzena ", " mês ", " ano "];
             let periods = [60, 3600, 86400, 7 * 86400, 15 * 86400, 30 * 86400, 365 * 86400];
@@ -3151,8 +3147,6 @@ impl DataViewManager<'_> {
             Ok(())
         }
 
-        #[cfg_attr(target_arch = "wasm32", async_recursion::async_recursion(?Send))]
-        #[cfg_attr(not(target_arch = "wasm32"), async_recursion::async_recursion)]
         async fn data_view_get(watcher: &Box<dyn DataViewWatch>, data_view: &mut DataView, server_connection: &mut ServerConnection, primary_key_in: &Value, element_id: Option<&HtmlElementId>) -> Result<(), Box<dyn std::error::Error>> {
             let schema_name = &data_view.data_view_id.schema_name;
 
@@ -3187,7 +3181,7 @@ impl DataViewManager<'_> {
                     }
 
                     //let element_id = HtmlElementId::new_with_data_view_id(data_view_item.data_view_id.clone(), None, None, None);
-                    data_view_item.set_values(server_connection, watcher, &foreign_key, None)?;
+                    data_view_item.set_values(server_connection, watcher, &foreign_key, None).await?;
                 }
 
                 if data_view_item.path.is_some() {
@@ -3195,7 +3189,7 @@ impl DataViewManager<'_> {
 
                     if data_view_item.is_one_to_one {
                         if data_view_item.data_view_id.form_type != DataViewFormType::Search {
-                            data_view_get(watcher, data_view_item, server_connection, &foreign_key, None).await?;
+                            Box::pin(data_view_get(watcher, data_view_item, server_connection, &foreign_key, None)).await?;
                         }
                     } else {
                         if data_view_item.data_view_id.form_type == DataViewFormType::Search {
@@ -3212,7 +3206,7 @@ impl DataViewManager<'_> {
             }
 
             data_view.params.primary_key = Some(primary_key);
-            data_view.set_values(server_connection, watcher, &value, element_id)
+            data_view.set_values(server_connection, watcher, &value, element_id).await
         }
 
         let parent_id = if let Some(parent_id) = &element_id.data_view_id.parent_id {
@@ -3325,9 +3319,9 @@ impl DataViewManager<'_> {
         match &data_view.data_view_id.form_type {
             DataViewFormType::New => {
                 if params_search.instance.as_object().ok_or_else(|| format!("broken obj"))?.is_empty() == false {
-                    data_view.set_values(&self.server_connection, &self.watcher, &params_search.instance, Some(element_id))?;
+                    data_view.set_values(&self.server_connection, watcher, &params_search.instance, Some(element_id)).await?;
                 } else {
-                    data_view.set_values(&self.server_connection, &self.watcher, params_extra, Some(element_id))?;
+                    data_view.set_values(&self.server_connection, watcher, params_extra, Some(element_id)).await?;
                 }
             }
             DataViewFormType::Edit | DataViewFormType::View => {
@@ -3338,9 +3332,9 @@ impl DataViewManager<'_> {
                         params_extra
                     };
 
-                    data_view_get(&self.watcher, data_view, &mut self.server_connection, primary_key, Some(element_id)).await?
+                    data_view_get(watcher, data_view, &mut self.server_connection, primary_key, Some(element_id)).await?
                 } else {
-                    data_view.set_values(&self.server_connection, &self.watcher, params_extra, Some(element_id))?;
+                    data_view.set_values(&self.server_connection, watcher, params_extra, Some(element_id)).await?;
                 }
             }
             _ => {
@@ -3545,10 +3539,10 @@ impl DataViewManager<'_> {
         }
     }
 
-    async fn process_click_target(&mut self, target: &str) -> Result<DataViewResponse, Box<dyn std::error::Error>> {
-        async fn remove(data_view_manager: &mut DataViewManager<'_>, mut element_id: HtmlElementId, params_extra: &Value) -> Result<DataViewResponse, Box<dyn std::error::Error>> {
+    async fn process_click_target(&mut self, target: &str, watcher: &Box<dyn DataViewWatch>) -> Result<DataViewResponse, Box<dyn std::error::Error>> {
+        async fn remove(data_view_manager: &mut DataViewManager, mut element_id: HtmlElementId, params_extra: &Value, watcher: &Box<dyn DataViewWatch>) -> Result<DataViewResponse, Box<dyn std::error::Error>> {
             let data_view = data_view_get_parent_mut!(data_view_manager, element_id);
-            let (is_ok, _form_type) = data_view_manager.watcher.check_save(data_view, &element_id, &data_view_manager.server_connection)?;
+            let (is_ok, _form_type) = watcher.check_save(data_view, &element_id, &mut data_view_manager.server_connection).await?;
             let mut data_view_response = DataViewResponse::default();
             data_view.build_changes(&mut data_view_response.changes)?;
 
@@ -3579,7 +3573,7 @@ impl DataViewManager<'_> {
                 data_view_response.forms.insert(data_view.data_view_id.id.clone(), data_view.state.clone());
             }
 
-            data_view_manager.process_data_view_action(&element_id, &params_search, &params_extra, &mut data_view_response).await?;
+            data_view_manager.process_data_view_action(&element_id, &params_search, &params_extra, &mut data_view_response, watcher).await?;
             return Ok(data_view_response);
         }
 
@@ -3592,7 +3586,7 @@ impl DataViewManager<'_> {
             let mut element_id = HtmlElementId::new_with_regex(&cap)?;
             element_id.data_view_id.set_form_type(DataViewFormType::New);
             let mut data_view_response = DataViewResponse::default();
-            self.process_data_view_action(&element_id, &DataViewParams::default(), &json!({}), &mut data_view_response).await?;
+            self.process_data_view_action(&element_id, &DataViewParams::default(), &json!({}), &mut data_view_response, watcher).await?;
             return Ok(data_view_response);
         }
 
@@ -3600,7 +3594,7 @@ impl DataViewManager<'_> {
 
         if let Some(cap) = re.captures(target) {
             let element_id = HtmlElementId::new_with_regex(&cap)?;
-            return remove(self, element_id, &json!({})).await;
+            return remove(self, element_id, &json!({}), watcher).await;
         }
 
         let re = regex::Regex::new(r"apply-((?P<parent_form_type>new|edit|view|search|filter|aggregate|sort)-(?P<parent_name>\pL[\w_]+)--)?(?P<form_type>new|edit|view|search|filter|aggregate|sort)-(?P<name>\pL[\w_\d/]+)$")?;
@@ -3617,7 +3611,7 @@ impl DataViewManager<'_> {
                     let params_search = data_view.params.clone();
                     element_id.data_view_id.set_form_type(DataViewFormType::Search);
                     let mut data_view_response = DataViewResponse::default();
-                    self.process_data_view_action(&element_id, &params_search, &json!({}), &mut data_view_response).await?;
+                    self.process_data_view_action(&element_id, &params_search, &json!({}), &mut data_view_response, watcher).await?;
                     data_view_response
                 }
                 DataViewFormType::Aggregate => {
@@ -3638,7 +3632,7 @@ impl DataViewManager<'_> {
                     #[cfg(debug_assertions)]
                     println!("[DataViewManager::process_click_target] data_view.data_view_id.schema_name = {}", data_view.data_view_id.schema_name);
 
-                    let (is_ok, form_type) = self.watcher.check_save(data_view, &element_id, &self.server_connection)?;
+                    let (is_ok, form_type) = watcher.check_save(data_view, &element_id, &mut self.server_connection).await?;
 
                     if is_ok {
                         let obj_in = data_view.save(&mut self.server_connection).await?.clone();
@@ -3654,7 +3648,7 @@ impl DataViewManager<'_> {
                                 let _obj_in_child = data_view.save(&mut self.server_connection).await?;
                             }
 
-                            self.process_data_view_action(&element_id_parent, &params_search, &obj_in, &mut data_view_response).await?;
+                            self.process_data_view_action(&element_id_parent, &params_search, &obj_in, &mut data_view_response, watcher).await?;
                         }
 
                         let data_view = data_view_get_mut!(self, element_id);
@@ -3668,7 +3662,7 @@ impl DataViewManager<'_> {
                             element_id.data_view_id.set_form_type(form_type);
                         }
 
-                        self.process_data_view_action(&element_id, &params_search, &obj_in, &mut data_view_response).await?;
+                        self.process_data_view_action(&element_id, &params_search, &obj_in, &mut data_view_response, watcher).await?;
                         data_view_response
                     } else {
                         DataViewResponse::default()
@@ -3713,10 +3707,10 @@ impl DataViewManager<'_> {
             element_id.data_view_id.set_form_type(DataViewFormType::from(action_exec.as_ref()));
             let params_search = DataViewParams { ..Default::default() };
             let mut data_view_response = DataViewResponse::default();
-            self.process_data_view_action(&element_id, &params_search, &params_extra, &mut data_view_response).await?;
+            self.process_data_view_action(&element_id, &params_search, &params_extra, &mut data_view_response, watcher).await?;
 
             if action_exec == "delete" {
-                return remove(self, element_id, &params_extra).await;
+                return remove(self, element_id, &params_extra, watcher).await;
             }
 
             return Ok(data_view_response);
@@ -3775,7 +3769,7 @@ impl DataViewManager<'_> {
             let element_id = HtmlElementId::new_with_regex(&cap)?;
             let mut data_view_response = DataViewResponse::default();
             let data_view = data_view_get_mut!(self, element_id);
-            data_view.clear(&self.server_connection, &self.watcher)?;
+            data_view.clear(&self.server_connection, watcher).await?;
             data_view.build_changes(&mut data_view_response.changes)?;
             data_view.state.hidden = true;
             data_view_response.forms.insert(element_id.data_view_id.id.clone(), data_view.state.clone());
@@ -3802,7 +3796,7 @@ impl DataViewManager<'_> {
                 let (_, foreign_key) = self.server_connection.login_response.openapi.get_foreign_key(&data_view_origin.properties, &data_view_origin.extensions, field_name, obj)?.ok_or_else(|| format!("Missing foreign value."))?;
                 let value = foreign_key.get(field_name).ok_or_else(|| format!("Missing field"))?;
                 let data_view_origin = data_view_get_parent_mut!(self, element_id_origin);
-                data_view_origin.set_value(&self.server_connection, self.watcher.as_ref(), field_name, &value, Some(element_id_origin))?;
+                data_view_origin.set_value(&self.server_connection, watcher.as_ref(), field_name, &value, Some(element_id_origin)).await?;
                 let mut data_view_response = DataViewResponse::default();
                 data_view_origin.build_changes(&mut data_view_response.changes)?;
                 data_view_origin.state.hidden = true;
@@ -3849,7 +3843,7 @@ impl DataViewManager<'_> {
                 let value = value & (1 << index);
                 let value = value == 0;
                 let value = value.to_string();
-                return self.process_edit_target(&target, &value).await;
+                return self.process_edit_target(&target, &value, watcher).await;
             }
 
             let data_view_response = DataViewResponse::default();
@@ -3868,7 +3862,7 @@ impl DataViewManager<'_> {
             };
 
             let mut data_view_response = DataViewResponse::default();
-            self.process_data_view_action(&element_id, &params_search, &params_extra, &mut data_view_response).await?;
+            self.process_data_view_action(&element_id, &params_search, &params_extra, &mut data_view_response, watcher).await?;
             return Ok(data_view_response);
         }
 
@@ -3889,7 +3883,7 @@ impl DataViewManager<'_> {
         None.ok_or_else(|| format!("unknow click taget"))?
     }
 
-    async fn process_edit_target(&mut self, target: &str, value: &str) -> Result<DataViewResponse, Box<dyn std::error::Error>> {
+    async fn process_edit_target(&mut self, target: &str, value: &str, watcher: &Box<dyn DataViewWatch>) -> Result<DataViewResponse, Box<dyn std::error::Error>> {
         fn parse_value_process(data_view: &DataView, server_connection: &ServerConnection, element_id: &HtmlElementId, item_description: &str) -> Result<(Value, bool), Box<dyn std::error::Error>> {
             //data_view.field_external_references_str.insert(field_name.to_string(), value.to_string());
             let Some(field_name) = &element_id.field_name else {
@@ -3993,7 +3987,7 @@ impl DataViewManager<'_> {
                 println!("{target} == {value}");
             }
 
-            data_view_parent.set_value(&self.server_connection, self.watcher.as_ref(), field_name, &value, Some(element_id))?;
+            data_view_parent.set_value(&self.server_connection, watcher.as_ref(), field_name, &value, Some(element_id)).await?;
             data_view_parent.build_changes(&mut data_view_response.changes)?;
 
             if is_flags {
@@ -4019,7 +4013,7 @@ impl DataViewManager<'_> {
         None.ok_or_else(|| format!("unknow edit taget"))?
     }
 
-    pub async fn process(&mut self, params: Value) -> Result<Value, Box<dyn std::error::Error>> {
+    pub async fn process(&mut self, params: Value, watcher: &Box<dyn DataViewWatch>) -> Result<Value, Box<dyn std::error::Error>> {
         #[cfg(debug_assertions)]
         println!("[DataViewManager::process] params value : {}", params);
 
@@ -4041,12 +4035,12 @@ impl DataViewManager<'_> {
         println!("[DataViewManager::process] params struct : {:?}", params);
 
         let data_view_response = if params.event == "click" {
-            self.process_click_target(&params.form_id).await?
+            self.process_click_target(&params.form_id, watcher).await?
         } else if params.event == "change" {
             let mut ret = DataViewResponse::default();
 
             for (target, value) in params.data.as_object().ok_or_else(|| format!("Param 'data' is not object "))? {
-                ret = self.process_edit_target(target, value.as_str().ok_or_else(|| format!("not string"))?).await?;
+                ret = self.process_edit_target(target, value.as_str().ok_or_else(|| format!("not string"))?, watcher).await?;
             }
 
             ret
@@ -4064,15 +4058,15 @@ impl DataViewManager<'_> {
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 
-use crate::openapi::{Dependent, Role, RufsOpenAPI, SchemaExtensions, SchemaPlace, SchemaProperties};
+use crate::{openapi::{Dependent, Role, RufsOpenAPI, SchemaExtensions, SchemaPlace, SchemaProperties}};
 
 #[cfg(target_arch = "wasm32")]
-pub struct DataViewManagerWrapper<'a> {
-    pub data_view_manager: DataViewManager<'a>,
+pub struct DataViewManagerWrapper {
+    pub data_view_manager: DataViewManager,
 }
 
 #[cfg(target_arch = "wasm32")]
-impl DataViewManagerWrapper<'_> {
+impl DataViewManagerWrapper {
     pub async fn login_from_response(&mut self, params :JsValue) -> Result<JsValue, JsValue> {
         let params = serde_wasm_bindgen::from_value::<Value>(params)?;
 
@@ -4084,12 +4078,12 @@ impl DataViewManagerWrapper<'_> {
         Ok(serde_wasm_bindgen::to_value(&ret)?)
     }
 
-    pub async fn process(&mut self, params: JsValue) -> Result<JsValue, JsValue> {
+    pub async fn process(&mut self, params: JsValue, watcher: &Box<dyn DataViewWatch>) -> Result<JsValue, JsValue> {
         #[cfg(debug_assertions)]
         println!("[process] ini...");
         let params = serde_wasm_bindgen::from_value::<Value>(params)?;
 
-        let ret = match self.data_view_manager.process(params).await {
+        let ret = match self.data_view_manager.process(params, watcher).await {
             Ok(ret) => ret,
             Err(err) => return Err(JsValue::from_str(&err.to_string())),
         };
@@ -4180,9 +4174,9 @@ pub mod tests {
         //plugins: Vec<String>,
     }
 
-    pub async fn selelium(watcher: &'static Box<dyn DataViewWatch>, side_file_name: &str, server_url: &str) -> Result<(), Box<dyn std::error::Error>> {
-        #[async_recursion::async_recursion]
-        async fn test_run(data_view_manager: &mut DataViewManager, side_file_name: &str, side: &SeleniumIde, suite: &SeleniumSuite, id_or_name: &str) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn selelium(watcher: &Box<dyn DataViewWatch>, side_file_name: &str, server_url: &str) -> Result<(), Box<dyn std::error::Error>> {
+
+        async fn test_run(data_view_manager: &mut DataViewManager, watcher: &Box<dyn DataViewWatch>, side_file_name: &str, side: &SeleniumIde, suite: &SeleniumSuite, id_or_name: &str) -> Result<(), Box<dyn std::error::Error>> {
             if let Some(test) = side.tests.iter().find(|test| test.id == id_or_name || test.name == id_or_name) {
                 println!("\nRunning test {}...", test.name);
                 let mut user_flow = UserFlow{title: test.name.clone(), ..Default::default()};
@@ -4205,7 +4199,7 @@ pub mod tests {
                             puppeteer_step.url = Some(url.to_string());
                         }
                         "run" => {
-                            test_run(data_view_manager, side_file_name, side, suite, &command.target).await?;
+                            Box::pin(test_run(data_view_manager, watcher, side_file_name, side, suite, &command.target)).await?;
                             continue;
                         }
                         "click" | "clickAt" => {
@@ -4253,7 +4247,7 @@ pub mod tests {
                             }
 
                             puppeteer_step.typ = command.command.clone();
-                            let _res = data_view_manager.process_click_target(&target).await?;
+                            let _res = data_view_manager.process_click_target(&target, watcher).await?;
                         }
                         "type" | "sendKeys" | "select" => {
                             let value = if command.value.starts_with("label=") { &command.value[6..] } else { &command.value };
@@ -4261,7 +4255,7 @@ pub mod tests {
                             let value = re.replace(value, "${year}-${month}-${day}T${hour}:${minute}");
                             puppeteer_step.typ = "change".to_string();
                             puppeteer_step.value = Some(value.to_string());
-                            let _res = data_view_manager.process_edit_target(&command.target, &value).await?;
+                            let _res = data_view_manager.process_edit_target(&command.target, &value, watcher).await?;
                         }
                         "assertText" | "assertValue" | "assertSelectedValue" => {
                             let re = regex::Regex::new(r"id=(?P<name>\pL[\w_]+)")?;
@@ -4397,7 +4391,7 @@ pub mod tests {
             Ok(())
         }
 
-        let mut data_view_manager = DataViewManager::new(server_url, watcher);
+        let mut data_view_manager = DataViewManager::new(server_url);
         let file = fs::File::open(side_file_name).expect("file should open read only");
         let side: SeleniumIde = serde_json::from_reader(file).expect("file should be proper JSON");
 
@@ -4405,7 +4399,7 @@ pub mod tests {
             println!("suite : {:?}", suite);
 
             for id in &suite.tests {
-                test_run(&mut data_view_manager, side_file_name, &side, &suite, &id).await?
+                test_run(&mut data_view_manager, watcher, side_file_name, &side, &suite, &id).await?
             }
         }
 

@@ -16,7 +16,7 @@ pub struct Route {
     #[serde(default)]
     template_url: String,
 }
-
+/*
 #[derive(Deserialize, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct MenuItem {
@@ -24,7 +24,7 @@ pub struct MenuItem {
     label: String,
     path: String,
 }
-
+*/
 #[derive(Deserialize, Serialize, Default)]
 #[serde(default)]
 #[serde(rename_all = "camelCase")]
@@ -34,7 +34,7 @@ pub struct RufsUser {
     pub groups: Box<[String]>,
     pub roles: Vec<Role>,
     pub routes: Box<[Route]>,
-    pub menu: Box<[MenuItem]>,
+    pub menu: Value,//Box<[MenuItem]>,
     pub path: String,
     pub full_name: String,
     pub password: String,
@@ -53,7 +53,7 @@ pub struct LoginResponse<'a> {
     pub path: String,
     pub title: String,
     routes: Box<[Route]>,
-    menu: Box<[MenuItem]>,
+    menu: Value,//Box<[MenuItem]>,
     extra: Value
 }
 
@@ -106,13 +106,12 @@ impl Default for RufsParams {
 pub struct RufsMicroService<'a> {
     pub params: RufsParams,
     pub openapi: OpenAPI,
-    pub watcher: &'static Box<dyn DataViewWatch>,
     pub entity_manager: DbAdapterSql<'a>,
     pub web_socket_server_connections_tokens : Arc<RwLock<HashMap<String, Claims>>>,
     #[cfg(feature = "tide")]
-    pub ws_server_connections_tide : Arc<RwLock<HashMap<String, tide_websockets::WebSocketConnection>>>,
+    pub web_socket_connections : Arc<RwLock<HashMap<String, tide_websockets::WebSocketConnection>>>,
     #[cfg(feature = "warp")]
-    pub web_socket_server_connections_warp : Arc<RwLock<HashMap<String, futures_util::stream::SplitSink<warp::ws::WebSocket, warp::ws::Message>>>>,
+    pub web_socket_connections : Arc<RwLock<HashMap<String, futures_util::stream::SplitSink<warp::ws::WebSocket, warp::ws::Message>>>>,
 }
 
 impl RufsMicroService<'_> {
@@ -177,7 +176,7 @@ impl RufsMicroService<'_> {
         Ok(())
     }
 
-    pub async fn connect<'a>(db_uri: &str, migration_path: &str, params: RufsParams, watcher: &'static Box<dyn DataViewWatch>) -> Result<RufsMicroService<'a>, Box<dyn std::error::Error>> {
+    pub async fn connect<'a>(db_uri: &str, migration_path: &str, params: RufsParams) -> Result<RufsMicroService<'a>, Box<dyn std::error::Error>> {
         async fn create_rufs_tables(rms: &RufsMicroService<'_>, openapi_rufs: &OpenAPI) -> Result<(), Box<dyn std::error::Error>> {
             {
                 let db_schema = "public";
@@ -318,14 +317,13 @@ impl RufsMicroService<'_> {
 
         let mut rufs = RufsMicroService {
             params,
-            watcher,
             openapi: Default::default(),
             entity_manager: DbAdapterSql::default(),
-            web_socket_server_connections_tokens: Arc::default(),
+            web_socket_server_connections_tokens: Default::default(),
             #[cfg(feature = "tide")]
-            ws_server_connections_tide: Arc::default(),
+            web_socket_connections: Default::default(),
             #[cfg(feature = "warp")]
-            web_socket_server_connections_warp: Arc::default(),
+            web_socket_connections: Default::default(),
         };
 
         println!("[connect] : load_open_api...");
@@ -435,24 +433,28 @@ impl RufsMicroService<'_> {
 
 }
 
+#[cfg(debug_assertions)]
 use crate::client::DataViewWatch;
 
+#[cfg(debug_assertions)]
 lazy_static::lazy_static! {
-    static ref DATA_VIEW_MANAGER_MAP: tokio::sync::Mutex<std::collections::HashMap<String, crate::client::DataViewManager<'static>>>  = {
+    static ref DATA_VIEW_MANAGER_MAP: tokio::sync::Mutex<std::collections::HashMap<String, crate::client::DataViewManager>>  = {
         let data_view_manager_map = std::collections::HashMap::new();
         tokio::sync::Mutex::new(data_view_manager_map)
     };
 }
 
-async fn wasm_ws_login(rms: &RufsMicroService<'_>, server_url: &str, path: &str, data_in: Value) -> Result<Value, Box<dyn std::error::Error>> {
+#[cfg(debug_assertions)]
+async fn wasm_ws_login(server_url: &str, path: &str, data_in: Value) -> Result<Value, Box<dyn std::error::Error>> {
     let mut data_view_manager_map = DATA_VIEW_MANAGER_MAP.lock().await;
-    let mut data_view_manager = crate::client::DataViewManager::new(server_url, rms.watcher);
+    let mut data_view_manager = crate::client::DataViewManager::new(server_url);
     let data_out = data_view_manager.login(path, data_in).await?;
     data_view_manager_map.insert(data_view_manager.server_connection.login_response.jwt_header.clone(), data_view_manager);
     Ok(data_out.into())
 }
 
-async fn wasm_ws_process(token_raw: &str, data_in: Value) -> Result<Value, Box<dyn std::error::Error>> {
+#[cfg(debug_assertions)]
+async fn wasm_ws_process(token_raw: &str, data_in: Value, watcher: &Box<dyn DataViewWatch>) -> Result<Value, Box<dyn std::error::Error>> {
     let authorization_header_prefix = "Bearer ";
 
     let jwt = if token_raw.starts_with(authorization_header_prefix) {
@@ -463,7 +465,7 @@ async fn wasm_ws_process(token_raw: &str, data_in: Value) -> Result<Value, Box<d
 
     let mut data_view_manager_map = DATA_VIEW_MANAGER_MAP.lock().await;
     let data_view_manager = data_view_manager_map.get_mut(jwt).ok_or("Missing session")?;
-    data_view_manager.process(data_in).await
+    data_view_manager.process(data_in, watcher).await
 }
 
 #[cfg(feature = "tide")]
@@ -596,7 +598,7 @@ pub async fn rufs_tide(app: &mut Box<tide::Server<RufsMicroService<'static>>>) -
         while let Some(Ok(tide_websockets::Message::Text(token))) = async_std::stream::StreamExt::next(&mut stream).await {
             let wsc = stream.clone();
             let rufs :&RufsMicroService= request.state();
-            rufs.ws_server_connections_tide.write().unwrap().insert(token.clone(), wsc);
+            rufs.web_socket_connections.write().unwrap().insert(token.clone(), wsc);
             let secret = std::env::var("RUFS_JWT_SECRET").unwrap_or("123456".to_string());
             let token_data = decode::<Claims>(&token, &DecodingKey::from_secret(secret.as_ref()), &Validation::default())?;
             rufs.ws_server_connections_tokens.write().unwrap().insert(token, token_data.claims);
@@ -659,44 +661,45 @@ pub fn rufs_warp_with_rufs(rufs: Arc<Mutex<RufsMicroService<'static>>>) -> impl 
 }
 
 #[cfg(feature = "warp")]
+macro_rules! warp_try {
+    ($expr:expr) => {
+        match $expr {
+            Ok(val) => val,
+            Err(err) => {
+                let err_str = err.to_string();
+                let str_status = &err_str[0..5];
+
+                let mut message = if (err_str.len() >= 5) {
+                    &err_str[5..]
+                } else {
+                    &err_str
+                };
+
+                let status = match str_status {
+                    "401" => warp::http::StatusCode::UNAUTHORIZED,
+                    _ => {
+                        message = &err_str;
+                        warp::http::StatusCode::BAD_REQUEST
+                    }
+                };
+
+                let response = Box::new(warp::reply::with_status(message.to_string(), status)) as Box<dyn warp::Reply>;
+                return Ok(response);
+            }
+        }
+    };
+}
+
+#[cfg(feature = "warp")]
 pub async fn rufs_warp<'a>(rufs: &Arc<Mutex<RufsMicroService<'static>>>) -> impl warp::Filter<Extract = (impl warp::Reply + 'a,), Error = warp::Rejection> + Clone + 'a {
     use std::{convert::Infallible};
     use jsonwebtoken::{decode, DecodingKey, Validation};
     use futures_util::StreamExt;
     use warp::Reply;
-    use warp::http::{Method, HeaderMap, StatusCode};
+    use warp::http::{Method, HeaderMap};
     use warp::path::FullPath;
     use warp::Filter;
     use warp::ws::WebSocket;
-
-    macro_rules! warp_try {
-        ($expr:expr) => {
-            match $expr {
-                Ok(val) => val,
-                Err(err) => {
-                    let err_str = err.to_string();
-                    let str_status = &err_str[0..5];
-
-                    let mut message = if (err_str.len() >= 5) {
-                        &err_str[5..]
-                    } else {
-                        &err_str
-                    };
-
-                    let status = match str_status {
-                        "401" => StatusCode::UNAUTHORIZED,
-                        _ => {
-                            message = &err_str;
-                            StatusCode::BAD_REQUEST
-                        }
-                    };
-
-                    let response = Box::new(warp::reply::with_status(message.to_string(), status)) as Box<dyn Reply>;
-                    return Ok(response);
-                }
-            }
-        };
-    }
 
     let api_path = {
         rufs.lock().await.params.api_path.clone()
@@ -776,7 +779,7 @@ pub async fn rufs_warp<'a>(rufs: &Arc<Mutex<RufsMicroService<'static>>>) -> impl
                     let secret = std::env::var("RUFS_JWT_SECRET").unwrap_or("123456".to_string());
 
                     if let Ok(token_data) = decode::<Claims>(&token, &DecodingKey::from_secret(secret.as_ref()), &Validation::default()) {
-                        rufs.web_socket_server_connections_warp.write().await.insert(token.to_string(), user_ws_tx);
+                        rufs.web_socket_connections.write().await.insert(token.to_string(), user_ws_tx);
                         rufs.web_socket_server_connections_tokens.write().await.insert(token.to_string(), token_data.claims);
                     }
                 }
@@ -788,23 +791,6 @@ pub async fn rufs_warp<'a>(rufs: &Arc<Mutex<RufsMicroService<'static>>>) -> impl
     }
 
     let route_websocket = warp::path("websocket").and(rufs_warp_with_rufs(rufs.clone())).and(warp::ws()).and_then(handle_web_socket);
-
-    async fn wasm_ws_login_warp(rufs: Arc<Mutex<RufsMicroService<'static>>>, full_path: FullPath, data_in: Value, _remote: Option<std::net::SocketAddr>) -> Result<impl Reply, Infallible> {
-        let rufs = &rufs.lock().await.to_owned();
-        let full_path_str = full_path.as_str();
-
-        let path = if let Some(pos) = full_path_str.find("/wasm_ws/") {
-            &full_path_str[0..pos]
-        } else {
-            &full_path_str
-        };
-
-        let server_url = format!("http://localhost:{}{}", rufs.params.port, path);
-        let ret = warp_try!(wasm_ws_login(rufs, &server_url, "/login", data_in).await);
-        Ok(Box::new(warp::reply::json(&ret)))
-    }
-
-    let route_wasm_login = warp::path("wasm_ws").and(warp::path("login")).and(rufs_warp_with_rufs(rufs.clone())).and(warp::path::full()).and(warp::body::json()).and(warp::addr::remote()).and_then(wasm_ws_login_warp);
 
     async fn handle_login(rufs: Arc<Mutex<RufsMicroService<'static>>>, login_request: LoginRequest, remote: Option<std::net::SocketAddr>) -> Result<impl Reply, Infallible> {
         let rufs = &rufs.lock().await.to_owned();
@@ -825,15 +811,53 @@ pub async fn rufs_warp<'a>(rufs: &Arc<Mutex<RufsMicroService<'static>>>) -> impl
         handle_login(rufs, login_request, remote)
     });
 
-    async fn wasm_ws_process_warp(headers: HeaderMap, obj_in: Value) -> Result<impl Reply, Infallible> {
-        let token_raw = warp_try!(warp_try!(headers.get("Authorization").ok_or("Missing header Authorization")).to_str());
-        let ret = warp_try!(wasm_ws_process(token_raw, obj_in).await);
+    let routes = route_login.or(route_websocket).or(route_api_put).or(route_api_post).or(route_api_get_delete).or(route_api_list_all);
+    routes
+}
+
+#[cfg(all(feature = "warp", debug_assertions))]
+pub async fn rufs_warp_debug<'a>(rufs: &Arc<Mutex<RufsMicroService<'static>>>, watcher: &Arc<Box<dyn DataViewWatch>>) -> impl warp::Filter<Extract = (impl warp::Reply + 'a,), Error = warp::Rejection> + Clone + 'a {
+    use std::{convert::Infallible};
+    use warp::Reply;
+    use warp::http::{HeaderMap};
+    use warp::path::FullPath;
+    use warp::Filter;
+
+    fn rufs_warp_with_watcher(watcher: Arc<Box<dyn DataViewWatch>>) -> impl warp::Filter<Extract = (Arc<Box<dyn DataViewWatch>>,), Error = std::convert::Infallible> + Clone {
+        use warp::Filter;
+        warp::any().map(move || {
+            watcher.clone()
+        })
+    }
+
+    async fn wasm_ws_login_warp(rufs: Arc<Mutex<RufsMicroService<'static>>>, full_path: FullPath, data_in: Value, _remote: Option<std::net::SocketAddr>) -> Result<impl Reply, Infallible> {
+        let full_path_str = full_path.as_str();
+
+        let path = if let Some(pos) = full_path_str.find("/wasm_ws/") {
+            &full_path_str[0..pos]
+        } else {
+            &full_path_str
+        };
+
+        let server_url = {
+            let rufs = &rufs.lock().await.to_owned();
+            format!("http://localhost:{}{}", rufs.params.port, path)
+        };
+
+        let ret = warp_try!(wasm_ws_login(&server_url, "/login", data_in).await);
         Ok(Box::new(warp::reply::json(&ret)))
     }
 
-    let route_wasm_ws_process = warp::path("wasm_ws").and(warp::path("process")).and(warp::header::headers_cloned()).and(warp::body::json()).and_then(wasm_ws_process_warp);
+    async fn wasm_ws_process_warp(headers: HeaderMap, obj_in: Value, watcher: Arc<Box<dyn DataViewWatch>>) -> Result<impl Reply, Infallible> {
+        let token_raw = warp_try!(warp_try!(headers.get("Authorization").ok_or("Missing header Authorization")).to_str());
+        let ret = warp_try!(wasm_ws_process(token_raw, obj_in, watcher.as_ref()).await);
+        Ok(Box::new(warp::reply::json(&ret)))
+    }
 
-    let routes = route_login.or(route_wasm_login).or(route_wasm_ws_process).or(route_websocket).or(route_api_put).or(route_api_post).or(route_api_get_delete).or(route_api_list_all);
+    let route_wasm_login = warp::path("wasm_ws").and(warp::path("login")).and(rufs_warp_with_rufs(rufs.clone())).and(warp::path::full()).and(warp::body::json()).and(warp::addr::remote()).and_then(wasm_ws_login_warp);
+    let route_wasm_ws_process = warp::path("wasm_ws").and(warp::path("process")).and(warp::header::headers_cloned()).and(warp::body::json()).and(rufs_warp_with_watcher(watcher.clone())).and_then(wasm_ws_process_warp);
+    let routes = rufs_warp(rufs).await;
+    let routes = routes.or(route_wasm_login).or(route_wasm_ws_process);
     routes
 }
 
@@ -860,7 +884,7 @@ const RUFS_MICRO_SERVICE_OPENAPI_STR: &str = r##"{
 					"path":           {"type": "string"},
 					"roles":          {"type": "array", "default": "[]", "items": {"properties": {"path": {"type": "string", "default": ""}, "mask": {"type": "integer", "default": 0, "x-flags": ["get","post","put","delete","query"]}}}},
 					"routes":         {"type": "array", "default": "[]", "items": {"properties": {"path": {"type": "string"}, "controller": {"type": "string"}, "templateUrl": {"type": "string"}}}},
-					"menu":           {"type": "array", "default": "[]", "items": {"properties": {"group": {"type": "string", "default": "action"}, "label": {"type": "string"}, "path": {"type": "string", "default": "service/action?filter={}&aggregate={}"}}}}
+					"menu":           {"type": "object"}
 				},
 				"x-primaryKeys": ["rufsGroupOwner", "name"],
 				"x-uniqueKeys":  {}
@@ -901,7 +925,7 @@ const DEFAULT_USER_ADMIN_STR: &str = r#"{
     "rufsGroupOwner": "admin",
     "password": "21232f297a57a5a743894a0e4a801fc3",
     "path": "rufs_user/search",
-    "menu": [],
+    "menu": {"Cadastros": {"Usuários": "rufs_user/search"}},
     "roles": [
         {
             "mask": 31,

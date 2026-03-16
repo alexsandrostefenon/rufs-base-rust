@@ -224,10 +224,7 @@ pub async fn process_request<'b>(rms: &'b RufsMicroService<'b>, path: &'b str, q
         let obj_rufs_group_owner = rms.openapi.get_primary_key_foreign(&rf.open_api_schema, "rufsGroupOwner", obj).unwrap();
         let rufs_group = rms.openapi.get_primary_key_foreign(&rf.open_api_schema, "rufsGroup", obj).unwrap();
         println!("[RequestFilter.notify] broadcasting {:?} ...", msg);
-        #[cfg(feature = "tide")]
-        let map = rms.ws_server_connections_tide.read()?;
-        #[cfg(feature = "warp")]
-        let mut map = rms.web_socket_server_connections_warp.write().await;
+        let mut map = rms.web_socket_connections.write().await;
 
         for (token_string, ws_server_connection) in map.iter_mut() {
             // enviar somente para os clients de "rufsGroupOwner"
