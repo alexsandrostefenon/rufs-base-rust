@@ -98,14 +98,17 @@ pub async fn process_request<'b>(rms: &'b RufsMicroService<'b>, path: &'b str, q
 
     fn parse_query_parameters(rms: &RufsMicroService<'_>, rf: &RequestFilter, ignore_null: bool, method: &str) -> Result<Value, Box<dyn std::error::Error>> {
         let mut query_params = json!({});
-        rms.openapi.copy_fields(&rf.path, method, &SchemaPlace::Parameter, true, &mut query_params, &rf.query_params, ignore_null, false, false)?;
+        rms.openapi.copy_fields(&rf.path, method, &SchemaPlace::Parameter, true, &mut query_params, &rf.query_params, ignore_null, false, false, "parse_query_parameters")?;
         //println!("[openapi.parse_query_parameters({})] : {}", self.parameters, obj.to_string());
         Ok(query_params)
     }
 
     async fn get_object(rms: &RufsMicroService<'_>, rf: &RequestFilter, use_document :bool, method: &str) -> Result<Value, Box<dyn std::error::Error>> {
         let key = parse_query_parameters(rms, rf, false, method)?;
-        let obj = rms.entity_manager.find_one(&rms.openapi, &rf.db_schema, &rf.open_api_schema, &key).await?.ok_or_else(|| format!("Missing data in {} for key {}", rf.open_api_schema, key))?;
+
+        let Some(obj) = rms.entity_manager.find_one(&rms.openapi, &rf.db_schema, &rf.open_api_schema, &key).await? else {
+            return Err(format!("Missing data in {} for key {}", rf.open_api_schema, key))?;
+        };
 
         if use_document != true {
             return Ok(obj);
@@ -157,7 +160,7 @@ pub async fn process_request<'b>(rms: &'b RufsMicroService<'b>, path: &'b str, q
             if query_params.get(name).is_none() {
                 if let Some(data_in) = rf.query_params.get(name) {
                     let mut data_out = json!({});
-                    rms.openapi.copy_fields(&rf.path, method, &SchemaPlace::Schemas, false, &mut data_out, &data_in, true, true, false)?;
+                    rms.openapi.copy_fields(&rf.path, method, &SchemaPlace::Schemas, false, &mut data_out, &data_in, true, true, false, "process_query")?;
                     query_params[name] = data_out;
                 }
             }
@@ -177,9 +180,7 @@ pub async fn process_request<'b>(rms: &'b RufsMicroService<'b>, path: &'b str, q
             if rms.openapi.get_property_from_schemas(&rf.path, "dateLastChange").is_some() {
                 order_by.push("date_last_change desc".into());
             }
-        }
 
-        if order_by.is_empty() {
             let properties = match &schema.schema_kind {
                 openapiv3::SchemaKind::Type(typ) => match typ {
                     openapiv3::Type::Object(object_type) => &object_type.properties,
@@ -213,7 +214,7 @@ pub async fn process_request<'b>(rms: &'b RufsMicroService<'b>, path: &'b str, q
         }
 
         let mut parameters = json!({});
-        rms.openapi.copy_fields(&rf.path, method, &SchemaPlace::Schemas, false, &mut parameters, obj, false, false, true).unwrap();
+        rms.openapi.copy_fields(&rf.path, method, &SchemaPlace::Schemas, false, &mut parameters, obj, false, false, true, "notify").unwrap();
         let mut msg = NotifyMessage{service: rf.open_api_schema.to_string(), action: "notify".to_string(), primary_key: parameters};
 
         if is_remove {
@@ -224,13 +225,11 @@ pub async fn process_request<'b>(rms: &'b RufsMicroService<'b>, path: &'b str, q
         let obj_rufs_group_owner = rms.openapi.get_primary_key_foreign(&rf.open_api_schema, "rufsGroupOwner", obj).unwrap();
         let rufs_group = rms.openapi.get_primary_key_foreign(&rf.open_api_schema, "rufsGroup", obj).unwrap();
         println!("[RequestFilter.notify] broadcasting {:?} ...", msg);
-        let mut map = rms.web_socket_connections.write().await;
+        let mut web_socket_connections = rms.map_ws_connections.write().await;
 
-        for (token_string, ws_server_connection) in map.iter_mut() {
+        for (customer_user, (ws_tx, _ws_rx)) in web_socket_connections.iter_mut() {
             // enviar somente para os clients de "rufsGroupOwner"
-            let key = &token_string.clone();
-            let map = rms.web_socket_server_connections_tokens.read().await;
-            let token_data = map.get(key).unwrap();
+            let token_data = rms.map_token_data.read().await.get(customer_user).ok_or("Missing 'token_data' in 'web_socket_server_connections_tokens'")?.clone();
             let mut check_rufs_group_owner = obj_rufs_group_owner.is_none();
 
             if check_rufs_group_owner == false {
@@ -259,15 +258,14 @@ pub async fn process_request<'b>(rms: &'b RufsMicroService<'b>, path: &'b str, q
                             println!("[RequestFilter.notify] send to client {}", token_data.name);
                             //let rt = tokio::runtime::Runtime::new().unwrap();
                             #[cfg(feature = "tide")]
-                            if let Err(error) = rt.block_on(ws_server_connection.send_string(msg.to_string())) {
+                            if let Err(error) = rt.block_on(ws_tx.send_string(msg.to_string())) {
                                 println!("[RequestFilter.notify] send to client : {}", error);
                             }
                             #[cfg(feature = "warp")]
                             {
                                 use futures_util::SinkExt;
-                                use warp::ws::Message;
 
-                                if let Err(error) = ws_server_connection.send(Message::text(msg.to_string())).await {
+                                if let Err(error) = ws_tx.send(warp::ws::Message::text(msg.to_string())).await {
                                     eprintln!("[RequestFilter.notify] send to client : {}", error);
                                 }
                             }
@@ -327,9 +325,10 @@ pub async fn process_request<'b>(rms: &'b RufsMicroService<'b>, path: &'b str, q
         Err("Unknow")?
     }
 
-    async fn process_create(rms: &RufsMicroService<'_>, rf: &mut RequestFilter, obj_in: &mut Value, token_payload: &Claims) -> Result<Value, Box<dyn std::error::Error>> {
+    async fn process_create(rms: &RufsMicroService<'_>, rf: &mut RequestFilter, obj_in: &mut Value, token_payload: &Claims, method: &str) -> Result<Value, Box<dyn std::error::Error>> {
         check_object_access(rms, rf, obj_in, token_payload)?;
         let new_obj = rms.entity_manager.insert(&rms.openapi, &rf.db_schema, &rf.open_api_schema, obj_in).await?;
+        notify(rms, rf, &new_obj, false, method).await?;
         Ok(new_obj)
     }
 
@@ -343,7 +342,7 @@ pub async fn process_request<'b>(rms: &'b RufsMicroService<'b>, path: &'b str, q
 
     async fn process_patch(rms: &RufsMicroService<'_>, rf: &mut RequestFilter, data_patched: &mut Value, token_payload: &Claims, method: &str) -> Result<Value, Box<dyn std::error::Error>> {
         let data = get_object(rms, rf, false, method).await?;
-        rms.openapi.copy_fields(&rf.path, method, &SchemaPlace::Schemas, false, data_patched, &data, true, true, false)?;
+        rms.openapi.copy_fields(&rf.path, method, &SchemaPlace::Schemas, false, data_patched, &data, true, true, false, "process_patch")?;
         check_object_access(rms, rf, data_patched, token_payload)?;
         let primary_key = parse_query_parameters(rms, rf, false, method)?;
         let new_obj = rms.entity_manager.update(&rms.openapi, &rf.db_schema, &rf.open_api_schema, &primary_key, &data).await?;
@@ -395,7 +394,7 @@ pub async fn process_request<'b>(rms: &'b RufsMicroService<'b>, path: &'b str, q
             return process_read(rms, &rf, method).await
         }
     } else if method == "post" {
-        return process_create(rms, &mut rf, &mut obj_in, &token_payload).await;
+        return process_create(rms, &mut rf, &mut obj_in, &token_payload, method).await;
     } else if method == "put" {
         return process_update(rms, &mut rf, &mut obj_in, &token_payload, method).await;
     } else if method == "patch" {

@@ -57,12 +57,14 @@ pub struct LoginResponse<'a> {
     extra: Value
 }
 
+#[derive(Clone)]
 #[derive(Debug, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Claims {
     sub: String,
     exp: usize,
     ip: String,
+    time_stamp: String,
     pub customer: String,
     pub name: String,
     pub rufs_group_owner: String,
@@ -102,16 +104,19 @@ impl Default for RufsParams {
     }
 }
 
+use futures_util::stream::SplitSink;
+use futures_util::stream::SplitStream;
+
 #[derive(Clone)]
 pub struct RufsMicroService<'a> {
     pub params: RufsParams,
     pub openapi: OpenAPI,
     pub entity_manager: DbAdapterSql<'a>,
-    pub web_socket_server_connections_tokens : Arc<RwLock<HashMap<String, Claims>>>,
+    pub map_token_data : Arc<RwLock<HashMap<String, Claims>>>,
     #[cfg(feature = "tide")]
-    pub web_socket_connections : Arc<RwLock<HashMap<String, tide_websockets::WebSocketConnection>>>,
+    pub web_socket_connections : Arc<RwLock<HashMap<String, (String, tide_websockets::WebSocketConnection)>>>,
     #[cfg(feature = "warp")]
-    pub web_socket_connections : Arc<RwLock<HashMap<String, futures_util::stream::SplitSink<warp::ws::WebSocket, warp::ws::Message>>>>,
+    pub map_ws_connections : Arc<RwLock<HashMap<String, (SplitSink<warp::ws::WebSocket, warp::ws::Message>, SplitStream<warp::ws::WebSocket>)>>>,
 }
 
 impl RufsMicroService<'_> {
@@ -319,11 +324,11 @@ impl RufsMicroService<'_> {
             params,
             openapi: Default::default(),
             entity_manager: DbAdapterSql::default(),
-            web_socket_server_connections_tokens: Default::default(),
+            map_token_data: Default::default(),
             #[cfg(feature = "tide")]
-            web_socket_connections: Default::default(),
+            map_ws_connections: Default::default(),
             #[cfg(feature = "warp")]
-            web_socket_connections: Default::default(),
+            map_ws_connections: Default::default(),
         };
 
         println!("[connect] : load_open_api...");
@@ -402,12 +407,13 @@ impl RufsMicroService<'_> {
             sub: "".to_string(),
             exp: 10000000000,
             ip: remote_addr.to_string(),
+            time_stamp: chrono::Local::now().to_rfc3339(),
             customer: customer_id,
             name: user.name,
             rufs_group_owner: user.rufs_group_owner.clone(),
             groups: Box::new([]),
             roles: user.roles,
-            extra: extra_claims
+            extra: extra_claims,
         };
 
         let secret = std::env::var("RUFS_JWT_SECRET").unwrap_or("123456".to_string());
@@ -699,7 +705,6 @@ pub async fn rufs_warp<'a>(rufs: &Arc<Mutex<RufsMicroService<'static>>>) -> impl
     use warp::http::{Method, HeaderMap};
     use warp::path::FullPath;
     use warp::Filter;
-    use warp::ws::WebSocket;
 
     let api_path = {
         rufs.lock().await.params.api_path.clone()
@@ -770,17 +775,50 @@ pub async fn rufs_warp<'a>(rufs: &Arc<Mutex<RufsMicroService<'static>>>) -> impl
         and_then(handle_api_list_all);
 
     async fn handle_web_socket(rufs: Arc<Mutex<RufsMicroService<'static>>>, ws: warp::ws::Ws) -> Result<impl Reply, Infallible> {
-        async fn user_connected(ws: WebSocket, rufs: Arc<Mutex<RufsMicroService<'static>>>) {
-            let (user_ws_tx, mut user_ws_rx) = ws.split();
+        async fn user_connected(ws: warp::ws::WebSocket, rufs: Arc<Mutex<RufsMicroService<'static>>>) {
+            let (mut ws_tx, mut ws_rx) = ws.split();
 
-            if let Some(Ok(msg)) = user_ws_rx.next().await {
+            if let Some(Ok(msg)) = ws_rx.next().await {
                 if let Ok(token) = msg.to_str() {
                     let rufs = rufs.lock().await.to_owned();
                     let secret = std::env::var("RUFS_JWT_SECRET").unwrap_or("123456".to_string());
 
                     if let Ok(token_data) = decode::<Claims>(&token, &DecodingKey::from_secret(secret.as_ref()), &Validation::default()) {
-                        rufs.web_socket_connections.write().await.insert(token.to_string(), user_ws_tx);
-                        rufs.web_socket_server_connections_tokens.write().await.insert(token.to_string(), token_data.claims);
+                        let mut map = rufs.map_token_data.write().await;
+                        let customer_user = format!("{}.{}", token_data.claims.customer, token_data.claims.name);
+
+                        if let Some(claims) = map.get(&customer_user) {
+                            if claims.time_stamp > token_data.claims.time_stamp {
+                                use futures_util::SinkExt;
+
+                                if let Err(error) = ws_tx.send(warp::ws::Message::text("Replaced by new login.")).await {
+                                    eprintln!("[RequestFilter.notify] send to client : {}", error);
+                                }
+
+                                let Ok(ws) = ws_rx.reunite(ws_tx) else {
+                                    return;
+                                };
+
+                                if let Err(_err) = ws.close().await {
+                                    return;
+                                }
+
+                                return;
+                            }
+                        }
+
+                        if let Some(_old) = map.insert(customer_user.clone(), token_data.claims) {                            
+                        }
+
+                        if let Some((ws_tx_old, ws_rx_old)) = rufs.map_ws_connections.write().await.insert(customer_user, (ws_tx, ws_rx)) {
+                            let Ok(ws_old) = ws_rx_old.reunite(ws_tx_old) else {
+                                return;
+                            };
+
+                            if let Err(_err) = ws_old.close().await {
+                                return;
+                            }
+                        }
                     }
                 }
             }

@@ -7,15 +7,11 @@ use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{cmp::Ordering, collections::HashMap, vec};
-//use serde_json::map;
-
 use tokio::time::sleep;
 #[cfg(target_arch = "wasm32")]
 use tokio_with_wasm as tokio;
 #[cfg(target_arch = "wasm32")]
 use idb::{Database, DatabaseEvent, KeyPath, ObjectStoreParams};
-
-//#[cfg(debug_assertions)]
 #[cfg(target_arch = "wasm32")]
 use web_log::{println, eprintln};
 
@@ -174,6 +170,9 @@ impl std::convert::From<&str> for DataViewFormType {
             "new" => DataViewFormType::New,
             "edit" | "delete" => DataViewFormType::Edit,
             "view" => DataViewFormType::View,
+            "filter" => DataViewFormType::Filter,
+            "aggregate" => DataViewFormType::Aggregate,
+            "sort" => DataViewFormType::Sort,
             _ => DataViewFormType::Search,
         }
     }
@@ -254,7 +253,7 @@ impl Default for DataViewResponse {
     }
 }
 
-#[derive(PartialEq, Default)]
+#[derive(Debug, PartialEq, Default)]
 pub enum DataViewType {
     #[default]
     Primary,
@@ -630,14 +629,6 @@ impl DataView {
                     continue;
                 }
             }
-/*
-            if let DataViewType::Child(dependent) = &data_view.typ {
-                // TODO : ocultar os campos foreginkeys do pai.
-                if field_name == &dependent.field {
-                    continue;
-                }
-            }
-*/
             let typ = match &field.schema_kind {
                 SchemaKind::Type(typ) => typ,
                 SchemaKind::Any(_) => todo!(),
@@ -995,6 +986,10 @@ impl DataView {
             form_actions.push(format!(r#"<button id="delete-{form_id}" name="delete" class="btn btn-default"><i class="bi bi-remove"></i> Remove</button>"#));
         }
 
+        if data_view.is_one_to_one == false {
+            form_actions.push(format!(r#"<button id="cancel-{form_id}" name="cancel" class="btn btn-default"><i class="bi bi-exit"></i> Fechar</button>"#));
+        }
+
         let form_actions = form_actions.join("\n");
 
         let str = format!(r##"
@@ -1006,7 +1001,6 @@ impl DataView {
                             {html_fields}
                             <div id="div-actions-{form_id}" class="form-group">
                                 {form_actions}
-                                <button id="cancel-{form_id}" name="cancel" class="btn btn-default"><i class="bi bi-exit"></i> Fechar</button>
                             </div>
                         </fieldset>
                     </form>
@@ -1053,6 +1047,11 @@ impl DataView {
         };
 
         let list_size = list.len();
+
+        #[cfg(debug_assertions)]
+        if data_view.data_view_id.schema_name == "request" && list_size > 0 {
+            println!("[build_table] {}.service_map_list.len = {list_size}", data_view.data_view_id.id);
+        }
 
         if list_size == 0 {
             #[cfg(debug_assertions)]
@@ -1535,7 +1534,9 @@ impl DataView {
 
     fn apply_sort(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         #[cfg(debug_assertions)]
-        println!("[{}::apply_sort()] : params.sort = {:?}", self.data_view_id.id, self.params.sort);
+        {
+            //println!("[{}::apply_sort()] : params.sort = {:?}", self.data_view_id.id, self.params.sort);
+        }
 
         if self.params.sort.is_empty() {
             #[cfg(debug_assertions)]
@@ -1720,14 +1721,10 @@ impl DataView {
                 DataViewFormType::Aggregate => data_view.params.aggregate[field_name] = value,
                 DataViewFormType::Sort => todo!(),
                 _ => {
-                    #[cfg(debug_assertions)]
-                    println!("[{}.set_form_type_value()] : data_view.params.instance[{field_name}] = {}", data_view.data_view_id.id, value);
                     data_view.params.instance[field_name] = value;
 
                     if data_view.typ == DataViewType::ObjectProperty {
                         if let Some(index) = data_view.active_index {
-                            #[cfg(debug_assertions)]
-                            println!("[DataView::set_value::set_form_type_value()] : {}.filter_results[{index}] = {}", data_view.data_view_id.id, data_view.params.instance);
                             data_view.filter_results[index] = data_view.params.instance.clone();
                         }
                     }
@@ -1813,8 +1810,6 @@ impl DataView {
 
             let hidden = extensions.contains_key("x-hidden");
 
-            #[cfg(debug_assertions)]
-            println!("[{}.set_value_process()] : data_view.params.instance[{field_name}] = {}, field.schema_data.nullable = {}", data_view.data_view_id.id, value, field.schema_data.nullable);
             // TODO : ao invés de essential = true, usar field.schema_data.nullable
 
             let value = if !value.is_null() {
@@ -1836,9 +1831,6 @@ impl DataView {
             Ok((value_old.clone(), value, value_view))
         }
 
-        #[cfg(debug_assertions)]
-        println!("[DataView::set_value] 1");
-
         let (element_id, force_enable_null) = if let Some(element_id) = element_id {
             //HtmlElementId::new_with_data_view_id(self.data_view_id.clone(), element_id.form_type_field_extension.clone(), element_id.field_name.clone(), element_id.index)
             (element_id.clone(), false)
@@ -1846,10 +1838,7 @@ impl DataView {
             (HtmlElementId::new_with_data_view_id(self.data_view_id.clone(), None, None, None, None), true)
         };
 
-        #[cfg(debug_assertions)]
-        println!("[DataView::set_value] 2");
-
-        let (value_old, field_value, field_value_str) = if self.data_view_id.id != element_id.data_view_id.id {
+        let (value_old, field_value, field_value_str) = if self.data_view_id.schema_name != element_id.data_view_id.schema_name {
             let data_view = self.childs.iter_mut().find(|data_view| data_view.data_view_id.id == element_id.data_view_id.id).ok_or_else(|| {
                 format!("Missing item 5 {} in {}", element_id.data_view_id.id, self.data_view_id.id)
             })?;
@@ -1859,25 +1848,12 @@ impl DataView {
             set_value_process(self, server_connection, field_name, value, &element_id, force_enable_null)?
         };
 
-        #[cfg(debug_assertions)]
-        println!("[DataView::set_value] 3");
-
         let changed_value = value_old != field_value;
 
         if changed_value && watcher.check_set_value(self, &element_id, server_connection, field_name, &field_value).await? == true {
             fn set_value_show(data_view: &mut DataView, field_name: &str, field_value_str: Value, element_id: &HtmlElementId) -> Result<(), Box<dyn std::error::Error>> {
-                #[cfg(debug_assertions)]
-                println!("[DataView::set_value::set_value_show] 1");
-
                 let field = data_view.properties.get(field_name).ok_or_else(|| format!("Missing field {} in data_view {}", field_name, data_view.data_view_id.schema_name))?;
-
-                #[cfg(debug_assertions)]
-                println!("[DataView::set_value::set_value_show] 2");
-
                 let schema = field.as_item().ok_or_else(|| format!("field {} in data_view {} is reference", field_name, data_view.data_view_id.schema_name))?;
-
-                #[cfg(debug_assertions)]
-                println!("[DataView::set_value::set_value_show] 3");
 
                 if let Some(hidden) =  schema.schema_data.extensions.get("x-hidden") {
                     if hidden == &json!(true) {
@@ -1888,20 +1864,18 @@ impl DataView {
                 let field_name = if let Some(form_type_field_extension) = &element_id.form_type_field_extension {
                     [field_name, form_type_field_extension].join("")
                 } else {
-                    field_name.to_string()
+                    if [DataViewFormType::Filter, DataViewFormType::Aggregate, DataViewFormType::Sort].contains(&element_id.data_view_id.form_type) {
+                        format!("{}@{}", field_name, element_id.data_view_id.form_type)
+                    } else {
+                        field_name.to_string()
+                    }
                 };
 
                 data_view.properties_modified.insert(field_name, field_value_str);
                 Ok(())
             }
 
-            #[cfg(debug_assertions)]
-            println!("[DataView::set_value] 3.1");
-
-            if self.data_view_id.id != element_id.data_view_id.id {
-                #[cfg(debug_assertions)]
-                println!("[DataView::set_value] 3.1.1");
-
+            if self.data_view_id.schema_name != element_id.data_view_id.schema_name {
                 let data_view = self.childs.iter_mut().find(|data_view| data_view.data_view_id.id == element_id.data_view_id.id).ok_or_else(|| {
                     format!("Missing item 4 {} in {}", element_id.data_view_id.id, self.data_view_id.id)
                 })?;
@@ -1931,9 +1905,6 @@ impl DataView {
                     _ => set_value_show(data_view, field_name, field_value_str, &element_id)?,
                 }
             } else {
-                #[cfg(debug_assertions)]
-                println!("[DataView::set_value] 3.1.2");
-
                 set_form_type_value(self, &element_id.data_view_id.form_type, &element_id.form_type_field_extension.clone(), field_name, field_value.clone())?;
 
                 match &field_value {
@@ -1950,16 +1921,13 @@ impl DataView {
             }
         }
 
-        #[cfg(debug_assertions)]
-        println!("[DataView::set_value] 4");
-
         Ok(())
     }
 
     async fn set_values(&mut self, server_connection: &ServerConnection, watcher: &Box<dyn DataViewWatch>, obj_in: &Value, element_id: Option<&HtmlElementId>) -> Result<(), Box<dyn std::error::Error>> {
         async fn set_values_process(data_view: &mut DataView, element_id: Option<&HtmlElementId>, server_connection: &ServerConnection, watcher: &Box<dyn DataViewWatch>, obj: &Value) -> Result<(), Box<dyn std::error::Error>> {
             let data_view = if let Some(element_id) = element_id {
-                if data_view.data_view_id.id != element_id.data_view_id.id {
+                if data_view.data_view_id.schema_name != element_id.data_view_id.schema_name {
                     data_view.childs.iter_mut().find(|data_view| data_view.data_view_id.schema_name == element_id.data_view_id.schema_name).ok_or_else(|| {
                         format!("Missing item 2 {} in {}", element_id.data_view_id.id, data_view.data_view_id.id)
                     })?
@@ -1969,17 +1937,7 @@ impl DataView {
             } else {
                 data_view
             };
-/*
-            let keys = if data_view.data_view_id.id != element_id.data_view_id.id {
-                let data_view = data_view.childs.iter().find(|data_view| data_view.data_view_id.schema_name == element_id.data_view_id.schema_name).ok_or_else(|| {
-                    format!("Missing item 2 {} in {}", element_id.data_view_id.id, data_view.data_view_id.id)
-                })?;
 
-                data_view.properties.iter().map(|item| item.0.to_string()).collect::<Vec<String>>()
-            } else {
-                data_view.properties.iter().map(|item| item.0.to_string()).collect::<Vec<String>>()
-            };
-*/
             let keys = data_view.properties.iter().map(|item| item.0.to_string()).collect::<Vec<String>>();
 
             for field_name in &keys {
@@ -2002,7 +1960,7 @@ impl DataView {
             let ignore_null = true;
             let ignore_hidden = false;
             let only_primary_keys = false;
-            server_connection.login_response.openapi.copy_fields_using_properties(&self.properties, &self.extensions, may_be_array, &mut obj, obj_in, ignore_null, ignore_hidden, only_primary_keys)?
+            server_connection.login_response.openapi.copy_fields_using_properties(&self.properties, &self.extensions, may_be_array, &mut obj, obj_in, ignore_null, ignore_hidden, only_primary_keys, "set_values")?
         }
         //println!("[DEBUG - set_values - 1] {}.instance = {}", self.data_view_id.form_id, obj);
         set_values_process(self, element_id, server_connection, watcher, &obj).await?;
@@ -2080,7 +2038,6 @@ impl DataView {
             }
         }
     }
-
 }
 
 #[derive(Default, Deserialize)]
@@ -2112,7 +2069,18 @@ pub struct ServerConnection {
     //web_socket :Option<WebSocket>,
 }
 
-static WEB_SOCKET_MESSAGES: tokio::sync::Mutex<Vec<String>> = tokio::sync::Mutex::const_new(vec![]);
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct WebSocketData {
+    service :String,
+    action :String,
+    primary_key :Value,
+}
+
+lazy_static::lazy_static! {
+    static ref WEB_SOCKET_MESSAGES: tokio::sync::Mutex<HashMap<String, IndexMap<String, WebSocketData>>> = tokio::sync::Mutex::const_new(HashMap::new());
+}
+
 /*
 TODO : no processo de login buscar somente as alterações.
 https://dba.stackexchange.com/questions/233735/track-all-modifications-to-a-postgresql-table
@@ -2133,6 +2101,11 @@ impl ServerConnection {
         if let Some(pos_old) = map_key_to_index.remove(&primary_key_hash) {
             let list_values = self.service_map_list.get_mut(schema_name).ok_or("Broken service_map_list")?;
             list_values[pos_old] = Value::Null;
+
+            #[cfg(debug_assertions)]
+            if schema_name == "request" && list_values.len() > 0 {
+                println!("[remove_with_primary_key] {schema_name}.list_values.len().len = {}", list_values.len());
+            }
         }
 
         Ok(())
@@ -2151,6 +2124,17 @@ impl ServerConnection {
         };
 
         let ret = list_values.get(*pos);
+
+        #[cfg(debug_assertions)]
+        if ret.is_none() {
+            println!("[get_from_primary_key_hash] Missing item at list_values[{}] for {schema_name}.{primary_key_hash}, list_values.len = {}", pos, list_values.len());
+        }
+
+        #[cfg(debug_assertions)]
+        if ret == Some(&Value::Null) {
+            println!("[get_from_primary_key_hash] Value::Null at list_values[{}] for {schema_name}.{primary_key_hash}, list_values.len = {}", pos, list_values.len());
+        }
+
         Ok(ret)
     }
     // server_connection.build_field_str(&None, &data_view.data_view_id.schema_name, field_name, item)?
@@ -2160,10 +2144,11 @@ impl ServerConnection {
                 let service = server_connection.service_map.get(schema_name).ok_or_else(|| {
                     format!("[ServerConnection::find_description()] Missing service {} in service_map", schema_name)
                 })?;
+
                 let primary_key_hash = service.get_primary_key_hash(primary_key)?;
 
                 if let Some(item) = server_connection.get_from_primary_key_hash(schema_name, &primary_key_hash)? {
-                    let description = item.as_object().unwrap().get("rufsDescription").ok_or("Broken rufsDescription")?.as_str().ok_or("Broken rufsDescription as_str")?;
+                    let description = item.as_object().ok_or("[find_description] Broken item.as_object.")?.get("rufsDescription").ok_or("Broken rufsDescription")?.as_str().ok_or("Broken rufsDescription as_str")?;
                     Ok(Some(description.to_string()))
                 } else {
                     Ok(None)
@@ -2177,7 +2162,11 @@ impl ServerConnection {
             }
 
             let primary_key = item.primary_key;
-            let res = find_description(server_connection, &item.schema, &primary_key)?.ok_or_else(|| format!("[build_field_reference] Don't found description for {}.primary_key {}.", item.schema, primary_key))?;
+
+            let Some(res) = find_description(server_connection, &item.schema, &primary_key)? else {
+                return Err(format!("[build_field_reference] Don't found description for {}.primary_key {}.", item.schema, primary_key))?
+            };
+
             Ok(res)
         }
 
@@ -2265,14 +2254,22 @@ impl ServerConnection {
         service.map_description_to_hash.insert(description.to_string(), primary_key_hash.clone());
         let list_values = self.service_map_list.get_mut(schema_name).ok_or("Broken service_map_list")?;
         let map_key_to_index = self.service_map_key.get_mut(schema_name).ok_or("Broken service_map_key")?;
-        let pos_new = list_values.len();
 
-        if let Some(pos_old) = map_key_to_index.insert(primary_key_hash.clone(), pos_new) {
-            list_values[pos_old] = Value::Null;
+        let item = if let Some(pos) = map_key_to_index.get(&primary_key_hash) {
+            list_values[*pos] = item;
+            list_values.get(*pos).ok_or("[store] Broken list_values.get(pos)")?
+        } else {
+            let pos_new = list_values.len();
+            map_key_to_index.insert(primary_key_hash.clone(), pos_new);
+            list_values.push(item);
+            list_values.last().ok_or("[store] Broken list_values.last()")?
+        };
+
+        #[cfg(debug_assertions)]
+        if schema_name == "request" && list_values.len() > 3 {
+            println!("[store] {schema_name}.service_map_list.len = {}", list_values.len());
         }
 
-        list_values.push(item);
-        let item = list_values.last().ok_or("Broken")?;
         Ok(item)
     }
 
@@ -2328,7 +2325,7 @@ impl ServerConnection {
         let schema_place = SchemaPlace::Request; //data_view.schema_place
         let method = "post"; //data_view.method
         let mut data_out = json!({});
-        self.login_response.openapi.copy_fields(&service.path, method, &schema_place, false, &mut data_out, item_send, false, false, false)?;
+        self.login_response.openapi.copy_fields(&service.path, method, &schema_place, false, &mut data_out, item_send, false, false, false, "save")?;
         let data_in = self.http_rest.save(&service.path, &data_out).await?;
         self.store(schema_name, data_in).await
     }
@@ -2339,7 +2336,7 @@ impl ServerConnection {
         let schema_place = SchemaPlace::Request; //data_view.schema_place
         let method = "put"; //data_view.method
         let mut data_out = json!({});
-        self.login_response.openapi.copy_fields(&service.path, method, &schema_place, false, &mut data_out, item_send, false, false, false)?;
+        self.login_response.openapi.copy_fields(&service.path, method, &schema_place, false, &mut data_out, item_send, false, false, false, "update")?;
         let primary_key = &service.get_primary_key(&data_out).ok_or_else(|| format!("[ServerConnection.update] {}  - data_out : Missing primary key", schema_name))?;
         let data_in = self.http_rest.update(&service.path, primary_key, &data_out).await?;
         self.store(schema_name, data_in).await
@@ -2521,8 +2518,17 @@ impl ServerConnection {
 
         url += "websocket";
 
+        {
+            let mut map_jwt_ws_messages = WEB_SOCKET_MESSAGES.lock().await;
+
+            if let Some(_old) = map_jwt_ws_messages.insert(jwt.to_string(), IndexMap::new()) {
+            }
+        }
+
         tokio::spawn(async move {
-            loop {
+            let mut replaced_by_new_login = false;
+
+            while replaced_by_new_login == false {
                 let mut ws_stream = match tokio_tungstenite_wasm::connect(&url).await {
                     Ok(ret) => ret,
                     Err(err) => {
@@ -2541,6 +2547,9 @@ impl ServerConnection {
                     continue;
                 }
 
+                #[cfg(debug_assertions)]
+                println!("[web_socket_connect] ws_stream.send()...\njwt = {jwt}");
+
                 use futures_util::{StreamExt};
 
                 while let Some(message) = ws_stream.next().await {
@@ -2550,9 +2559,36 @@ impl ServerConnection {
                                 Message::Text(text) => {
                                     let text = text.to_string();
 
+                                    if text == "Replaced by new login." {
+                                        replaced_by_new_login = true;
+                                        break;
+                                    }
+
                                     {
-                                        let mut list = WEB_SOCKET_MESSAGES.lock().await;
-                                        list.push(text.clone());
+                                        let mut map_jwt_ws_messages = WEB_SOCKET_MESSAGES.lock().await;
+
+                                        let Some(map_messages) = map_jwt_ws_messages.get_mut(&jwt) else {
+                                            replaced_by_new_login = true;
+                                            break;
+                                        };
+
+                                        #[cfg(debug_assertions)]
+                                        println!("[web_socket_connect]\njwt = {jwt}\nlist_messages.len = {}\ntext = {text}", map_messages.len());
+
+                                        if map_messages.get(&text).is_none() {
+                                            let text_notify = text.replace("delete", "notify");
+                                            map_messages.remove(&text_notify);
+
+                                            let item = match serde_json::from_str::<WebSocketData>(&text) {
+                                                Ok(item) => item,
+                                                Err(err) => {
+                                                    eprintln!("[DataViewManager::process_ws_messages] broken json '{text}' : {err}");
+                                                    continue;
+                                                },
+                                            };
+
+                                            map_messages.insert(text.clone(), item);
+                                        }
                                     }
 
                                     #[cfg(target_arch = "wasm32")]
@@ -2579,6 +2615,9 @@ impl ServerConnection {
                         }
                     }
                 }
+
+                #[cfg(debug_assertions)]
+                println!("[web_socket_connect] ... exit\njwt = {jwt}");
             }
         });
 
@@ -2656,7 +2695,11 @@ impl ServerConnection {
                     continue;
                 };
 
+                #[cfg(debug_assertions)]
+                println!("[login_from_response.skip_indexed_db] {schema_name}.list.len (before reverse) = {}", list.len());
                 list.reverse();
+                #[cfg(debug_assertions)]
+                println!("[login_from_response.skip_indexed_db] {schema_name}.list.len (after reverse) = {}", list.len());
                 let service = self.service_map.get_mut(schema_name).ok_or("Broken service mut")?;
                 service.map_description_to_hash.reserve(list.len());
 
@@ -2865,21 +2908,26 @@ macro_rules! function {
 #[macro_export]
 macro_rules! data_view_get {
     ($data_view_manager:tt, $element_id:tt) => {{
-        let id = &$element_id.data_view_id;
+        let mut data_view_id = $element_id.data_view_id.clone();
+
+        if [DataViewFormType::Filter, DataViewFormType::Aggregate, DataViewFormType::Sort].contains(&data_view_id.form_type)  {
+            data_view_id.set_form_type(DataViewFormType::Search);
+        }
+
         let data_view_map: &std::collections::HashMap<String, crate::client::DataView> = &$data_view_manager.data_view_map;
 
-        let data_view = if let Some(parent_id) = &id.parent_id {
+        let data_view = if let Some(parent_id) = &data_view_id.parent_id {
             let data_view = data_view_map.get(parent_id).ok_or_else(|| {
                 let keys = data_view_map.keys().map(|item| format!("{},", item)).collect::<String>();
                 format!("Missing data_view_map.get({}).\nOptions : {}", parent_id, keys)
             })?;
-            data_view.childs.iter().find(|item| item.data_view_id.id == id.id).ok_or_else(|| {
+            data_view.childs.iter().find(|item| item.data_view_id.id == data_view_id.id).ok_or_else(|| {
                 let keys = data_view.childs.iter().map(|item| item.data_view_id.id.clone()).collect::<String>();
-                format!("Missing item {} in data_view {}, options : {}", id.id, parent_id, keys)
+                format!("Missing item {} in data_view {}, options : {}", data_view_id.id, parent_id, keys)
             })?
         } else {
-            data_view_map.get(&$element_id.data_view_id.id).ok_or_else(|| {
-                format!("[process_click_target] Missing form {} in data_view_manager (2).", id.id)
+            data_view_map.get(&data_view_id.id).ok_or_else(|| {
+                format!("[process_click_target] Missing form {} in data_view_manager (2).", data_view_id.id)
             })?
         };
 
@@ -2890,22 +2938,26 @@ macro_rules! data_view_get {
 #[macro_export]
 macro_rules! data_view_get_mut {
     ($data_view_manager:tt, $element_id:tt) => {{
-        let id = &$element_id.data_view_id;
+        let mut data_view_id = $element_id.data_view_id.clone();
 
-        let data_view = if let Some(parent_id) = &id.parent_id {
+        if [DataViewFormType::Filter, DataViewFormType::Aggregate, DataViewFormType::Sort].contains(&data_view_id.form_type)  {
+            data_view_id.set_form_type(DataViewFormType::Search);
+        }
+
+        let data_view = if let Some(parent_id) = &data_view_id.parent_id {
             let data_view = $data_view_manager.data_view_map.get_mut(parent_id).ok_or_else(|| {
-                format!("[{} - data_view_get_mut] Missing parent schema {:?} in data_view_manager", function!(), id.parent_id)
+                format!("[{} - data_view_get_mut] Missing parent schema {:?} in data_view_manager", function!(), data_view_id.parent_id)
             })?;
-            data_view.childs.iter_mut().find(|item| item.data_view_id.id == id.id).ok_or_else(|| {
-                format!("Missing item {} in data_view {}", id.id, parent_id)
+            data_view.childs.iter_mut().find(|item| item.data_view_id.id == data_view_id.id).ok_or_else(|| {
+                format!("Missing item {} in data_view {}", data_view_id.id, parent_id)
             })?
         } else {
-            $data_view_manager.data_view_map.get_mut(&$element_id.data_view_id.id).ok_or_else(|| {
-                format!("[process_click_target] Missing form {} in data_view_manager (2).", id.id)
+            $data_view_manager.data_view_map.get_mut(&data_view_id.id).ok_or_else(|| {
+                format!("[process_click_target] Missing form {} in data_view_manager (2).", data_view_id.id)
             })?
         };
 
-        //println!("[{} - data_view_get_mut] : {:?}", function!(), $element_id);
+        //println!("[{} - data_view_get_mut] : {:?}", function!(), id);
         data_view
     }};
 }
@@ -2913,7 +2965,11 @@ macro_rules! data_view_get_mut {
 #[macro_export]
 macro_rules! data_view_get_parent_mut {
     ($data_view_manager:tt, $element_id:tt) => {{
-        let data_view_id = &$element_id.data_view_id;
+        let mut data_view_id = $element_id.data_view_id.clone();
+
+        if [DataViewFormType::Filter, DataViewFormType::Aggregate, DataViewFormType::Sort].contains(&data_view_id.form_type)  {
+            data_view_id.set_form_type(DataViewFormType::Search);
+        }
 
         let data_view = if let Some(parent_id) = &data_view_id.parent_id {
             $data_view_manager.data_view_map.get_mut(parent_id).ok_or_else(|| {
@@ -2926,15 +2982,9 @@ macro_rules! data_view_get_parent_mut {
         };
 
         #[cfg(debug_assertions)]
-        println!("[{} - data_view_get_parent_mut] : {:?}", function!(), $element_id);
+        println!("[{} - data_view_get_parent_mut] : {:?}", function!(), data_view_id);
         data_view
     }};
-}
-
-#[derive(Deserialize)]
-pub struct LoginDataIn {
-    user: String,
-    password: String
 }
 
 impl DataViewManager {
@@ -2946,58 +2996,53 @@ impl DataViewManager {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub async fn login(&mut self, path: &str, params: Value) -> Result<Value, Box<dyn std::error::Error>> {
-        {
-            let mut list_messages = WEB_SOCKET_MESSAGES.lock().await;
-            list_messages.clear();
+        #[derive(Deserialize)]
+        pub struct LoginDataIn {
+            user: String,
+            password: String
         }
 
         let data_in = serde_json::from_value::<LoginDataIn>(params)?;
         self.server_connection.login(path, &data_in.user, &data_in.password).await?;
-        Ok(json!({"menu": self.server_connection.login_response.menu, "path": self.server_connection.login_response.path, "jwt_header": self.server_connection.login_response.jwt_header}))
-    }
+        let jwt = &self.server_connection.login_response.jwt_header;
+        let mut map_jwt_ws_messages = WEB_SOCKET_MESSAGES.lock().await;
 
-    async fn process_ws_messages(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        #[cfg(debug_assertions)]
-        println!("[DataViewManager::process_ws_messages] start...");
-
-        #[derive(Deserialize, Debug)]
-        #[serde(rename_all = "camelCase")]
-        struct WebSocketData {
-            service :String,
-            action :String,
-            primary_key : Value,
+        if let Some(_old) = map_jwt_ws_messages.insert(jwt.to_string(), IndexMap::new()) {
         }
 
-        let mut list_messages = WEB_SOCKET_MESSAGES.lock().await;
-        let mut list_updates = vec![];
+        Ok(json!({"menu": self.server_connection.login_response.menu, "path": self.server_connection.login_response.path, "jwt_header": jwt}))
+    }
 
-        while list_messages.len() > 0 {
-            let msg = list_messages.remove(0);
+    async fn process_ws_messages(&mut self) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+        let jwt = &self.server_connection.login_response.jwt_header;
+        let mut map_jwt_ws_messages = WEB_SOCKET_MESSAGES.lock().await;
+        let map_messages = map_jwt_ws_messages.get_mut(jwt).ok_or("Missing jwt in WEB_SOCKET_MESSAGES.")?;
+        let mut list_services = vec![];
 
-            let item = match serde_json::from_str::<WebSocketData>(&msg) {
-                Ok(item) => item,
-                Err(err) => {
-                    eprintln!("[DataViewManager::process_ws_messages] broken json '{msg}' : {err}");
-                    continue;
-                },
-            };
+        #[cfg(debug_assertions)]
+        println!("[DataViewManager::process_ws_messages] list_messages.len = {}, starting...", map_messages.len());
 
+        for (_key, item) in map_messages.into_iter() {
             if item.action == "delete" {
                 self.server_connection.remove_with_primary_key(&item.service, &item.primary_key)?;
             } else {
                 if let Some(_value) = self.server_connection.get_remote(&item.service, &item.primary_key).await? {
-                    if list_updates.contains(&item.service) == false {
-                        list_updates.push(item.service);
-                    }
                 }
             }
+
+            if list_services.contains(&item.service) == false {
+                list_services.push(item.service.clone());
+            }
         }
-        // TODO : examinar todos os data_view (raiz e childs) contidos no list_updates e atualizar
+
+        map_messages.clear();
+
         #[cfg(debug_assertions)]
         println!("[DataViewManager::process_ws_messages] ...exit");
 
-        Ok(())
+        Ok(list_services)
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -3156,7 +3201,7 @@ impl DataViewManager {
                 let service = server_connection.service_map.get(schema_name).ok_or_else(|| format!("[data_view_get] Missing service {} in server_connection.service_map.", data_view.data_view_id.schema_name))?;
                 let schema_place = SchemaPlace::Parameter;
                 let method = "get";
-                server_connection.login_response.openapi.copy_fields(&service.path, method, &schema_place, false, &mut primary_key, primary_key_in, false, false, true)?
+                server_connection.login_response.openapi.copy_fields(&service.path, method, &schema_place, false, &mut primary_key, primary_key_in, false, false, true, "data_view_get")?
             }
 
             let Some(value) = server_connection.get(schema_name, &primary_key).await? else {
@@ -3224,6 +3269,7 @@ impl DataViewManager {
 
             let mut data_view = DataView::new(&path, DataViewType::Primary, None, element_id.data_view_id.form_type.clone());
             data_view.set_schema(&self.server_connection)?;
+            data_view.state.hidden = false;
 
             let form_type_childs = if data_view.data_view_id.form_type == DataViewFormType::Edit {
                 vec![DataViewFormType::New, data_view.data_view_id.form_type, DataViewFormType::Search]
@@ -3243,12 +3289,14 @@ impl DataViewManager {
                             let service = self.server_connection.service_map.get(&dependent.schema).ok_or_else(|| format!("Missing service"))?;
 
                             for form_type in &form_type_childs {
-                                let mut data_view_item = DataView::new(&path, DataViewType::Child(dependent.clone()), Some(data_view.data_view_id.clone()), form_type.clone());
+                                let is_one_to_one = service.primary_keys.len() == 1 && service.primary_keys.contains(&dependent.field);
 
-                                if service.primary_keys.len() == 1 && service.primary_keys.contains(&dependent.field) {
-                                    data_view_item.is_one_to_one = true;
+                                if is_one_to_one && *form_type == DataViewFormType::Search {
+                                    continue;
                                 }
 
+                                let mut data_view_item = DataView::new(&path, DataViewType::Child(dependent.clone()), Some(data_view.data_view_id.clone()), form_type.clone());
+                                data_view_item.is_one_to_one = is_one_to_one;
                                 data_view_item.set_schema(&self.server_connection)?;
                                 data_view.childs.push(data_view_item);
                             }
@@ -3369,7 +3417,9 @@ impl DataViewManager {
                     }
 
                     #[cfg(debug_assertions)]
-                    println!("[{}.process_data_view_action] : have_filter : {have_filter}.\ndata_view.params:\n{:?}\nparams_search:\n{:?}\nparams_extra:\n{:?}", data_view.data_view_id.id, data_view.params, params_search, params_extra);
+                    {
+                        //println!("[{}.process_data_view_action] : have_filter : {have_filter}.\ndata_view.params:\n{:?}\nparams_search:\n{:?}\nparams_extra:\n{:?}", data_view.data_view_id.id, data_view.params, params_search, params_extra);
+                    }
 
                     if have_filter {
                         #[cfg(debug_assertions)]
@@ -3434,26 +3484,42 @@ impl DataViewManager {
             }
         }
 
-        if data_view.data_view_id.form_type == DataViewFormType::Edit {
-            for data_view in &mut data_view.childs {
-                match data_view.data_view_id.form_type {
-                    DataViewFormType::New => {},
-                    DataViewFormType::Edit => {
-                        if data_view.typ == DataViewType::ObjectProperty {
+        match data_view.data_view_id.form_type {
+            DataViewFormType::New => {},
+            DataViewFormType::Edit | DataViewFormType::View => {
+                for data_view in &mut data_view.childs {
+                    match data_view.data_view_id.form_type {
+                        DataViewFormType::New => {},
+                        DataViewFormType::Edit | DataViewFormType::View => {
+                            //println!("{} : {:?}", data_view.data_view_id.id, data_view.typ);
+                            match &data_view.typ {
+                                DataViewType::Primary => {},
+                                DataViewType::ObjectProperty => {
+                                    data_view.state.hidden = false;
+                                    data_view_response.forms.insert(data_view.data_view_id.id.clone(), data_view.state.clone());
+                                },
+                                DataViewType::Child(_dependent) => {
+                                    if data_view.is_one_to_one {
+                                        data_view.state.hidden = false;
+                                        data_view_response.forms.insert(data_view.data_view_id.id.clone(), data_view.state.clone());
+                                    }
+                                },
+                            }
+                        },
+                        DataViewFormType::Search => {
                             data_view.state.hidden = false;
                             data_view_response.forms.insert(data_view.data_view_id.id.clone(), data_view.state.clone());
-                        }
-                    },
-                    DataViewFormType::View => {},
-                    DataViewFormType::Search => {
-                        data_view.state.hidden = false;
-                        data_view_response.forms.insert(data_view.data_view_id.id.clone(), data_view.state.clone());
-                    },
-                    DataViewFormType::Filter => {},
-                    DataViewFormType::Aggregate => {},
-                    DataViewFormType::Sort => {},
+                        },
+                        DataViewFormType::Filter => {},
+                        DataViewFormType::Aggregate => {},
+                        DataViewFormType::Sort => {},
+                    }
                 }
-            }
+            },
+            DataViewFormType::Search => {},
+            DataViewFormType::Filter => {},
+            DataViewFormType::Aggregate => {},
+            DataViewFormType::Sort => {},
         }
 
         data_view.state.hidden = false;
@@ -3607,9 +3673,9 @@ impl DataViewManager {
 
             let data_view_response = match &element_id.data_view_id.form_type {
                 DataViewFormType::Filter => {
+                    //element_id.data_view_id.set_form_type(DataViewFormType::Search);
                     let data_view = data_view_get!(self, element_id);
                     let params_search = data_view.params.clone();
-                    element_id.data_view_id.set_form_type(DataViewFormType::Search);
                     let mut data_view_response = DataViewResponse::default();
                     self.process_data_view_action(&element_id, &params_search, &json!({}), &mut data_view_response, watcher).await?;
                     data_view_response
@@ -3766,13 +3832,18 @@ impl DataViewManager {
         let re = regex::Regex::new(r"cancel-((?P<parent_form_type>new|edit|view|search|filter|aggregate|sort)-(?P<parent_name>\pL[\w_]+)--)?(?P<form_type>new|edit|view|search|filter|aggregate|sort)-(?P<name>\pL[\w_\d/]+)$")?;
 
         if let Some(cap) = re.captures(target) {
-            let element_id = HtmlElementId::new_with_regex(&cap)?;
+            let mut element_id = HtmlElementId::new_with_regex(&cap)?;
             let mut data_view_response = DataViewResponse::default();
             let data_view = data_view_get_mut!(self, element_id);
             data_view.clear(&self.server_connection, watcher).await?;
             data_view.build_changes(&mut data_view_response.changes)?;
             data_view.state.hidden = true;
             data_view_response.forms.insert(element_id.data_view_id.id.clone(), data_view.state.clone());
+
+            element_id.data_view_id.set_form_type(DataViewFormType::Search);
+            let params_search = DataViewParams::default();
+            self.process_data_view_action(&element_id, &params_search, &json!({}), &mut data_view_response, watcher).await?;
+
             return Ok(data_view_response);
         }
 
@@ -3970,7 +4041,7 @@ impl DataViewManager {
         let re = regex::Regex::new(r"((?P<parent_form_type>new|edit|view|search|filter|aggregate|sort)-(?P<parent_name>\pL[\w_]+)--)?(?P<form_type>new|edit|view|search|filter|aggregate|sort)-(?P<name>\pL[\w_\d/]+)--(?P<field_name>\pL[\w_]+)(?P<form_type_field_extension>@min|@max)?(-(?P<index>\d+))?")?;
 
         if let Some(cap) = re.captures(target) {
-            let element_id = &HtmlElementId::new_with_regex(&cap)?;
+            let element_id = HtmlElementId::new_with_regex(&cap)?;
             let field_name = element_id.field_name.as_ref().ok_or_else(|| format!("missing field_name"))?;
             let data_view = data_view_get!(self, element_id);
 
@@ -3979,7 +4050,7 @@ impl DataViewManager {
                 println!("{target} == {value}");
             }
 
-            let (value, is_flags) = parse_value_process(data_view, &self.server_connection, element_id, value)?;
+            let (value, is_flags) = parse_value_process(data_view, &self.server_connection, &element_id, value)?;
             let data_view_parent = data_view_get_parent_mut!(self, element_id);
 
             #[cfg(debug_assertions)]
@@ -3987,7 +4058,7 @@ impl DataViewManager {
                 println!("{target} == {value}");
             }
 
-            data_view_parent.set_value(&self.server_connection, watcher.as_ref(), field_name, &value, Some(element_id)).await?;
+            data_view_parent.set_value(&self.server_connection, watcher.as_ref(), field_name, &value, Some(&element_id)).await?;
             data_view_parent.build_changes(&mut data_view_response.changes)?;
 
             if is_flags {
@@ -4017,9 +4088,7 @@ impl DataViewManager {
         #[cfg(debug_assertions)]
         println!("[DataViewManager::process] params value : {}", params);
 
-        if let Err(err) = self.process_ws_messages().await {
-            eprintln!("[DataViewManager::process] error in process_ws_messages : {err}");
-        }
+        let list_services = self.process_ws_messages().await?;
 
         #[derive(Debug)]
         #[derive(Deserialize)]
@@ -4034,7 +4103,7 @@ impl DataViewManager {
         #[cfg(debug_assertions)]
         println!("[DataViewManager::process] params struct : {:?}", params);
 
-        let data_view_response = if params.event == "click" {
+        let mut data_view_response = if params.event == "click" {
             self.process_click_target(&params.form_id, watcher).await?
         } else if params.event == "change" {
             let mut ret = DataViewResponse::default();
@@ -4050,7 +4119,18 @@ impl DataViewManager {
             ret
         };
 
+        if list_services.is_empty() == false {
+            for (data_view_id, mut data_view) in &mut self.data_view_map {
+                if list_services.contains(&data_view.data_view_id.schema_name) && data_view.state.hidden == false && data_view.data_view_id.form_type == DataViewFormType::Search && data_view_response.tables.get(data_view_id).is_none() {
+                    let params_search = DataViewParams::default();
+                    let table = DataView::build_table(&mut self.server_connection, &mut data_view, &params_search)?;
+                    data_view_response.tables[data_view_id] = json!(table);
+                }
+            }
+        }
+
         let res = serde_json::to_value(data_view_response)?;
+
         Ok(res)
     }
 }
@@ -4097,6 +4177,7 @@ impl DataViewManagerWrapper {
 #[cfg(not(target_arch = "wasm32"))]
 #[cfg(feature = "test-selelium")]
 pub mod tests {
+    use crate::client::DataViewFormType;
     use convert_case::Casing;
     use serde::Deserialize;
     use serde_json::{json, Value};

@@ -73,8 +73,8 @@ pub trait RufsOpenAPI {
     fn copy_value_field(&self, field: &Schema, essential: bool, value :&Value) -> Result<Value, Box<dyn std::error::Error>>;
     fn copy_value(&self, path :&str, method :&str, schema_place :&SchemaPlace, may_be_array: bool, property_name :&str, value :&Value) -> Result<Value, Box<dyn std::error::Error>>;
     fn get_value_from_properties<'a>(&'a self, properties: &SchemaProperties, property_name :&str, obj: &'a Value) -> Option<&'a Value>;
-    fn copy_fields_using_properties(&self, properties: &SchemaProperties, extensions: &SchemaExtensions, may_be_array: bool, data_out :&mut Value, data_in: &Value, ignore_null: bool, ignore_hidden: bool, only_primary_keys: bool) -> Result<(), Box<dyn std::error::Error>>;
-    fn copy_fields(&self, path :&str, method :&str, schema_place :&SchemaPlace, may_be_array: bool, data_out :&mut Value, data_in: &Value, ignore_null: bool, ignore_hidden: bool, only_primary_keys: bool) -> Result<(), Box<dyn std::error::Error>>;
+    fn copy_fields_using_properties(&self, properties: &SchemaProperties, extensions: &SchemaExtensions, may_be_array: bool, data_out :&mut Value, data_in: &Value, ignore_null: bool, ignore_hidden: bool, only_primary_keys: bool, trace :&str) -> Result<(), Box<dyn std::error::Error>>;
+    fn copy_fields(&self, path :&str, method :&str, schema_place :&SchemaPlace, may_be_array: bool, data_out :&mut Value, data_in: &Value, ignore_null: bool, ignore_hidden: bool, only_primary_keys: bool, trace :&str) -> Result<(), Box<dyn std::error::Error>>;
     fn fill(&mut self, options: &mut FillOpenAPIOptions) -> Result<(), Box<dyn std::error::Error>>;
     fn get_schema_from_schemas(&self, reference :&str) -> Result<Option<&Schema>, Box<dyn std::error::Error>>;
     fn get_schema_from_request_bodies(&self, schema_name: &str, may_be_array: bool) -> Option<&Schema>;
@@ -300,7 +300,7 @@ impl RufsOpenAPI for OpenAPI {
         None
     }
 
-    fn copy_fields_using_properties(&self, properties :&SchemaProperties, extensions :&SchemaExtensions, _may_be_array :bool, data_out :&mut Value, data_in :&Value, ignore_null :bool, ignore_hidden: bool, only_primary_keys: bool) -> Result<(), Box<dyn std::error::Error>> {
+    fn copy_fields_using_properties(&self, properties :&SchemaProperties, extensions :&SchemaExtensions, _may_be_array :bool, data_out :&mut Value, data_in :&Value, ignore_null :bool, ignore_hidden: bool, only_primary_keys: bool, trace :&str) -> Result<(), Box<dyn std::error::Error>> {
         //#[cfg(debug_assertions)]
         //println!("[RufsOpenAPI.copy_fields_using_properties(ignore_null: {ignore_null}, ignore_hidden: {ignore_hidden}, only_primary_keys: {only_primary_keys})]");
 
@@ -339,20 +339,25 @@ impl RufsOpenAPI for OpenAPI {
                     }
                 }
 
-                return Err(format!("[RufsOpenAPI.copy_fields] field {} is null (ignore_null = {ignore_null})", field_name))?;
+                return Err(format!("[{trace}->copy_fields_using_properties] field '{field_name}' is null (ignore_null = {ignore_null})"))?;
             }
         }
 
         Ok(())
     }
 
-    fn copy_fields(&self, path :&str, method :&str, schema_place :&SchemaPlace, may_be_array: bool, data_out :&mut Value, data_in: &Value, ignore_null: bool, ignore_hidden: bool, only_primary_keys: bool) -> Result<(), Box<dyn std::error::Error>> {
+    fn copy_fields(&self, path :&str, method :&str, schema_place :&SchemaPlace, may_be_array: bool, data_out :&mut Value, data_in: &Value, ignore_null: bool, ignore_hidden: bool, only_primary_keys: bool, trace :&str) -> Result<(), Box<dyn std::error::Error>> {
         //#[cfg(debug_assertions)]
         //println!("[RufsOpenAPI.copy_fields(path :{path}, method :{method}, schema_place :{schema_place}, ignore_null: {ignore_null}, ignore_hidden: {ignore_hidden}, only_primary_keys: {only_primary_keys})]");
         let (_method, schema) = self.get_schema(path, &[method], schema_place, may_be_array)?;
         let extensions = &schema.schema_data.extensions;
         let properties = self.get_properties_from_schema(schema).unwrap();
-        self.copy_fields_using_properties(properties, extensions, may_be_array, data_out, data_in, ignore_null, ignore_hidden, only_primary_keys)
+
+        if let Err(err) = self.copy_fields_using_properties(properties, extensions, may_be_array, data_out, data_in, ignore_null, ignore_hidden, only_primary_keys, "") {
+            return Err(format!("[{trace}->copy_fields(path:{path},method:{method},schema_place:{schema_place},may_be_array:{may_be_array},\ndata_out:{data_out},\ndata_in:{data_in},\nignore_null:{ignore_null},ignore_hidden:{ignore_hidden},only_primary_keys:{only_primary_keys})]\n{err}"))?;            
+        }
+
+        Ok(())
     }
 
     fn fill(&mut self, options: &mut FillOpenAPIOptions) -> Result<(), Box<dyn std::error::Error>> {
@@ -1565,6 +1570,7 @@ impl RufsOpenAPI for OpenAPI {
                 if reference == schema_name_target || OpenAPI::get_schema_name_from_ref(reference, convert_case::Case::Camel) == schema_name_target {
                     if only_in_document != true || openapi.get_properties_from_schema(field).is_some() {
                         if list.iter().find(|&item| item.schema == schema_name && &item.field == field_name).is_none() {
+                            // let is_one_to_one = service.primary_keys.len() == 1 && service.primary_keys.contains(&dependent.field);
                             list.push(Dependent{schema: schema_name.to_string(), field: field_name.clone()});
                         }
                     }
@@ -1650,7 +1656,7 @@ impl RufsOpenAPI for OpenAPI {
             }
 
             let mut key = json!({});
-            self.copy_fields_using_properties(schema, extensions, false, &mut key, &key_in, true, false, false)?;
+            self.copy_fields_using_properties(schema, extensions, false, &mut key, &key_in, true, false, false, "get_foreign_key")?;
             Some((foreign_key_description, key))
         } else {
             None
