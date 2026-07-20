@@ -327,7 +327,7 @@ pub async fn process_request<'b>(rms: &'b RufsMicroService<'b>, path: &'b str, q
 
     async fn process_create(rms: &RufsMicroService<'_>, rf: &mut RequestFilter, obj_in: &mut Value, token_payload: &Claims, method: &str) -> Result<Value, Box<dyn std::error::Error>> {
         check_object_access(rms, rf, obj_in, token_payload)?;
-        let new_obj = rms.entity_manager.insert(&rms.openapi, &rf.db_schema, &rf.open_api_schema, obj_in).await?;
+        let new_obj = rms.entity_manager.insert(&rms.openapi, &rf.db_schema, &rf.open_api_schema, obj_in, &token_payload.name).await?;
         notify(rms, rf, &new_obj, false, method).await?;
         Ok(new_obj)
     }
@@ -335,7 +335,7 @@ pub async fn process_request<'b>(rms: &'b RufsMicroService<'b>, path: &'b str, q
     async fn process_update(rms: &RufsMicroService<'_>, rf: &mut RequestFilter, obj_in: &mut Value, token_payload: &Claims, method: &str) -> Result<Value, Box<dyn std::error::Error>> {
         check_object_access(rms, rf, obj_in, token_payload)?;
         let primary_key = parse_query_parameters(rms, rf, false, method)?;
-        let new_obj = rms.entity_manager.update(&rms.openapi, &rf.db_schema, &rf.open_api_schema, &primary_key, obj_in).await?;
+        let new_obj = rms.entity_manager.update(&rms.openapi, &rf.db_schema, &rf.open_api_schema, &primary_key, obj_in, &token_payload.name).await?;
         notify(rms, rf, &new_obj, false, method).await?;
         Ok(new_obj)
     }
@@ -345,7 +345,7 @@ pub async fn process_request<'b>(rms: &'b RufsMicroService<'b>, path: &'b str, q
         rms.openapi.copy_fields(&rf.path, method, &SchemaPlace::Schemas, false, data_patched, &data, true, true, false, "process_patch")?;
         check_object_access(rms, rf, data_patched, token_payload)?;
         let primary_key = parse_query_parameters(rms, rf, false, method)?;
-        let new_obj = rms.entity_manager.update(&rms.openapi, &rf.db_schema, &rf.open_api_schema, &primary_key, &data).await?;
+        let new_obj = rms.entity_manager.update(&rms.openapi, &rf.db_schema, &rf.open_api_schema, &primary_key, &data, &token_payload.name).await?;
         notify(rms, rf, &new_obj, false, method).await?;
         Ok(new_obj)
     }

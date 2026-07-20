@@ -221,11 +221,11 @@ impl RufsMicroService<'_> {
                 let default_user_admin: serde_json::Value = serde_json::from_str(DEFAULT_USER_ADMIN_STR).unwrap();
 
                 if rms.entity_manager.find_one(openapi_rufs, db_schema, "rufsGroupOwner", &json!({"name": "admin"})).await?.is_none() {
-                    rms.entity_manager.insert(openapi_rufs, db_schema, "rufsGroupOwner", &default_group_owner_admin).await?;
+                    rms.entity_manager.insert(openapi_rufs, db_schema, "rufsGroupOwner", &default_group_owner_admin, "admin").await?;
                 }
 
                 if rms.entity_manager.find_one(openapi_rufs, db_schema, "rufsUser", &json!({"name": "admin"})).await?.is_none() {
-                    rms.entity_manager.insert(openapi_rufs, db_schema, "rufsUser", &default_user_admin).await?;
+                    rms.entity_manager.insert(openapi_rufs, db_schema, "rufsUser", &default_user_admin, "admin").await?;
                 }
             }
 
@@ -242,12 +242,12 @@ impl RufsMicroService<'_> {
                 let old = rms.entity_manager.find_one(&rms.openapi, "public", "rufsConfig", &json!({"name": name})).await?;
 
                 if old.is_some() {
-                    let _ret = rms.entity_manager.update(&rms.openapi, "public", "rufsConfig", &json!({"name": name}), &value).await?;
+                    let _ret = rms.entity_manager.update(&rms.openapi, "public", "rufsConfig", &json!({"name": name}), &value, "admin").await?;
                     return Ok(old);
                 } else {
                     if let Some(map) = value.as_object_mut() {
                         map.insert("name".to_string(), json!(name));
-                        let _ret = rms.entity_manager.insert(&rms.openapi, "public", "rufsConfig", &value).await?;
+                        let _ret = rms.entity_manager.insert(&rms.openapi, "public", "rufsConfig", &value, "admin").await?;
                         return Ok(None)
                     }
                 }
@@ -924,7 +924,7 @@ const RUFS_MICRO_SERVICE_OPENAPI_STR: &str = r##"{
 					"routes":         {"type": "array", "default": "[]", "items": {"properties": {"path": {"type": "string"}, "controller": {"type": "string"}, "templateUrl": {"type": "string"}}}},
 					"menu":           {"type": "object"}
 				},
-				"x-primaryKeys": ["rufsGroupOwner", "name"],
+				"x-primaryKeys": ["name"],
 				"x-uniqueKeys":  {}
 			},
 			"rufsGroup": {

@@ -357,8 +357,9 @@ impl EntityManager for DbAdapterSql<'_> {
 		}
 	}
 
-    async fn insert(&self, openapi: &OpenAPI, db_schema: &str, openapi_schema :&str, obj :&Value) -> Result<Value, Box<dyn std::error::Error>> {
+    async fn insert(&self, openapi: &OpenAPI, db_schema: &str, openapi_schema :&str, obj :&Value, user :&str) -> Result<Value, Box<dyn std::error::Error>> {
 		let now = json!(chrono::Local::now().to_rfc3339());
+		let user = json!(user);
 		let mut params: Vec<&(dyn ToSql + Sync)> = vec![];
 		let mut str_fields = vec![];
 		let mut str_values = vec![];
@@ -371,6 +372,8 @@ impl EntityManager for DbAdapterSql<'_> {
 
 			let value  = if field_name == "dateLastChange" {
 				&now
+			} else if field_name == "userLastChange" {
+				&user
 			} else if let Some(value) = obj.get(field_name) {
 				value
 			} else {
@@ -523,10 +526,11 @@ impl EntityManager for DbAdapterSql<'_> {
 		}
 	}
 
-	async fn update(&self, openapi: &OpenAPI, db_schema: &str, openapi_schema :&str, query_params :&Value, obj :&Value) -> Result<Value, Box<dyn std::error::Error>> {
+	async fn update(&self, openapi: &OpenAPI, db_schema: &str, openapi_schema :&str, query_params :&Value, obj :&Value, user :&str) -> Result<Value, Box<dyn std::error::Error>> {
         println!("[DbAdapterSql.update({}, {})]", openapi_schema, obj.to_string());
 		let obj = obj.as_object().ok_or_else(|| format!("EntityManager.update({}) : value must be json object", openapi_schema))?;
 		let now = json!(chrono::Local::now().to_rfc3339());
+		let user = json!(user);
 		let mut params: Vec<&(dyn ToSql + Sync)> = vec![];
 		let mut str_values = vec![];
 		let db_schema_and_table_in_snake = self.get_db_table(db_schema, openapi_schema);
@@ -535,6 +539,8 @@ impl EntityManager for DbAdapterSql<'_> {
 		for (field_name, field) in properties {
 			let value  = if field_name == "dateLastChange" {
 				&now
+			} else if field_name == "userLastChange" {
+				&user
 			} else if let Some(value) = obj.get(field_name) {
 				value
 			} else {
